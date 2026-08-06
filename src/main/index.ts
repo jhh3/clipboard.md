@@ -28,6 +28,15 @@ if (process.platform === 'linux') {
   if (existsSync(gpuFallbackFlag())) app.disableHardwareAcceleration()
 }
 
+// A background clipboard manager must never dialog-bomb the user: log and carry on.
+// (Electron's default uncaught-exception handler shows a blocking error dialog.)
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaught exception:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandled rejection:', reason)
+})
+
 // Watchdog: if the GPU process crash-loops at runtime, persist the fallback flag
 // and relaunch in software mode — intelligent degradation instead of a blanket off.
 let gpuCrashes = 0

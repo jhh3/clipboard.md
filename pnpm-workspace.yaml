@@ -6,4 +6,10 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   electron-winstaller: true
-  usocket: false
+  sharp: true
+
+overrides:
+  # usocket (dbus-next's optional native socket lib) calls util.isError, removed in
+  # modern Node — crashes the D-Bus handshake. dbus-next falls back to node:net
+  # for unix:path session buses when usocket is absent, which is all we need.
+  usocket: '-'

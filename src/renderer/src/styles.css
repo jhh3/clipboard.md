@@ -34,7 +34,9 @@ body {
 }
 
 #root {
-  padding: 14px; /* breathing room so the window shadow can render */
+  /* Transparent margin matching the window's extra 80px: the shadow must reach
+     ~zero alpha before the window edge or it clips into a hard dark rectangle. */
+  padding: 40px;
 }
 
 /* ── theme tokens ── */
@@ -58,11 +60,11 @@ body {
   --sel-bg-hover: rgba(255, 255, 255, 0.045);
   --danger: #f87171;
   --success: #4ade80;
+  /* Every layer fades to ~0 within the 40px transparent margin — no clipping. */
   --shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.6),
-    0 2px 8px rgba(0, 0, 0, 0.35),
-    0 12px 32px rgba(0, 0, 0, 0.45),
-    0 28px 72px rgba(0, 0, 0, 0.5);
+    0 0 0 0.5px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.3),
+    0 10px 28px rgba(0, 0, 0, 0.3);
 
   color: var(--text);
   background:

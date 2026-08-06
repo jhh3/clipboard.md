@@ -3,8 +3,10 @@ import { join } from 'path'
 
 let palette: BrowserWindow | null = null
 
-const PALETTE_W = 880
-const PALETTE_H = 560
+// Content is 880x560; the extra 80px is transparent margin so the CSS drop
+// shadow fades out fully instead of clipping hard at the window edge.
+const PALETTE_W = 960
+const PALETTE_H = 640
 
 export function createPaletteWindow(): BrowserWindow {
   if (palette && !palette.isDestroyed()) return palette
@@ -30,6 +32,9 @@ export function createPaletteWindow(): BrowserWindow {
     if (url.startsWith('https://')) shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  // Summon must land on whatever workspace the user is on right now.
+  palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
   palette.on('blur', () => hidePalette())
 
