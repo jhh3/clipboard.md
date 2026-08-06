@@ -3,7 +3,7 @@
   "productName": "clipboard.md",
   "version": "0.1.0",
   "description": "A local-first, AI-supercharged clipboard manager for Linux and macOS",
-  "main": "./out/main/index.js",
+  "main": "./out/main/index.mjs",
   "type": "commonjs",
   "license": "MIT",
   "author": "John <john@nullframe.ai>",

@@ -86,11 +86,10 @@ function ensureVecTable(d: Database.Database): void {
   )`)
 }
 
-export function openDb(dataDir?: string): Database.Database {
+/** Caller supplies the data directory (Electron main passes userData; tests pass a tmpdir). */
+export function openDb(dataDir: string): Database.Database {
   if (db) return db
-  // Lazy electron import keeps this module usable from plain-Node tests.
-  const dir =
-    dataDir ?? join((require('electron') as typeof import('electron')).app.getPath('userData'), 'data')
+  const dir = dataDir
   mkdirSync(dir, { recursive: true })
   db = new Database(join(dir, 'clipboard.db'))
   db.pragma('journal_mode = WAL')

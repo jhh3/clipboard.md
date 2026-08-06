@@ -10,6 +10,7 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
+        external: ['electron', 'better-sqlite3', 'sqlite-vec', 'zod'],
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts')
@@ -21,6 +22,9 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: { '@shared': resolve(__dirname, 'src/shared') }
+    },
+    build: {
+      rollupOptions: { external: ['electron'] }
     }
   },
   renderer: {
