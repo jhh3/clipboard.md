@@ -101,8 +101,15 @@ cost of fractional-scaling crispness. Revisit if/when GNOME exposes data-control
 - **Transcription (later)**: sherpa-onnx + NVIDIA Parakeet TDT 0.6B v3 — SOTA local
   realtime STT (6.32% WER, streaming-native, Node addon, CUDA on Linux / CoreML on
   Apple Silicon). Cloud fallback Groq whisper-large-v3-turbo @ $0.04/hr.
-- **Never** scrape Claude/Codex OAuth tokens for raw API calls (ToS-fragile); headless
-  CLI invocation is the sanctioned subscription surface.
+- **Never** scrape Claude/Codex OAuth tokens for raw API calls (ToS-fragile). The
+  sanctioned subscription surface is the official SDKs: **Claude Agent SDK**
+  (`@anthropic-ai/claude-agent-sdk`, typed, rides Claude Code's subscription auth) and
+  **Codex SDK** (`@openai/codex-sdk`). API lane: one OpenAI-compatible client covers
+  OpenAI + Groq + Gemini (same wire format, three configs).
+- **ModelPort adapter (decided 2026-08-06)**: every AI feature calls one interface
+  (`complete`, `completeJson<S>(schema)`, `vision`, capabilities descriptor). Backends:
+  claude-agent-sdk | codex-sdk | openai-compat. Routing per feature in settings — the
+  app core is agnostic to subscription vs API vs specific model.
 
 ## 4. UX — the core of the product
 
@@ -171,6 +178,18 @@ is to supercharge interactions with every other application, not to be a history
   paste-back tiers honestly, offers the portal upgrade.
 - macOS: one-time Accessibility request with a clear explainer (the Maccy pattern).
 - Popup centered on Linux (Wayland cursor coords unreliable), at cursor on macOS.
+
+## 4.5 Decisions (2026-08-06, with John)
+
+1. **Commercial-grade from the start**: personal tool first, but built to be commercially
+   viable — open-sourcing or selling stays open. Private repo, no OSS license yet, BYOK,
+   zero telemetry, real packaging quality.
+2. **Local-first now, sync-ready schema**: cross-machine sharing is a likely future —
+   content hashes already exist per item; keep export/import lossless; E2EE sync is a
+   post-M4 track, never half-shipped.
+3. **Providers via SDKs, not CLI subprocesses** (see ModelPort above).
+4. **All AI defaults are settings**, shipped with sensible values (enrichment→API lane,
+   sessions/link-fetch off until enabled), trivially tweakable later.
 
 ## 5. Milestones
 
