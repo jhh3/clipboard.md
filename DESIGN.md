@@ -151,6 +151,15 @@ is to supercharge interactions with every other application, not to be a history
   classification time.
 - Dedupe on re-copy; derived/transformed clips grouped under their source.
 
+### Link enrichment & Sessions
+- **Copied URLs get fetched** (opt-in, background): title + readable-text extraction
+  (local fetch + Readability first; Firecrawl-style API as optional upgrade for
+  JS-heavy pages) → summary + tags indexed into search. Searching "that pricing
+  comparison" finds the link you copied, not just its URL string.
+- **Sessions**: clips cluster automatically by time proximity + content affinity into
+  named sessions ("Tue 14:00 — debugging stripe webhooks", auto-titled by AI from the
+  clips). Browsable as collections; a whole session can be exported as one markdown doc.
+
 ### Selection rewrite (separate hotkey, no popup needed)
 - Capture current selection (PRIMARY on Linux, AX/Cmd+C chain on macOS) → mini action
   palette at screen center → same saved-actions + free-prompt model → result replaces
