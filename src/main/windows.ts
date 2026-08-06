@@ -66,6 +66,10 @@ export function showPalette(collection?: string): void {
   } catch {
     win.center()
   }
+  // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
+  // window on the workspace it last lived on, yanking the user to that desktop
+  // instead of appearing on the current one.
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   win.show()
   win.focus()
   win.webContents.send('palette:shown', { collection })
