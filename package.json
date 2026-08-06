@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "dbus-next": "^0.10.2",
     "sqlite-vec": "^0.1.9",
     "zod": "^4.4.3"
   }

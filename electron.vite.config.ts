@@ -10,7 +10,7 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        external: ['electron', 'better-sqlite3', 'sqlite-vec', 'zod'],
+        external: ['electron', 'better-sqlite3', 'sqlite-vec', 'zod', 'dbus-next'],
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts')

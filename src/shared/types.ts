@@ -175,6 +175,10 @@ export interface AppSettings {
   smartCollections: SmartCollection[]
   hotkeyHint: string
   theme: 'system' | 'dark' | 'light'
+  /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
+  pasteInjection: 'portal' | 'off'
+  /** RemoteDesktop portal restore token — skips the permission dialog on later sessions. */
+  pastePortalToken?: string
 }
 
 export interface PasteOutcome {
@@ -226,6 +230,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voiceSamples: [],
   savedActions: [],
   smartCollections: [],
-  hotkeyHint: 'Super+V',
-  theme: 'system'
+  hotkeyHint: 'Ctrl+Alt+V',
+  theme: 'system',
+  pasteInjection: 'portal'
 }

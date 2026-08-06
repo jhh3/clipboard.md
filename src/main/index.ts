@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { join } from 'path'
+import { existsSync, writeFileSync } from 'fs'
 import { openDb } from './store/db'
 import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
@@ -12,9 +13,37 @@ import { getSettings } from './settings'
 // Linux: run under Xwayland deliberately. Mutter's Xwayland bridge is the one
 // clipboard path verified to work focuslessly on GNOME Wayland (DESIGN.md §2),
 // and it restores window positioning that native-Wayland Electron lacks.
+const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
+
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform', 'x11')
+  // The GPU process sandbox cannot open Mesa's dri_gbm.so on this Ubuntu/NVIDIA
+  // setup (the file is world-readable — it's the sandbox, not permissions), which
+  // crash-loops the GPU process and can leave the transparent window unpainted.
+  // Loosen only the GPU process sandbox; the renderer sandbox is unaffected.
+  app.commandLine.appendSwitch('disable-gpu-sandbox')
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  // Auto-detected fallback: if HW accel crash-looped before, this flag file exists
+  // and we run software-rendered. Delete the file to retry hardware acceleration.
+  if (existsSync(gpuFallbackFlag())) app.disableHardwareAcceleration()
 }
+
+// Watchdog: if the GPU process crash-loops at runtime, persist the fallback flag
+// and relaunch in software mode — intelligent degradation instead of a blanket off.
+let gpuCrashes = 0
+app.on('child-process-gone', (_e, details) => {
+  if (details.type === 'GPU' && ['crashed', 'abnormal-exit', 'launch-failed'].includes(details.reason)) {
+    gpuCrashes++
+    if (gpuCrashes >= 3 && !existsSync(gpuFallbackFlag())) {
+      writeFileSync(
+        gpuFallbackFlag(),
+        'GPU process crash-looped; running software-rendered. Delete this file to retry HW accel.\n'
+      )
+      app.relaunch()
+      app.exit(0)
+    }
+  }
+})
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {

@@ -1,9 +1,13 @@
-import { clipboard, nativeImage } from 'electron'
+import { clipboard, nativeImage, Notification } from 'electron'
 import { execFile } from 'child_process'
 import { join } from 'path'
 import type { PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
 import { getItem } from './store/items'
+import { getSettings } from './settings'
+import { portalPaste } from './portal'
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
  * Paste tiers (see DESIGN.md §2):
@@ -66,8 +70,20 @@ export class PasteService {
       if (injected) return { method: 'injected' }
       return { method: 'copied', message: 'Copied — press ⌘V to paste' }
     }
-    // Linux tier 0: the renderer shows the toast, then hides the window;
-    // mutter restores focus to the previous surface on hide.
+
+    // Linux tier 1: hide (mutter refocuses the previous surface), then inject
+    // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
+    if (getSettings().pasteInjection === 'portal') {
+      this.hideWindow()
+      await sleep(150)
+      if (await portalPaste()) return { method: 'injected' }
+      // Window is already hidden, so the renderer toast won't be seen — use a
+      // desktop notification for the fallback hint instead.
+      new Notification({ title: 'Copied', body: 'Press Ctrl+V to paste', silent: true }).show()
+      return { method: 'injected' } // renderer should not re-toast or re-hide
+    }
+
+    // Tier 0: the renderer shows the toast, then hides the window.
     return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
   }
 
