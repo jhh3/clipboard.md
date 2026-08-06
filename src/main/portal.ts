@@ -29,9 +29,10 @@ async function getBus(): Promise<dbus.MessageBus> {
 }
 
 /**
- * Portal request pattern: method returns a Request object path; the result arrives
- * as a Response(uint code, dict results) signal on that path. We must subscribe
- * before calling to avoid the race.
+ * Portal request pattern: the method returns a Request object path; the result
+ * arrives as a Response(uint code, dict results) signal on that path. The request
+ * object does not exist until the call is made, so it cannot be proxied up front —
+ * instead we register a low-level signal match on the (predictable) path first.
  */
 async function portalCall(
   iface: dbus.ClientInterface,
@@ -43,26 +44,39 @@ async function portalCall(
   const handleToken = token()
   options.handle_token = new dbus.Variant('s', handleToken)
 
-  // dbus-next's typings omit `name` (the bus's unique name, e.g. ":1.42").
-  const uniqueName = (b as unknown as { name: string }).name
-  const sender = uniqueName.slice(1).replace(/\./g, '_')
+  // dbus-next's typings omit `name` (unique bus name) and the low-level surface.
+  const low = b as unknown as {
+    name: string
+    _addMatch: (rule: string) => Promise<unknown>
+    on: (ev: 'message', cb: (msg: dbus.Message) => void) => void
+    removeListener: (ev: 'message', cb: (msg: dbus.Message) => void) => void
+  }
+  const sender = low.name.slice(1).replace(/\./g, '_')
   const requestPath = `/org/freedesktop/portal/desktop/request/${sender}/${handleToken}`
 
+  await low._addMatch(
+    `type='signal',interface='org.freedesktop.portal.Request',member='Response',path='${requestPath}'`
+  )
+
   const responsePromise = new Promise<Record<string, dbus.Variant>>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`portal ${method} timed out`)), 120_000)
-    b.getProxyObject(PORTAL_BUS, requestPath)
-      .then((reqObj) => {
-        const req = reqObj.getInterface('org.freedesktop.portal.Request')
-        req.once('Response', (code: number, results: Record<string, dbus.Variant>) => {
-          clearTimeout(timer)
-          if (Number(code) === 0) resolve(results)
-          else reject(new Error(`portal ${method} denied/cancelled (code ${code})`))
-        })
-      })
-      .catch((err) => {
+    const timer = setTimeout(() => {
+      low.removeListener('message', onMessage)
+      reject(new Error(`portal ${method} timed out`))
+    }, 120_000)
+    const onMessage = (msg: dbus.Message): void => {
+      if (
+        msg.path === requestPath &&
+        msg.interface === 'org.freedesktop.portal.Request' &&
+        msg.member === 'Response'
+      ) {
         clearTimeout(timer)
-        reject(err)
-      })
+        low.removeListener('message', onMessage)
+        const [code, results] = msg.body as [number, Record<string, dbus.Variant>]
+        if (Number(code) === 0) resolve(results ?? {})
+        else reject(new Error(`portal ${method} denied/cancelled (code ${code})`))
+      }
+    }
+    low.on('message', onMessage)
   })
 
   await iface[method](...args, options)
