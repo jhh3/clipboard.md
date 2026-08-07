@@ -284,6 +284,19 @@ Be sceptical of anything here; none of it was watched working.
 - Autostart now only registers from a packaged build — on Linux too.
 - `electron-builder.yml`: the onnxruntime exclusion moved under `linux:` unchanged.
 
+### Observed behaviour worth a product decision
+
+Launching the packaged app **silently added a login item on first run**, with no
+prompt — `setAutostart(true)` fires whenever autostart isn't already enabled. During
+testing that registered `…/dist/mac-arm64/clipboard.md.app`, i.e. a build artifact
+that gets deleted on the next `pnpm build:mac`; it has been removed from this
+machine. The dev case is now guarded (`app.isPackaged`), but the wider question
+stands: on macOS, adding yourself to Login Items unannounced is the kind of thing
+users notice and resent, and this app's own anti-goals are about not being that
+software. Suggest asking during onboarding instead. Not changed here — it's a
+product call, and the current behaviour is deliberate (§autostart.ts: stay resident
+so hotkeys are instant).
+
 ### Still open
 
 - `tracks(withMediaType:)` in the helper is deprecated since macOS 13; kept because
