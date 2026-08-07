@@ -34,10 +34,17 @@ function activeDisplay(): Electron.Display {
 let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
 
-// Content is 880x560; the extra 80px is transparent margin so the CSS drop
-// shadow fades out fully instead of clipping hard at the window edge.
-const PALETTE_W = 960
-const PALETTE_H = 640
+// Content is 880x560. On Linux the window is 80px larger in each axis: that margin is
+// transparent, so the CSS drop shadow can fade to zero alpha instead of clipping into
+// a hard rectangle at the window edge.
+//
+// macOS needs no margin — AppKit draws a proper shadow around the window's rounded
+// corners for us. Carrying the margin there produced two shadows: the CSS one, plus
+// AppKit's around the full invisible frame, which read as a boxy halo floating well
+// off the palette. Window is sized to the content and the native shadow is the only one.
+const MAC_PALETTE = process.platform === 'darwin'
+const PALETTE_W = MAC_PALETTE ? 880 : 960
+const PALETTE_H = MAC_PALETTE ? 560 : 640
 
 export function createPaletteWindow(): BrowserWindow {
   if (palette && !palette.isDestroyed()) return palette
@@ -55,7 +62,13 @@ export function createPaletteWindow(): BrowserWindow {
     // makes the summon feel like Spotlight instead of an app launch: no Dock bounce,
     // and the app you were typing in stays "active" behind us so focus returns to it
     // cleanly when we hide. This is the Maccy behaviour.
-    ...(MACOS ? { type: 'panel' as const } : {}),
+    //
+    // hasShadow/roundedCorners hand the palette's chrome to AppKit: the shadow follows
+    // the rounded corners the way every other macOS panel's does, and the CSS shadow
+    // switches off (styles.css, [data-platform='darwin']).
+    ...(MACOS
+      ? { type: 'panel' as const, hasShadow: true, roundedCorners: true }
+      : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

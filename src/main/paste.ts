@@ -93,6 +93,14 @@ export class PasteService {
       await sleep(FOCUS_SETTLE_MS)
       const { injected, untrusted } = await macPaste()
       if (injected) return { method: 'injected' }
+      // Paste degrades quietly by design, which makes a broken one invisible: the
+      // content really is on the clipboard, so nothing throws and nothing logs. Say
+      // why we fell back, or the next person debugging this has nothing to go on.
+      console.error(
+        untrusted
+          ? '[paste] not injected: Accessibility permission missing'
+          : '[paste] not injected: helper unavailable or failed'
+      )
       // Distinguish "we can't" from "we won't": a missing Accessibility grant is
       // fixable by the user, and saying so beats a generic fallback message.
       return {
