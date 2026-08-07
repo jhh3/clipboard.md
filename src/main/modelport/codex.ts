@@ -3,6 +3,7 @@ import { constants } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
+import { resolveVendoredCli } from './nativeCli'
 
 /**
  * Subscription lane #2: Codex SDK riding the user's ChatGPT-plan Codex login
@@ -28,7 +29,10 @@ export async function codexAvailable(): Promise<{ ok: boolean; detail: string }>
 
 async function newThread(): Promise<import('@openai/codex-sdk').Thread> {
   const { Codex } = await import('@openai/codex-sdk')
-  const codex = new Codex()
+  // Same asar problem as the Claude lane: the SDK would spawn a path inside
+  // app.asar and get ENOTDIR. Undefined in dev leaves its own resolution alone.
+  const codexPathOverride = resolveVendoredCli('@openai/codex', 'codex')
+  const codex = new Codex(codexPathOverride ? { codexPathOverride } : {})
   return codex.startThread({ sandboxMode: 'read-only', skipGitRepoCheck: true })
 }
 

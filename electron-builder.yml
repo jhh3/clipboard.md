@@ -7,11 +7,16 @@ files:
   - package.json
   # Prune ~600MB of binaries we never execute. Each exclusion is deliberate:
   #  - onnxruntime ships CUDA/TensorRT providers (~330MB); embeddings run on CPU
-  #  - onnxruntime bundles every platform's binaries; keep this build's only
+  #  - onnxruntime bundles every platform's binaries; keep this build's only. The
+  #    "keep this build's" part is done per-platform under mac:/linux: below — this
+  #    list is shared by every target, so pruning a named platform here prunes it
+  #    from that platform's OWN build. It excluded darwin unconditionally, which
+  #    deleted the binding the mac app needs: verified, the packaged app logged
+  #    "Cannot find module '../bin/napi-v6/darwin/arm64/onnxruntime_binding.node'"
+  #    and stored zero embeddings while dev worked fine.
   #  - the Codex and Claude Agent SDK native CLIs are large and only used by the
   #    subscription lanes, which fall back to the API lane when absent (they are
   #    re-added per-platform below for the platform being built)
-  - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**'
   - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_cuda.so'
   - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_tensorrt.so'
   - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_shared.so'
@@ -25,12 +30,21 @@ asarUnpack:
   - '**/node_modules/onnxruntime-node/**'
   - '**/node_modules/tesseract.js*/**'
   - '**/node_modules/@anthropic-ai/claude-agent-sdk/**'
+  # The subscription lanes SPAWN these CLIs. A path inside app.asar is a path into a
+  # file, so spawn fails with ENOTDIR — observed for both lanes in the packaged build
+  # while dev worked fine. See modelport/nativeCli.ts.
+  - '**/node_modules/@anthropic-ai/claude-agent-sdk-*/**'
+  - '**/node_modules/@openai/codex-sdk/**'
+  - '**/node_modules/@openai/codex-*/**'
   # sherpa-onnx loads its .node addon and dylibs by path at runtime; from inside
   # app.asar those paths don't exist, which is exactly how sqlite-vec silently
   # disabled semantic search in the installed build only.
   - '**/node_modules/sherpa-onnx*/**'
 
 linux:
+  # Keep only this platform's onnxruntime binding (~110MB per platform).
+  files:
+    - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**'
   syncDesktopName: true
   target:
     - AppImage
@@ -47,6 +61,9 @@ deb:
   afterInstall: null
 
 mac:
+  # Keep only this platform's onnxruntime binding — see the note in `files` above.
+  files:
+    - '!**/node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**'
   target:
     - dmg
   category: public.app-category.productivity

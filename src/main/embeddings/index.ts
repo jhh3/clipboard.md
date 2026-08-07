@@ -72,6 +72,10 @@ export function startEmbeddings(): void {
     }
   })
   worker.postMessage({ type: 'ping' })
+  // Start the idle clock now. Left at 0, the very first drain — 5s in, with nothing
+  // to embed — satisfied `now - lastUse > IDLE_UNLOAD_MS` immediately and killed the
+  // worker five seconds after launch.
+  lastUse = Date.now()
   if (!drainTimer) drainTimer = setInterval(() => void drainEmbeddings(), 20_000)
   setTimeout(() => void drainEmbeddings(), 5_000)
 }
@@ -109,10 +113,23 @@ export function embedQuery(text: string): Promise<Float32Array | null> {
 
 let draining = false
 async function drainEmbeddings(): Promise<void> {
-  if (draining || !worker) return
+  if (draining) return
+  if (!hasVec() || !getSettings().embeddings.enabled) return
   draining = true
   try {
     const batch = itemsNeedingEmbedding(16)
+
+    // Work arrived after an idle unload. The drain timer keeps ticking once the
+    // worker is gone, but this used to return early on `!worker` and never restart
+    // it — so nothing captured after the first unload was ever embedded, and
+    // semantic search silently covered only the items that happened to exist while
+    // the worker was alive. Spin it back up; this batch is embedded on the next tick.
+    if (batch.length > 0 && !worker) {
+      startEmbeddings()
+      return
+    }
+    if (!worker) return
+
     for (const item of batch) {
       const text = [item.autoTitle, item.kind === 'image' ? item.ocrText : item.content, item.tags.join(' ')]
         .filter(Boolean)
