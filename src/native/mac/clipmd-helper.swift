@@ -422,6 +422,39 @@ func cmdChangeCount() {
   output("\(NSPasteboard.general.changeCount)\n")
 }
 
+/// Long-lived pasteboard watcher: print the new `changeCount` whenever it changes.
+///
+/// NSPasteboard has no change notification, so someone has to poll. Doing it in the
+/// Electron main process meant reading — and for images, PNG-encoding — the whole
+/// pasteboard every tick just to notice nothing had happened: measured at 55.7ms per
+/// poll with a screenshot on the pasteboard, every 400ms, on the thread that must
+/// never block. Polling `changeCount` here is a single cheap call in a process with
+/// nothing else to do, and the main process reads the clipboard only when told to.
+///
+/// Exits when stdin closes, so it can never outlive the app that spawned it.
+func cmdWatch(intervalMs: Int) {
+  let interval = TimeInterval(max(50, intervalMs)) / 1000.0
+
+  // stdin is never written to; its EOF is purely a parent-died signal.
+  let watchdog = Thread {
+    while true {
+      if FileHandle.standardInput.availableData.isEmpty { exit(0) }
+    }
+  }
+  watchdog.start()
+
+  var last = NSPasteboard.general.changeCount
+  output("\(last)\n")  // baseline, so the caller can prime without a second call
+  while true {
+    let current = NSPasteboard.general.changeCount
+    if current != last {
+      last = current
+      output("\(current)\n")
+    }
+    Thread.sleep(forTimeInterval: interval)
+  }
+}
+
 func cmdTrust(prompt: Bool) {
   let trusted = isTrusted(prompt: prompt)
   output(trusted ? "trusted\n" : "untrusted\n")
@@ -456,6 +489,9 @@ case "selected-text":
     mute: !rest.contains("--no-mute"))
 case "changecount":
   cmdChangeCount()
+case "watch":
+  let index = rest.firstIndex(of: "--interval-ms").map { $0 + 1 }
+  cmdWatch(intervalMs: index.flatMap { $0 < rest.count ? Int(rest[$0]) : nil } ?? 300)
 case "trust":
   cmdTrust(prompt: rest.contains("--prompt"))
 case "decode-audio":
