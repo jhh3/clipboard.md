@@ -1,6 +1,73 @@
+import { useEffect, useState } from 'react'
 import type { ClipItem } from '@shared/types'
+import { invoke } from '../lib/ipc'
 import { fullDate } from '../lib/time'
 import { KindIcon, SparkIcon } from './icons'
+
+/** Full-resolution image data URLs, cached per item id (thumbs are capped at 320px). */
+const imageCache = new Map<number, string>()
+const IMAGE_CACHE_MAX = 24
+
+/** Debounced fetch of the full-res image for `id`; null while loading / unavailable. */
+function useFullImage(id: number | null): string | null {
+  const [src, setSrc] = useState<string | null>(() =>
+    id != null ? (imageCache.get(id) ?? null) : null
+  )
+
+  useEffect(() => {
+    if (id == null) {
+      setSrc(null)
+      return
+    }
+    const cached = imageCache.get(id)
+    if (cached) {
+      setSrc(cached)
+      return
+    }
+    setSrc(null)
+    let live = true
+    // Debounce: skip fetching while the user is arrowing through the list.
+    const t = window.setTimeout(() => {
+      invoke('item:image-data', id)
+        .then((data) => {
+          if (data) {
+            if (imageCache.size >= IMAGE_CACHE_MAX) {
+              const oldest = imageCache.keys().next().value
+              if (oldest != null) imageCache.delete(oldest)
+            }
+            imageCache.set(id, data)
+          }
+          if (live) setSrc(data)
+        })
+        .catch(() => {})
+    }, 160)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+  }, [id])
+
+  return src
+}
+
+function ImageContent({ item, dimmed }: { item: ClipItem; dimmed?: boolean }) {
+  const full = useFullImage(item.id)
+  const src = full ?? item.thumb
+  return (
+    <figure className={'preview-image' + (dimmed ? ' dimmed' : '')}>
+      {src ? (
+        <img src={src} alt={item.autoTitle ?? 'Clipboard image'} draggable={false} />
+      ) : (
+        <div className="image-missing">No preview available</div>
+      )}
+      {item.width != null && item.height != null && (
+        <figcaption>
+          {item.width} × {item.height} px{full == null && src != null ? ' · loading full…' : ''}
+        </figcaption>
+      )}
+    </figure>
+  )
+}
 
 export interface TransformView {
   output: string
@@ -28,20 +95,7 @@ function ContentBlock({ item, dimmed }: { item: ClipItem; dimmed?: boolean }) {
     )
   }
   if (item.kind === 'image') {
-    return (
-      <figure className={'preview-image' + (dimmed ? ' dimmed' : '')}>
-        {item.thumb ? (
-          <img src={item.thumb} alt={item.autoTitle ?? 'Clipboard image'} draggable={false} />
-        ) : (
-          <div className="image-missing">No preview available</div>
-        )}
-        {item.width != null && item.height != null && (
-          <figcaption>
-            {item.width} × {item.height} px
-          </figcaption>
-        )}
-      </figure>
-    )
+    return <ImageContent item={item} dimmed={dimmed} />
   }
   if (item.kind === 'code') {
     return (

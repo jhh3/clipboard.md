@@ -106,6 +106,7 @@ export type BuiltinTransformId =
   | 'img-png'
   | 'img-jpeg'
   | 'img-compress'
+  | 'img-redact'
 
 export interface TransformRequest {
   itemId: number
@@ -125,7 +126,7 @@ export interface TransformResult {
 }
 
 export type ProviderLane = 'subscription' | 'api'
-export type ProviderId = 'claude-cli' | 'codex-cli' | 'openai' | 'groq' | 'gemini'
+export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini'
 
 export interface ProviderStatus {
   id: ProviderId
@@ -154,6 +155,14 @@ export interface SmartCollection {
   count?: number
 }
 
+export interface SessionInfo {
+  id: number
+  title: string | null
+  startedAt: number
+  endedAt: number
+  count: number
+}
+
 export interface AppSettings {
   captureEnabled: boolean
   pollIntervalMs: number
@@ -170,6 +179,9 @@ export interface AppSettings {
     provider: ProviderId
   }
   embeddings: { enabled: boolean }
+  transcription: { provider: 'openai' | 'local' }
+  linkEnrichment: boolean
+  sessionsEnabled: boolean
   voiceSamples: string[]
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
@@ -195,25 +207,41 @@ export interface IpcInvokeMap {
   'item:delete': (id: number) => void
   'item:paste': (id: number, opts: { plain?: boolean }) => PasteOutcome
   'item:copy': (id: number) => void
+  /** Full-resolution image as a data URL (thumb in ClipItem is capped at 320px). */
+  'item:image-data': (id: number) => string | null
   'transform:run': (req: TransformRequest) => TransformResult
   'transform:commit': (req: TransformRequest & { output: string; outputKind: 'text' | 'image' }) => number
-  'transform:paste-output': (payload: { output: string; outputKind: 'text' | 'image' }) => PasteOutcome
+  'transform:paste-output': (payload: { output: string; outputKind: 'text' | 'image'; plain?: boolean }) => PasteOutcome
   'actions:list': (kind: 'text' | 'image') => SavedAction[]
   'actions:save': (action: SavedAction) => void
   'actions:delete': (id: string) => void
   'collections:list': () => SmartCollection[]
+  'sessions:list': () => SessionInfo[]
   'settings:get': () => AppSettings
   'settings:set': (patch: Partial<AppSettings>) => AppSettings
   'providers:status': () => ProviderStatus[]
   'enrichment:status': () => EnrichmentStatus
+  /** GNOME interactive screenshot portal (area/window/screen picker) -> new image clip id. */
+  'capture:screenshot': () => { ok: boolean; id?: number; error?: string }
+  /** Selection-rewrite flow: fetch the captured selection text (null if none). */
+  'rewrite:get': () => { text: string } | null
+  /** Replace the selection: clipboard + injection. */
+  'rewrite:apply': (payload: { output: string }) => PasteOutcome
+  /** Transcribe recorded audio (base64) -> text. */
+  'scratch:transcribe': (payload: { audioB64: string; mime: string }) => { ok: boolean; text?: string; error?: string }
+  /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
+  'scratch:save': (payload: { text: string; itemId?: number }) => number
   'window:hide': () => void
+  'window:open-settings': () => void
+  'window:open-scratchpad': (itemId?: number) => void
   'app:version': () => string
 }
 
 /** IPC events: main -> renderer (send). */
 export interface IpcEventMap {
   'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' }
-  'palette:shown': { collection?: string }
+  'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
+  'scratchpad:shown': { itemId?: number }
   'toast': { message: string; kind: 'info' | 'error' | 'success' }
 }
 
@@ -224,9 +252,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   secretAutoClear: false,
   retentionDays: 365,
   maxItems: 50000,
-  enrichment: { enabled: true, lane: 'subscription', provider: 'claude-cli' },
-  transforms: { provider: 'groq' },
+  enrichment: { enabled: true, lane: 'subscription', provider: 'claude-agent' },
+  transforms: { provider: 'openai' },
   embeddings: { enabled: true },
+  transcription: { provider: 'openai' },
+  linkEnrichment: true,
+  sessionsEnabled: true,
   voiceSamples: [],
   savedActions: [],
   smartCollections: [],

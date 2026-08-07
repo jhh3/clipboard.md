@@ -210,7 +210,10 @@ function filterClauses(q: SearchQuery): { where: string; params: Record<string, 
     params.kind = q.kind
   }
   if (q.collection === 'pinned') clauses.push('pinned = 1')
-  else if (q.collection) {
+  else if (q.collection?.startsWith('session:')) {
+    clauses.push('session_id = @sessionId')
+    params.sessionId = Number(q.collection.slice(8))
+  } else if (q.collection) {
     clauses.push(
       "(content_class = @coll OR EXISTS (SELECT 1 FROM json_each(items.tags) je WHERE je.value = @coll))"
     )
@@ -342,17 +345,44 @@ export function enrichQueueStats(): { queued: number; failed: number } {
   return { queued, failed }
 }
 
-/** Items with no embedding yet (for the background embedder). Secret items excluded. */
+/** Items with no embedding yet (for the background embedder). Secret items excluded;
+ *  images only once OCR text exists to embed. */
 export function itemsNeedingEmbedding(limit: number): ClipItem[] {
   const rows = getDb()
     .prepare(
       `SELECT * FROM items
-       WHERE embedded_at IS NULL AND secret = 0 AND kind != 'image' OR
-             (kind = 'image' AND embedded_at IS NULL AND secret = 0 AND ocr_text IS NOT NULL)
+       WHERE embedded_at IS NULL AND secret = 0
+         AND (kind != 'image' OR ocr_text IS NOT NULL)
        ORDER BY last_copied_at DESC LIMIT ?`
     )
     .all(limit) as ItemRow[]
   return rows.map(rowToItem)
+}
+
+export function sessionsList(): Array<{
+  id: number
+  title: string | null
+  startedAt: number
+  endedAt: number
+  count: number
+}> {
+  return (
+    getDb()
+      .prepare(
+        `SELECT s.id, s.title, s.started_at startedAt, s.ended_at endedAt,
+                (SELECT COUNT(*) FROM items i WHERE i.session_id = s.id) count
+         FROM sessions s
+         WHERE (SELECT COUNT(*) FROM items i WHERE i.session_id = s.id) > 0
+         ORDER BY s.ended_at DESC LIMIT 50`
+      )
+      .all() as Array<{
+      id: number
+      title: string | null
+      startedAt: number
+      endedAt: number
+      count: number
+    }>
+  )
 }
 
 /** Retention: delete unpinned items older than cutoff, and enforce max count. */

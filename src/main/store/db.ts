@@ -3,7 +3,7 @@ import * as sqliteVec from 'sqlite-vec'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 
-export const EMBEDDING_DIM = 256
+export const EMBEDDING_DIM = 384 // bge-small-en-v1.5
 
 let db: Database.Database | null = null
 let vecAvailable = false
@@ -75,15 +75,36 @@ const MIGRATIONS: string[] = [
   );
 
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `,
+  `
+  ALTER TABLE items ADD COLUMN session_id INTEGER;
+  CREATE INDEX idx_items_session ON items(session_id);
+  CREATE TABLE sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL
+  );
   `
 ]
 
-/** vec0 table lives outside migrations: created only when the extension loads. */
+/** vec0 table lives outside migrations: created only when the extension loads.
+ *  If the stored dimension differs (model change), drop and re-embed from scratch. */
 function ensureVecTable(d: Database.Database): void {
+  const dimRow = d.prepare("SELECT value FROM meta WHERE key = 'embedding_dim'").get() as
+    | { value: string }
+    | undefined
+  if (dimRow && Number(dimRow.value) !== EMBEDDING_DIM) {
+    d.exec('DROP TABLE IF EXISTS items_vec')
+    d.exec('UPDATE items SET embedded_at = NULL')
+  }
   d.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS items_vec USING vec0(
     item_id INTEGER PRIMARY KEY,
     embedding FLOAT[${EMBEDDING_DIM}]
   )`)
+  d.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('embedding_dim', ?)").run(
+    String(EMBEDDING_DIM)
+  )
 }
 
 /** Caller supplies the data directory (Electron main passes userData; tests pass a tmpdir). */

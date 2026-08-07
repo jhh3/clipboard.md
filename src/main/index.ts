@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, clipboard } from 'electron'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
 import { openDb } from './store/db'
@@ -6,9 +6,21 @@ import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
 import { registerIpc } from './ipc'
-import { createPaletteWindow, togglePalette, hidePalette, sendToPalette } from './windows'
-import { setupHotkeys, teardownHotkeys } from './hotkeys'
+import {
+  createPaletteWindow,
+  togglePalette,
+  showPalette,
+  hidePalette,
+  sendToPalette,
+  openScratchpadWindow
+} from './windows'
+import { setupHotkeys, routeArgs, teardownHotkeys, type HotkeyActions } from './hotkeys'
 import { getSettings } from './settings'
+import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
+import { startEmbeddings } from './embeddings'
+import { setAiTransform } from './transforms'
+import { complete } from './modelport'
+import { portalScreenshot } from './portal'
 
 // Linux: run under Xwayland deliberately. Mutter's Xwayland bridge is the one
 // clipboard path verified to work focuslessly on GNOME Wayland (DESIGN.md §2),
@@ -56,37 +68,89 @@ app.on('child-process-gone', (_e, details) => {
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
-  // Second instance exists only to wake the first (GNOME keybinding runs `--toggle`).
+  // Second instance exists only to wake the first (GNOME keybindings run `--<action>`).
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    togglePalette()
+  let pendingRewriteText: string | null = null
+  let capture!: CaptureService
+
+  const actions: HotkeyActions = {
+    toggle: () => togglePalette(),
+    rewrite: () => {
+      // PRIMARY selection (what's highlighted right now) via the Xwayland bridge.
+      const text =
+        process.platform === 'linux' ? clipboard.readText('selection') : clipboard.readText()
+      if (!text.trim()) {
+        showPalette()
+        return
+      }
+      pendingRewriteText = text
+      showPalette()
+      sendToPalette('palette:shown', { mode: 'rewrite', rewriteText: text })
+    },
+    screenshot: () => {
+      void (async () => {
+        const path = await portalScreenshot()
+        if (path) capture.ingestImageFile(path)
+      })()
+    },
+    scratchpad: () => openScratchpadWindow()
+  }
+
+  app.on('second-instance', (_e, argv) => {
+    routeArgs(argv, actions)
   })
 
   app.whenReady().then(async () => {
     openDb(join(app.getPath('userData'), 'data'))
 
-    const capture = new CaptureService({
-      onItem: () => sendToPalette('items:changed', { reason: 'captured' })
+    capture = new CaptureService({
+      onItem: (id, created) => {
+        if (created) assignSession(id, Date.now())
+        sendToPalette('items:changed', { reason: 'captured' })
+        void drainEnrichment()
+      }
     })
     const paste = new PasteService(capture, hidePalette)
 
-    registerIpc(paste)
+    // AI transforms: the "my voice" system context rides along when samples exist.
+    setAiTransform(async (prompt, content, imagePath) => {
+      const samples = getSettings().voiceSamples
+      const system =
+        samples.length > 0
+          ? `Samples of the user's writing voice:\n${samples.map((s) => `---\n${s}`).join('\n')}\n---`
+          : undefined
+      return complete('transforms', {
+        system,
+        prompt: `${prompt}\n\nINPUT:\n${content}`,
+        imagePath,
+        maxTokens: 4000
+      })
+    })
+
+    registerIpc(paste, capture, { getText: () => pendingRewriteText })
     createPaletteWindow()
     capture.start()
-    await setupHotkeys(togglePalette)
+    startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
+    startEmbeddings()
+    await setupHotkeys(actions)
 
     // Housekeeping: retention pass on launch and daily.
-    const runRetention = () => {
+    const runRetention = (): void => {
       const s = getSettings()
       applyRetention(s.retentionDays, s.maxItems)
     }
     runRetention()
     setInterval(runRetention, 24 * 60 * 60 * 1000)
 
-    // Started via keybinding with --toggle: show immediately.
-    if (process.argv.includes('--toggle')) togglePalette()
+    routeArgsOnLaunch()
   })
+
+  function routeArgsOnLaunch(): void {
+    if (process.argv.some((a) => ['--toggle', '--rewrite', '--capture', '--scratchpad'].includes(a))) {
+      routeArgs(process.argv, actions)
+    }
+  }
 
   app.on('will-quit', () => teardownHotkeys())
 

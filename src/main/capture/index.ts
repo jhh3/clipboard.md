@@ -1,4 +1,4 @@
-import { clipboard, app } from 'electron'
+import { clipboard, app, nativeImage } from 'electron'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -139,26 +139,39 @@ export class CaptureService {
 
     const img = clipboard.readImage()
     if (img.isEmpty()) return
-    const png = img.toPNG()
-    const sha = createHash('sha256').update(png).digest('hex')
-    const file = join(imagesDir(), `${sha}.png`)
-    if (!existsSync(file)) writeFileSync(file, png)
-
-    const { width, height } = img.getSize()
-    const thumb = img
-      .resize({ width: Math.min(320, width) })
-      .toDataURL()
-
-    const { id, created } = upsertClip({
-      kind: 'image',
-      content: file,
-      preview: `Image ${width}x${height}`,
-      thumb,
-      width,
-      height,
-      secret: false
-    })
-    if (created && settings.enrichment.enabled) enqueueEnrichment(id)
-    this.events.onItem(id, created)
+    const result = ingestNativeImage(img)
+    if (!result) return
+    this.events.onItem(result.id, result.created)
   }
+
+  /** Ingest an image file (e.g. a portal screenshot) as a first-class clip. */
+  ingestImageFile(path: string): { id: number; created: boolean } | null {
+    const img = nativeImage.createFromPath(path)
+    if (img.isEmpty()) return null
+    const result = ingestNativeImage(img)
+    if (result) this.events.onItem(result.id, result.created)
+    return result
+  }
+}
+
+function ingestNativeImage(img: Electron.NativeImage): { id: number; created: boolean } | null {
+  const png = img.toPNG()
+  const sha = createHash('sha256').update(png).digest('hex')
+  const file = join(imagesDir(), `${sha}.png`)
+  if (!existsSync(file)) writeFileSync(file, png)
+
+  const { width, height } = img.getSize()
+  const thumb = img.resize({ width: Math.min(320, width) }).toDataURL()
+
+  const result = upsertClip({
+    kind: 'image',
+    content: file,
+    preview: `Image ${width}x${height}`,
+    thumb,
+    width,
+    height,
+    secret: false
+  })
+  if (result.created && getSettings().enrichment.enabled) enqueueEnrichment(result.id)
+  return result
 }

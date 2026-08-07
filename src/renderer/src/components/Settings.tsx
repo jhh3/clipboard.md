@@ -1,0 +1,611 @@
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import type {
+  AppSettings,
+  ProviderId,
+  ProviderLane,
+  ProviderStatus,
+  SavedAction
+} from '@shared/types'
+import { invoke } from '../lib/ipc'
+import { useTheme } from '../hooks/useTheme'
+import { useToasts } from '../hooks/useToasts'
+import Toasts from './Toasts'
+import { PlusIcon, TrashIcon } from './icons'
+
+const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
+  { id: 'claude-agent', label: 'Claude (agent)' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'gemini', label: 'Gemini' }
+]
+
+const SECTIONS = [
+  ['general', 'General'],
+  ['providers', 'AI Providers'],
+  ['intelligence', 'Intelligence'],
+  ['privacy', 'Privacy'],
+  ['voice', 'Voice'],
+  ['actions', 'Actions']
+] as const
+
+type SectionId = (typeof SECTIONS)[number][0]
+
+// ── small building blocks ────────────────────────────────────────────────────
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={'toggle' + (checked ? ' on' : '')}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="toggle-knob" />
+    </button>
+  )
+}
+
+function Row({
+  label,
+  sub,
+  children
+}: {
+  label: string
+  sub?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-label">{label}</div>
+        {sub && <div className="set-sub">{sub}</div>}
+      </div>
+      <div className="set-control">{children}</div>
+    </div>
+  )
+}
+
+function NumberField({
+  value,
+  min,
+  max,
+  onCommit
+}: {
+  value: number
+  min: number
+  max: number
+  onCommit: (n: number) => void
+}) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+  const commit = () => {
+    const n = Number(draft)
+    if (Number.isFinite(n)) onCommit(Math.min(max, Math.max(min, Math.round(n))))
+    else setDraft(String(value))
+  }
+  return (
+    <input
+      className="set-input num"
+      value={draft}
+      inputMode="numeric"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+      }}
+    />
+  )
+}
+
+function ProviderSelect({
+  value,
+  onChange
+}: {
+  value: ProviderId
+  onChange: (p: ProviderId) => void
+}) {
+  return (
+    <select
+      className="set-input"
+      value={value}
+      onChange={(e) => onChange(e.target.value as ProviderId)}
+    >
+      {PROVIDERS.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function VoiceSample({
+  value,
+  onCommit,
+  onRemove
+}: {
+  value: string
+  onCommit: (v: string) => void
+  onRemove: () => void
+}) {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+  return (
+    <div className="voice-sample">
+      <textarea
+        className="set-textarea"
+        value={draft}
+        placeholder="A sample of your writing voice…"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== value) onCommit(draft)
+        }}
+      />
+      <button className="icon-btn" title="Remove sample" onClick={onRemove}>
+        <TrashIcon size={13} />
+      </button>
+    </div>
+  )
+}
+
+function ActionEditor({
+  action,
+  onSave,
+  onDelete
+}: {
+  action: SavedAction
+  onSave: (a: SavedAction) => void
+  onDelete: () => void
+}) {
+  const [draft, setDraft] = useState(action)
+  const commit = () => {
+    if (JSON.stringify(draft) !== JSON.stringify(action)) onSave(draft)
+  }
+  const toggleApplies = (k: 'text' | 'image') => {
+    const has = draft.appliesTo.includes(k)
+    const next: SavedAction = {
+      ...draft,
+      appliesTo: has ? draft.appliesTo.filter((x) => x !== k) : [...draft.appliesTo, k]
+    }
+    setDraft(next)
+    onSave(next)
+  }
+  return (
+    <div className="action-card">
+      <div className="action-card-row">
+        <input
+          className="set-input title-input"
+          value={draft.title}
+          placeholder="Action title"
+          onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+          onBlur={commit}
+        />
+        <input
+          className="set-input key-input"
+          value={draft.key ?? ''}
+          maxLength={1}
+          placeholder="key"
+          title="Single-key binding inside Action Mode"
+          onChange={(e) => setDraft({ ...draft, key: e.target.value || undefined })}
+          onBlur={commit}
+        />
+        {draft.type === 'prompt' ? (
+          <span className="action-ai">AI</span>
+        ) : (
+          <span className="builtin-badge">{draft.builtinId ?? 'builtin'}</span>
+        )}
+        <button className="icon-btn" title="Delete action" onClick={onDelete}>
+          <TrashIcon size={13} />
+        </button>
+      </div>
+      {draft.type === 'prompt' && (
+        <textarea
+          className="set-textarea"
+          value={draft.prompt ?? ''}
+          placeholder="Prompt — the clip content is provided as input"
+          onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
+          onBlur={commit}
+        />
+      )}
+      <div className="applies-group">
+        <span>Applies to</span>
+        {(['text', 'image'] as const).map((k) => (
+          <label key={k}>
+            <input
+              type="checkbox"
+              checked={draft.appliesTo.includes(k)}
+              onChange={() => toggleApplies(k)}
+            />{' '}
+            {k}
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── settings window ──────────────────────────────────────────────────────────
+
+export default function Settings() {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [providers, setProviders] = useState<ProviderStatus[]>([])
+  const [savedActions, setSavedActions] = useState<SavedAction[]>([])
+  const [section, setSection] = useState<SectionId>('general')
+  const [savedFlash, setSavedFlash] = useState(false)
+  const [newApp, setNewApp] = useState('')
+  const { toasts, addToast } = useToasts()
+  const theme = useTheme(settings?.theme)
+  const flashTimer = useRef(0)
+  const actionsInit = useRef(false)
+
+  useEffect(() => {
+    invoke('settings:get')
+      .then(setSettings)
+      .catch(() => addToast('Failed to load settings', 'error'))
+    invoke('providers:status')
+      .then(setProviders)
+      .catch(() => {})
+  }, [addToast])
+
+  // Saved actions get their own local list (persisted via actions:save/:delete,
+  // not settings:set) — seed it once from the loaded settings.
+  useEffect(() => {
+    if (settings && !actionsInit.current) {
+      actionsInit.current = true
+      setSavedActions(settings.savedActions)
+    }
+  }, [settings])
+
+  const flashSaved = useCallback(() => {
+    setSavedFlash(true)
+    window.clearTimeout(flashTimer.current)
+    flashTimer.current = window.setTimeout(() => setSavedFlash(false), 1200)
+  }, [])
+
+  /** Optimistic patch: apply locally, persist, then adopt the authoritative result. */
+  const patch = useCallback(
+    (p: Partial<AppSettings>) => {
+      setSettings((s) => (s ? { ...s, ...p } : s))
+      invoke('settings:set', p)
+        .then((next) => {
+          setSettings(next)
+          flashSaved()
+        })
+        .catch(() => addToast('Failed to save settings', 'error'))
+    },
+    [addToast, flashSaved]
+  )
+
+  const saveAction = useCallback(
+    (a: SavedAction) => {
+      setSavedActions((list) => list.map((x) => (x.id === a.id ? a : x)))
+      invoke('actions:save', a)
+        .then(flashSaved)
+        .catch(() => addToast('Failed to save action', 'error'))
+    },
+    [addToast, flashSaved]
+  )
+
+  const addAction = useCallback(() => {
+    const a: SavedAction = {
+      id: crypto.randomUUID(),
+      title: 'New AI action',
+      type: 'prompt',
+      prompt: '',
+      appliesTo: ['text']
+    }
+    setSavedActions((list) => [...list, a])
+    invoke('actions:save', a)
+      .then(flashSaved)
+      .catch(() => addToast('Failed to save action', 'error'))
+  }, [addToast, flashSaved])
+
+  const deleteAction = useCallback(
+    (id: string) => {
+      setSavedActions((list) => list.filter((x) => x.id !== id))
+      invoke('actions:delete', id)
+        .then(flashSaved)
+        .catch(() => addToast('Failed to delete action', 'error'))
+    },
+    [addToast, flashSaved]
+  )
+
+  if (!settings) {
+    return (
+      <div className="appwin" data-theme={theme}>
+        <div className="appwin-loading">Loading settings…</div>
+      </div>
+    )
+  }
+  const s = settings
+
+  const addIgnoreApp = () => {
+    const app = newApp.trim().toLowerCase()
+    if (!app || s.ignoreApps.includes(app)) return
+    patch({ ignoreApps: [...s.ignoreApps, app] })
+    setNewApp('')
+  }
+
+  return (
+    <div className="appwin settings-win" data-theme={theme}>
+      <header className="appwin-header">
+        <div className="appwin-title">Settings</div>
+        <span className={'saved-flash' + (savedFlash ? ' show' : '')}>Saved</span>
+      </header>
+      <div className="settings-body">
+        <nav className="settings-nav">
+          {SECTIONS.map(([id, label]) => (
+            <button
+              key={id}
+              className={section === id ? 'active' : ''}
+              onClick={() => setSection(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        <main className="settings-main">
+          {section === 'general' && (
+            <>
+              <h2 className="set-section-title">General</h2>
+              <p className="set-section-sub">Capture behavior, history limits, and appearance.</p>
+              <Row label="Capture clipboard" sub="Watch the clipboard and store new copies.">
+                <Toggle
+                  checked={s.captureEnabled}
+                  onChange={(v) => patch({ captureEnabled: v })}
+                />
+              </Row>
+              <Row label="Poll interval" sub="How often the clipboard is checked, in milliseconds.">
+                <NumberField
+                  value={s.pollIntervalMs}
+                  min={100}
+                  max={5000}
+                  onCommit={(n) => patch({ pollIntervalMs: n })}
+                />
+                <span className="set-unit">ms</span>
+              </Row>
+              <Row label="Retention" sub="Unpinned items older than this are pruned.">
+                <NumberField
+                  value={s.retentionDays}
+                  min={1}
+                  max={3650}
+                  onCommit={(n) => patch({ retentionDays: n })}
+                />
+                <span className="set-unit">days</span>
+              </Row>
+              <Row label="Max items" sub="Hard cap on stored history size.">
+                <NumberField
+                  value={s.maxItems}
+                  min={100}
+                  max={1000000}
+                  onCommit={(n) => patch({ maxItems: n })}
+                />
+              </Row>
+              <Row label="Theme">
+                <select
+                  className="set-input"
+                  value={s.theme}
+                  onChange={(e) => patch({ theme: e.target.value as AppSettings['theme'] })}
+                >
+                  <option value="system">System</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </Row>
+              <Row
+                label="Global hotkey"
+                sub="GNOME keybindings are managed in system Settings → Keyboard → Custom Shortcuts."
+              >
+                <kbd className="hotkey-kbd">{s.hotkeyHint}</kbd>
+              </Row>
+            </>
+          )}
+
+          {section === 'providers' && (
+            <>
+              <h2 className="set-section-title">AI Providers</h2>
+              <p className="set-section-sub">
+                Subscription lane uses your Claude / Codex plans via their local agents. API lane
+                calls OpenAI or Gemini directly with OPENAI_API_KEY / GEMINI_API_KEY from your
+                environment.
+              </p>
+              <Row label="Enrichment lane" sub="How titles, tags, and OCR are generated.">
+                <select
+                  className="set-input"
+                  value={s.enrichment.lane}
+                  onChange={(e) =>
+                    patch({
+                      enrichment: { ...s.enrichment, lane: e.target.value as ProviderLane }
+                    })
+                  }
+                >
+                  <option value="subscription">Subscription</option>
+                  <option value="api">API key</option>
+                </select>
+              </Row>
+              <Row label="Enrichment provider">
+                <ProviderSelect
+                  value={s.enrichment.provider}
+                  onChange={(p) => patch({ enrichment: { ...s.enrichment, provider: p } })}
+                />
+              </Row>
+              <Row
+                label="Transforms provider"
+                sub="Runs AI actions, free prompts, and rewrites. Lane follows the provider (no separate lane setting yet)."
+              >
+                <ProviderSelect
+                  value={s.transforms.provider}
+                  onChange={(p) => patch({ transforms: { provider: p } })}
+                />
+              </Row>
+              <div className="set-block">
+                <div className="set-label">Provider status</div>
+                <div className="provider-list">
+                  {providers.length === 0 && (
+                    <div className="set-sub">No provider status reported.</div>
+                  )}
+                  {providers.map((p) => (
+                    <div key={`${p.id}:${p.lane}`} className="provider-row">
+                      <span className={'dot' + (p.available ? ' ok' : '')} />
+                      <span className="provider-name">
+                        {PROVIDERS.find((x) => x.id === p.id)?.label ?? p.id}
+                      </span>
+                      <span className="provider-lane">{p.lane}</span>
+                      <span className="provider-detail" title={p.detail}>
+                        {p.detail}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {section === 'intelligence' && (
+            <>
+              <h2 className="set-section-title">Intelligence</h2>
+              <p className="set-section-sub">
+                What the AI pipeline does with new clips. Secrets are always excluded.
+              </p>
+              <Row label="Enrichment" sub="Auto-title, tag, and classify new clips.">
+                <Toggle
+                  checked={s.enrichment.enabled}
+                  onChange={(v) => patch({ enrichment: { ...s.enrichment, enabled: v } })}
+                />
+              </Row>
+              <Row label="Embeddings" sub="Semantic (hybrid) search over your history.">
+                <Toggle
+                  checked={s.embeddings.enabled}
+                  onChange={(v) => patch({ embeddings: { enabled: v } })}
+                />
+              </Row>
+              <Row label="Fetch & summarize copied links" sub="Enrich copied URLs with page titles and summaries.">
+                <Toggle checked={s.linkEnrichment} onChange={(v) => patch({ linkEnrichment: v })} />
+              </Row>
+              <Row label="Sessions" sub="Group bursts of copying into titled work sessions.">
+                <Toggle checked={s.sessionsEnabled} onChange={(v) => patch({ sessionsEnabled: v })} />
+              </Row>
+              <Row label="Transcription" sub="Speech-to-text engine for the scratchpad mic.">
+                <select
+                  className="set-input"
+                  value={s.transcription.provider}
+                  onChange={(e) =>
+                    patch({
+                      transcription: { provider: e.target.value as AppSettings['transcription']['provider'] }
+                    })
+                  }
+                >
+                  <option value="openai">OpenAI</option>
+                  <option value="local" disabled>
+                    Local (coming soon)
+                  </option>
+                </select>
+              </Row>
+            </>
+          )}
+
+          {section === 'privacy' && (
+            <>
+              <h2 className="set-section-title">Privacy</h2>
+              <p className="set-section-sub">
+                Content flagged as a secret is masked in the UI and is never indexed, enriched,
+                embedded, or sent to any AI provider.
+              </p>
+              <div className="set-block">
+                <div className="set-label">Ignored apps</div>
+                <div className="set-sub">Copies made in these apps are never captured.</div>
+                <div className="list-editor">
+                  {s.ignoreApps.map((app, i) => (
+                    <div key={`${app}:${i}`} className="list-item-row">
+                      <span className="list-item-text mono">{app}</span>
+                      <button
+                        className="icon-btn"
+                        title="Remove"
+                        onClick={() => patch({ ignoreApps: s.ignoreApps.filter((_, j) => j !== i) })}
+                      >
+                        <TrashIcon size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="list-add-row">
+                    <input
+                      className="set-input"
+                      value={newApp}
+                      placeholder="app name, e.g. keepassxc"
+                      onChange={(e) => setNewApp(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') addIgnoreApp()
+                      }}
+                    />
+                    <button className="btn" onClick={addIgnoreApp}>
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <Row
+                label="Auto-clear secrets"
+                sub="Clear flagged secrets from the system clipboard shortly after they are copied."
+              >
+                <Toggle
+                  checked={s.secretAutoClear}
+                  onChange={(v) => patch({ secretAutoClear: v })}
+                />
+              </Row>
+            </>
+          )}
+
+          {section === 'voice' && (
+            <>
+              <h2 className="set-section-title">Voice</h2>
+              <p className="set-section-sub">
+                Samples of your writing voice. Rewrite prompts use these so AI rewrites sound like
+                you, not like a press release.
+              </p>
+              <div className="list-editor">
+                {s.voiceSamples.map((sample, i) => (
+                  <VoiceSample
+                    key={i}
+                    value={sample}
+                    onCommit={(v) =>
+                      patch({ voiceSamples: s.voiceSamples.map((x, j) => (j === i ? v : x)) })
+                    }
+                    onRemove={() =>
+                      patch({ voiceSamples: s.voiceSamples.filter((_, j) => j !== i) })
+                    }
+                  />
+                ))}
+                <button className="btn" onClick={() => patch({ voiceSamples: [...s.voiceSamples, ''] })}>
+                  <PlusIcon size={12} /> Add sample
+                </button>
+              </div>
+            </>
+          )}
+
+          {section === 'actions' && (
+            <>
+              <h2 className="set-section-title">Actions</h2>
+              <p className="set-section-sub">
+                Saved actions appear in the palette's Action Mode (Tab). A single-key binding runs
+                the action instantly while the action input is empty.
+              </p>
+              {savedActions.map((a) => (
+                <ActionEditor
+                  key={a.id}
+                  action={a}
+                  onSave={saveAction}
+                  onDelete={() => deleteAction(a.id)}
+                />
+              ))}
+              <button className="btn primary" onClick={addAction}>
+                <PlusIcon size={12} /> Add AI action
+              </button>
+            </>
+          )}
+        </main>
+      </div>
+      <Toasts toasts={toasts} />
+    </div>
+  )
+}

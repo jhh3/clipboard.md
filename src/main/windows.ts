@@ -89,3 +89,51 @@ export function togglePalette(): void {
 export function sendToPalette(channel: string, payload: unknown): void {
   getPalette()?.webContents.send(channel, payload)
 }
+
+/** Settings and scratchpad are normal opaque windows sharing the SPA via hash routes. */
+let settingsWin: BrowserWindow | null = null
+let scratchWin: BrowserWindow | null = null
+
+function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
+  const win = new BrowserWindow({
+    width: w,
+    height: h,
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  if (process.env.ELECTRON_RENDERER_URL) {
+    win.loadURL(`${process.env.ELECTRON_RENDERER_URL}#${hash}`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), { hash })
+  }
+  win.once('ready-to-show', () => win.show())
+  return win
+}
+
+export function openSettingsWindow(): void {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.show()
+    settingsWin.focus()
+    return
+  }
+  settingsWin = createAuxWindow('settings', 820, 640)
+}
+
+export function openScratchpadWindow(itemId?: number): void {
+  if (scratchWin && !scratchWin.isDestroyed()) {
+    scratchWin.show()
+    scratchWin.focus()
+    scratchWin.webContents.send('scratchpad:shown', { itemId })
+    return
+  }
+  scratchWin = createAuxWindow('scratchpad', 720, 560)
+  scratchWin.webContents.once('did-finish-load', () => {
+    scratchWin?.webContents.send('scratchpad:shown', { itemId })
+  })
+}

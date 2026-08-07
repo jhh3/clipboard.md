@@ -1,13 +1,15 @@
-import type { RefObject } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { SearchIcon } from './icons'
 
 interface Props {
   value: string
   onChange: (v: string) => void
   inputRef: RefObject<HTMLInputElement | null>
+  /** Icon buttons rendered at the right edge (screenshot / scratchpad / settings). */
+  actions?: ReactNode
 }
 
-export default function SearchBar({ value, onChange, inputRef }: Props) {
+export default function SearchBar({ value, onChange, inputRef, actions }: Props) {
   return (
     <div className="search-bar">
       <SearchIcon className="search-icon" size={15} />
@@ -24,6 +26,7 @@ export default function SearchBar({ value, onChange, inputRef }: Props) {
         autoCapitalize="off"
         autoFocus
       />
+      {actions != null && <div className="search-actions">{actions}</div>}
       <kbd className="search-esc">esc</kbd>
     </div>
   )

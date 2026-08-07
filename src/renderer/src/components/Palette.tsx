@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
-  AppSettings,
   ClipItem,
   SavedAction,
+  SessionInfo,
   SmartCollection,
   PasteOutcome,
   TransformRequest
 } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
 import { fuzzyFilter } from '../lib/fuzzy'
+import { sessionLabel } from '../lib/time'
 import { useSearch } from '../hooks/useSearch'
 import { useKeymap } from '../hooks/useKeymap'
+import { useTheme } from '../hooks/useTheme'
+import { useToasts } from '../hooks/useToasts'
 import SearchBar from './SearchBar'
 import FilterChips, { type Chip } from './FilterChips'
 import ItemList from './ItemList'
 import PreviewPane, { type TransformView } from './PreviewPane'
 import ActionBar from './ActionBar'
-import Toasts, { type Toast } from './Toasts'
+import Toasts from './Toasts'
+import { CameraIcon, GearIcon, PencilIcon, SparkIcon } from './icons'
 
 const KIND_CHIPS: Chip[] = [
   { id: 'all', label: 'All' },
@@ -34,27 +38,37 @@ type Mode =
   | { name: 'action'; item: ClipItem }
   | { name: 'result'; item: ClipItem; req: TransformRequest; out: TransformOutput; label: string }
 
+/**
+ * Selection-rewrite mini-flow. The captured selection has no clip id, so on
+ * entry we materialize it via 'scratch:save' and run transforms against that id.
+ */
+type RewriteState = {
+  text: string
+  itemId: number | null
+  out: (TransformOutput & { label: string }) | null
+}
+
 const HIDE_DELAY_MS = 900
-const TOAST_MS = 2500
 
 export default function Palette() {
   // ── core state ────────────────────────────────────────────────────────────
   const [query, setQuery] = useState('')
   const [activeChipId, setActiveChipId] = useState('all')
   const [collections, setCollections] = useState<SmartCollection[]>([])
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sel, setSel] = useState(0)
   const [mode, setMode] = useState<Mode>({ name: 'normal' })
+  const [rewrite, setRewrite] = useState<RewriteState | null>(null)
   const [actions, setActions] = useState<SavedAction[]>([])
   const [actionInput, setActionInput] = useState('')
   const [actionHighlight, setActionHighlight] = useState(0)
   const [running, setRunning] = useState(false)
-  const [toasts, setToasts] = useState<Toast[]>([])
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [shownTick, setShownTick] = useState(0)
+  const { toasts, addToast } = useToasts()
+  const theme = useTheme()
 
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const actionInputRef = useRef<HTMLInputElement | null>(null)
-  const toastSeq = useRef(0)
 
   // ── chips / filters ───────────────────────────────────────────────────────
   const chips = useMemo<Chip[]>(
@@ -70,7 +84,18 @@ export default function Palette() {
     ],
     [collections]
   )
-  const activeChip = chips.find((c) => c.id === activeChipId) ?? chips[0]
+  const sessionChips = useMemo<Chip[]>(
+    () =>
+      sessions.map((s) => ({
+        id: `ses:${s.id}`,
+        label: sessionLabel(s),
+        collection: `session:${s.id}`,
+        count: s.count
+      })),
+    [sessions]
+  )
+  const allChips = useMemo(() => [...chips, ...sessionChips], [chips, sessionChips])
+  const activeChip = allChips.find((c) => c.id === activeChipId) ?? allChips[0]
 
   // ── search ────────────────────────────────────────────────────────────────
   const { items, total, searchMode, refresh } = useSearch(
@@ -96,39 +121,19 @@ export default function Palette() {
     setSel((s) => (visible.length === 0 ? 0 : Math.min(s, visible.length - 1)))
   }, [visible.length])
 
-  // ── toasts ────────────────────────────────────────────────────────────────
-  const addToast = useCallback((message: string, kind: Toast['kind'] = 'info') => {
-    const id = ++toastSeq.current
-    setToasts((ts) => [...ts, { id, message, kind }])
-    window.setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), TOAST_MS)
-  }, [])
-
-  // ── collections + settings ────────────────────────────────────────────────
+  // ── collections + sessions ────────────────────────────────────────────────
   const loadCollections = useCallback(() => {
     invoke('collections:list')
       .then(setCollections)
+      .catch(() => {})
+    invoke('sessions:list')
+      .then(setSessions)
       .catch(() => {})
   }, [])
 
   useEffect(() => {
     loadCollections()
   }, [loadCollections])
-
-  useEffect(() => {
-    let settingsTheme: AppSettings['theme'] = 'system'
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const apply = () =>
-      setTheme(settingsTheme === 'system' ? (mq.matches ? 'dark' : 'light') : settingsTheme)
-    apply()
-    invoke('settings:get')
-      .then((s) => {
-        settingsTheme = s.theme
-        apply()
-      })
-      .catch(() => {})
-    mq.addEventListener('change', apply)
-    return () => mq.removeEventListener('change', apply)
-  }, [])
 
   // ── main-process events ───────────────────────────────────────────────────
   useEffect(() => {
@@ -141,7 +146,25 @@ export default function Palette() {
       setMode({ name: 'normal' })
       setQuery('')
       setSel(0)
-      setActiveChipId(p.collection ? (p.collection === 'pinned' ? 'pinned' : `col:${p.collection}`) : 'all')
+      setActionInput('')
+      setActionHighlight(0)
+      if (p.mode === 'rewrite' && p.rewriteText) {
+        // Rewrite mini-flow: materialize the selection as a clip so transforms
+        // (which need an itemId) can run against it.
+        const text = p.rewriteText
+        setRewrite({ text, itemId: null, out: null })
+        invoke('actions:list', 'text')
+          .then(setActions)
+          .catch(() => setActions([]))
+        invoke('scratch:save', { text })
+          .then((id) => setRewrite((r) => (r && r.text === text ? { ...r, itemId: id } : r)))
+          .catch(() => addToast('Could not stage the selection', 'error'))
+      } else {
+        setRewrite(null)
+        setActiveChipId(
+          p.collection ? (p.collection === 'pinned' ? 'pinned' : `col:${p.collection}`) : 'all'
+        )
+      }
       setShownTick((t) => t + 1)
     })
     return () => {
@@ -153,6 +176,11 @@ export default function Palette() {
 
   // ── focus management ──────────────────────────────────────────────────────
   useEffect(() => {
+    if (rewrite) {
+      if (rewrite.out) (document.activeElement as HTMLElement | null)?.blur()
+      else actionInputRef.current?.focus()
+      return
+    }
     if (mode.name === 'normal') {
       searchInputRef.current?.focus()
     } else if (mode.name === 'action') {
@@ -160,7 +188,7 @@ export default function Palette() {
     } else {
       ;(document.activeElement as HTMLElement | null)?.blur()
     }
-  }, [mode.name, shownTick])
+  }, [mode.name, shownTick, rewrite])
 
   // ── paste / copy / mutate ─────────────────────────────────────────────────
   const hideSoon = useCallback(() => {
@@ -294,7 +322,7 @@ export default function Palette() {
   )
 
   const pasteResult = useCallback(
-    async (m: Extract<Mode, { name: 'result' }>) => {
+    async (m: Extract<Mode, { name: 'result' }>, plain: boolean) => {
       // Commit is fire-and-forget: the derived clip lands in history either way.
       void invoke('transform:commit', {
         ...m.req,
@@ -302,7 +330,7 @@ export default function Palette() {
         outputKind: m.out.outputKind
       }).catch(() => {})
       try {
-        handleOutcome(await invoke('transform:paste-output', m.out))
+        handleOutcome(await invoke('transform:paste-output', { ...m.out, plain }))
       } catch {
         addToast('Paste failed', 'error')
       }
@@ -328,6 +356,80 @@ export default function Palette() {
     [addToast, hideSoon]
   )
 
+  // ── screenshot / scratchpad / settings entry points ───────────────────────
+  const captureScreenshot = useCallback(async () => {
+    try {
+      const res = await invoke('capture:screenshot')
+      if (res.ok) addToast('Captured to history', 'success')
+      else addToast(res.error ?? 'Screenshot cancelled', 'error')
+    } catch {
+      addToast('Screenshot failed', 'error')
+    }
+  }, [addToast])
+
+  const openScratchpad = useCallback(() => {
+    const item = selectedItem
+    // Only hand over textual clips: images/files/secrets open a blank pad.
+    const textual = item && !item.secret && item.kind !== 'image' && item.kind !== 'files'
+    void invoke('window:open-scratchpad', textual ? item.id : undefined).catch(() => {})
+  }, [selectedItem])
+
+  const openSettings = useCallback(() => {
+    void invoke('window:open-settings').catch(() => {})
+  }, [])
+
+  // ── rewrite mini-flow ─────────────────────────────────────────────────────
+  const runRewrite = useCallback(
+    async (partial: { actionId?: string; freePrompt?: string }, label: string) => {
+      if (!rewrite) return
+      if (rewrite.itemId == null) {
+        addToast('Still staging the selection — try again in a moment', 'info')
+        return
+      }
+      const itemId = rewrite.itemId
+      setRunning(true)
+      try {
+        const res = await invoke('transform:run', { itemId, ...partial })
+        if (!res.ok || res.output == null) {
+          addToast(res.error ?? 'Transform failed', 'error')
+          return
+        }
+        const output = res.output
+        const outputKind = res.outputKind ?? 'text'
+        // Fire-and-forget commit so the rewrite lands in history as a derived clip.
+        void invoke('transform:commit', { itemId, ...partial, output, outputKind }).catch(() => {})
+        setRewrite((r) => (r ? { ...r, out: { output, outputKind, label } } : r))
+      } catch {
+        addToast('Transform failed', 'error')
+      } finally {
+        setRunning(false)
+      }
+    },
+    [rewrite, addToast]
+  )
+
+  const applyRewrite = useCallback(async () => {
+    const out = rewrite?.out
+    if (!out) return
+    try {
+      const outcome = await invoke('rewrite:apply', { output: out.output })
+      setRewrite(null)
+      if (outcome.method === 'injected') {
+        void invoke('window:hide')
+      } else {
+        addToast(outcome.message ?? 'Copied — press Ctrl+V to replace the selection', 'info')
+        hideSoon()
+      }
+    } catch {
+      addToast('Apply failed', 'error')
+    }
+  }, [rewrite, addToast, hideSoon])
+
+  const exitRewrite = useCallback(() => {
+    setRewrite(null)
+    void invoke('window:hide')
+  }, [])
+
   // ── chip cycling ──────────────────────────────────────────────────────────
   const cycleKind = useCallback(() => {
     const idx = KIND_CHIPS.findIndex((c) => c.id === activeChipId)
@@ -336,16 +438,62 @@ export default function Palette() {
 
   const cycleChip = useCallback(
     (dir: 1 | -1) => {
-      const idx = chips.findIndex((c) => c.id === activeChipId)
-      const next = (idx + dir + chips.length) % chips.length
-      setActiveChipId(chips[next].id)
+      const idx = allChips.findIndex((c) => c.id === activeChipId)
+      const next = (idx + dir + allChips.length) % allChips.length
+      setActiveChipId(allChips[next].id)
     },
-    [chips, activeChipId]
+    [allChips, activeChipId]
   )
 
   // ── keyboard model ────────────────────────────────────────────────────────
   useKeymap((e) => {
     const mod = e.ctrlKey || e.metaKey
+
+    // Screenshot works from any palette mode.
+    if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
+      e.preventDefault()
+      void captureScreenshot()
+      return
+    }
+
+    if (rewrite) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        exitRewrite()
+        return
+      }
+      if (running) return
+      if (rewrite.out) {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          void applyRewrite()
+        }
+        return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        if (filteredActions.length > 0) {
+          const a = filteredActions[actionHighlight] ?? filteredActions[0]
+          void runRewrite({ actionId: a.id }, a.title)
+        } else if (actionInput.trim()) {
+          const prompt = actionInput.trim()
+          void runRewrite({ freePrompt: prompt }, prompt)
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActionHighlight((h) => Math.min(h + 1, Math.max(0, filteredActions.length - 1)))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActionHighlight((h) => Math.max(h - 1, 0))
+      } else if (!actionInput && !mod && !e.altKey && e.key.length === 1) {
+        const bound = actions.find((a) => a.key && a.key.toLowerCase() === e.key.toLowerCase())
+        if (bound) {
+          e.preventDefault()
+          void runRewrite({ actionId: bound.id }, bound.title)
+        }
+      }
+      return
+    }
 
     if (mode.name === 'result') {
       if (e.key === 'Escape') {
@@ -356,7 +504,7 @@ export default function Palette() {
         void copyResult(mode)
       } else if (e.key === 'Enter') {
         e.preventDefault()
-        void pasteResult(mode)
+        void pasteResult(mode, e.shiftKey)
       }
       return
     }
@@ -432,6 +580,11 @@ export default function Palette() {
       cycleKind()
       return
     }
+    if (mod && e.key.toLowerCase() === 'e') {
+      e.preventDefault()
+      openScratchpad()
+      return
+    }
     if (mod && e.key === 'ArrowRight') {
       e.preventDefault()
       cycleChip(1)
@@ -480,13 +633,108 @@ export default function Palette() {
           ]
         : [
             ['↵', 'paste result'],
+            ['⇧↵', 'paste plain'],
             ['⌃↵', 'copy result'],
             ['esc', 'back']
           ]
 
+  // ── rewrite mini-flow render ──────────────────────────────────────────────
+  if (rewrite) {
+    const rewriteHints: Array<[string, string]> = rewrite.out
+      ? [
+          ['↵', 'replace selection'],
+          ['esc', 'cancel']
+        ]
+      : [
+          ['↵', 'run'],
+          ['↑↓', 'choose'],
+          ['key', 'instant action'],
+          ['esc', 'cancel']
+        ]
+    return (
+      <div className="palette rewrite-mode" data-theme={theme}>
+        <div className="rewrite-header">
+          <SparkIcon className="action-spark" size={14} />
+          <span className="rewrite-title">Rewrite selection</span>
+          {rewrite.itemId == null && <span className="rewrite-staging">staging…</span>}
+          <kbd>esc</kbd>
+        </div>
+        <div className="rewrite-source">
+          <pre className="preview-text dimmed">{rewrite.text}</pre>
+        </div>
+        {rewrite.out ? (
+          <div className="rewrite-result">
+            <div className="result-header">
+              <SparkIcon className="result-spark" size={13} />
+              <span className="result-label" title={rewrite.out.label}>
+                {rewrite.out.label}
+              </span>
+              <span className="result-badge">rewritten</span>
+            </div>
+            <pre className="preview-text result-output">{rewrite.out.output}</pre>
+          </div>
+        ) : (
+          <>
+            <ActionBar
+              input={actionInput}
+              onInput={(v) => {
+                setActionInput(v)
+                setActionHighlight(0)
+              }}
+              actions={filteredActions}
+              highlight={actionHighlight}
+              onHighlight={setActionHighlight}
+              onRunAction={(a) => void runRewrite({ actionId: a.id }, a.title)}
+              running={running}
+              inputRef={actionInputRef}
+            />
+            <div className="rewrite-fill" />
+          </>
+        )}
+        <div className="footer-bar">
+          <div className="footer-hints">
+            {rewriteHints.map(([k, label]) => (
+              <span key={k} className="hint">
+                <kbd>{k}</kbd> {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <Toasts toasts={toasts} />
+      </div>
+    )
+  }
+
   return (
     <div className="palette" data-theme={theme}>
-      <SearchBar value={query} onChange={setQuery} inputRef={searchInputRef} />
+      <SearchBar
+        value={query}
+        onChange={setQuery}
+        inputRef={searchInputRef}
+        actions={
+          <>
+            <button
+              className="icon-btn"
+              title="Capture screenshot · takes GNOME's picker (Ctrl+Shift+S)"
+              onClick={() => void captureScreenshot()}
+              tabIndex={-1}
+            >
+              <CameraIcon size={15} />
+            </button>
+            <button
+              className="icon-btn"
+              title="Open scratchpad (Ctrl+E)"
+              onClick={openScratchpad}
+              tabIndex={-1}
+            >
+              <PencilIcon size={15} />
+            </button>
+            <button className="icon-btn" title="Settings" onClick={openSettings} tabIndex={-1}>
+              <GearIcon size={15} />
+            </button>
+          </>
+        }
+      />
       <FilterChips
         chips={chips}
         activeId={activeChip.id}
@@ -495,6 +743,28 @@ export default function Palette() {
           setActiveChipId(id)
         }}
       />
+      {sessionChips.length > 0 && (
+        <div className="sessions-row">
+          <span className="sessions-label">Sessions</span>
+          <div className="sessions-scroll">
+            {sessionChips.map((c) => (
+              <button
+                key={c.id}
+                className={'chip session-chip' + (c.id === activeChipId ? ' active' : '')}
+                onClick={() => {
+                  if (mode.name !== 'normal') setMode({ name: 'normal' })
+                  // Toggle off back to All when the active session is clicked again.
+                  setActiveChipId(c.id === activeChipId ? 'all' : c.id)
+                }}
+                tabIndex={-1}
+              >
+                {c.label}
+                {c.count != null && c.count > 0 && <span className="chip-count">{c.count}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="main-area">
         <div className="list-pane">
           <ItemList

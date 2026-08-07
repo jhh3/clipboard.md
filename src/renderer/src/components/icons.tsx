@@ -123,6 +123,61 @@ export function SearchIcon({ className, size }: { className?: string; size?: num
   )
 }
 
+export function CameraIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <path d="M2 5.5h2.4l1.1-1.7h5L11.6 5.5H14v7.5H2z" />
+      <circle cx="8" cy="9" r="2.2" />
+    </Svg>
+  )
+}
+
+export function PencilIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <path d="M3 13l.8-3L10.4 3.4a1.4 1.4 0 0 1 2 0l.2.2a1.4 1.4 0 0 1 0 2L6 12.2z" />
+      <path d="M9.4 4.4l2.2 2.2" />
+    </Svg>
+  )
+}
+
+export function GearIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <circle cx="8" cy="8" r="2.1" />
+      <path d="M8 1.8v2.1M8 12.1v2.1M1.8 8h2.1M12.1 8h2.1M3.6 3.6l1.5 1.5M10.9 10.9l1.5 1.5M12.4 3.6l-1.5 1.5M5.1 10.9l-1.5 1.5" />
+    </Svg>
+  )
+}
+
+export function MicIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <rect x="6" y="1.8" width="4" height="7.2" rx="2" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
+      <path d="M8 12v2.2" />
+    </Svg>
+  )
+}
+
+export function TrashIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <path d="M3 4.5h10" />
+      <path d="M6.3 4.5V3h3.4v1.5" />
+      <path d="M4.5 4.5l.6 9h5.8l.6-9" />
+    </Svg>
+  )
+}
+
+export function PlusIcon({ className, size }: { className?: string; size?: number }) {
+  return (
+    <Svg className={className} size={size}>
+      <path d="M8 3v10M3 8h10" />
+    </Svg>
+  )
+}
+
 export function SparkIcon({ className, size }: { className?: string; size?: number }) {
   return (
     <Svg className={className} size={size}>

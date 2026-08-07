@@ -65,6 +65,16 @@ export async function runTransform(req: TransformRequest): Promise<TransformResu
     const id = action.builtinId!
     if (id.startsWith('img-')) {
       if (item.kind !== 'image') return { ok: false, error: 'Not an image' }
+      if (id === 'img-redact') {
+        const { autoRedact } = await import('./imageops')
+        const { png, count } = await autoRedact(item.content)
+        if (count === 0) return { ok: false, error: 'No sensitive-looking text found to redact' }
+        return {
+          ok: true,
+          output: `data:image/png;base64,${png.toString('base64')}`,
+          outputKind: 'image'
+        }
+      }
       const img = nativeImage.createFromPath(item.content)
       if (img.isEmpty()) return { ok: false, error: 'Image unreadable' }
       const out =

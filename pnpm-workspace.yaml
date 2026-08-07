@@ -7,6 +7,10 @@ allowBuilds:
   esbuild: true
   electron-winstaller: true
   sharp: true
+  onnxruntime-node: true
+  protobufjs: true
+  '@anthropic-ai/claude-agent-sdk': true
+  tesseract.js: true
 
 overrides:
   # usocket (dbus-next's optional native socket lib) calls util.isError, removed in

@@ -64,6 +64,22 @@ Validation:
 - [ ] After palette hides (`app.hide()`), focus returns to the previous app before the
       CGEvent fires (add small delay if needed; record the reliable delay).
 
+## 5.5 New since first draft (all landed on Linux — validate on macOS)
+
+- [ ] **ModelPort**: Agent SDK + Codex SDK subscription lanes work on the Mac's logins
+      (`~/.claude/.credentials.json`, `~/.codex/auth.json`); OpenAI/Gemini via env keys.
+- [ ] **Enrichment**: background auto-title/tags/class; image OCR+describe via vision.
+- [ ] **Embeddings**: utilityProcess worker (onnxruntime-node arm64) downloads
+      bge-small on first run; hybrid search returns.
+- [ ] **Hotkeys**: ⌘⇧V palette, ⌘⇧R rewrite, ⌘⇧S screenshot (`screencapture -i` needed
+      on macOS — portal path is Linux-only, adapt `capture:screenshot`), ⌘⇧E scratchpad.
+- [ ] **Selection rewrite**: macOS needs the Swift helper's selected-text chain
+      (AX → Cmd+C fallback) instead of PRIMARY; `rewrite` action in hotkeys.ts.
+- [ ] **Scratchpad dictation**: mic permission prompt (NSMicrophoneUsageDescription is
+      in electron-builder.yml), MediaRecorder → OpenAI transcription.
+- [ ] **Image auto-redact**: tesseract.js + sharp on arm64.
+- [ ] **Packaging**: `pnpm build:mac` produces a dmg; asarUnpack list covers native deps.
+
 ## 6. Later milestones (skip until Linux side ships them)
 
 - [ ] Apple Vision OCR via `@cherrystudio/mac-system-ocr` in a child process (offline OCR

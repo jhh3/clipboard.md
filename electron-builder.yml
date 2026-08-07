@@ -1,0 +1,42 @@
+appId: md.clipboard.app
+productName: clipboard.md
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+  - '**/node_modules/sqlite-vec*/**'
+  - '**/node_modules/sharp/**'
+  - '**/node_modules/@img/**'
+  - '**/node_modules/onnxruntime-node/**'
+  - '**/node_modules/tesseract.js*/**'
+  - '**/node_modules/@anthropic-ai/claude-agent-sdk/**'
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  synopsis: Local-first AI clipboard manager
+  desktop:
+    entry:
+      StartupWMClass: clipboard.md
+
+deb:
+  afterInstall: null
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Dictation in the scratchpad records audio to transcribe it.
+    NSAppleEventsUsageDescription: Used to paste into the previously focused app.
+  # Signing/notarization configured on the Mac side (see MACOS-VALIDATION.md).
+  identity: null
+
+npmRebuild: true

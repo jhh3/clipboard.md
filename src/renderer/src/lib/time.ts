@@ -12,6 +12,16 @@ export function relTime(ts: number, now: number = Date.now()): string {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/** Chip label for a work session: "Tue 14:02 — stripe debugging" (or just the stamp when untitled). */
+export function sessionLabel(s: { title: string | null; startedAt: number }): string {
+  const d = new Date(s.startedAt)
+  const stamp =
+    d.toLocaleDateString(undefined, { weekday: 'short' }) +
+    ' ' +
+    d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  return s.title ? `${stamp} — ${s.title}` : stamp
+}
+
 /** Full human timestamp for the preview metadata footer. */
 export function fullDate(ts: number): string {
   return new Date(ts).toLocaleString(undefined, {

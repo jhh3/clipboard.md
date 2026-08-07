@@ -152,3 +152,24 @@ export async function portalPaste(): Promise<boolean> {
 export async function portalWarmup(): Promise<boolean> {
   return ensureSession()
 }
+
+/**
+ * Interactive screenshot via the Screenshot portal: GNOME shows its own
+ * area/window/screen picker and returns a file:// URI of the capture.
+ */
+export async function portalScreenshot(): Promise<string | null> {
+  try {
+    const b = await getBus()
+    const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
+    const shot = obj.getInterface('org.freedesktop.portal.Screenshot')
+    const results = await portalCall(shot, 'Screenshot', [''], {
+      interactive: new dbus.Variant('b', true)
+    })
+    const uri = results.uri?.value as string | undefined
+    if (!uri?.startsWith('file://')) return null
+    return decodeURIComponent(uri.slice(7))
+  } catch (err) {
+    console.error('[portal] screenshot failed:', err)
+    return null
+  }
+}

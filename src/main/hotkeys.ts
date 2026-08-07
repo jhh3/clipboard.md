@@ -4,53 +4,89 @@ import { promisify } from 'util'
 
 const execFileP = promisify(execFile)
 
+export interface HotkeyActions {
+  toggle: () => void
+  rewrite: () => void
+  screenshot: () => void
+  scratchpad: () => void
+}
+
 /**
  * Hotkey strategy per platform:
  *  - darwin: Electron globalShortcut (reliable).
  *  - linux/GNOME Wayland: globalShortcut is dead (mutter ≥49 killed Xwayland grabs).
- *    We register a GNOME custom keybinding that runs `<binary> --toggle`; the second
- *    instance hits our single-instance lock and wakes the palette.
+ *    We register GNOME custom keybindings that run `<binary> --<action>`; the second
+ *    instance hits our single-instance lock and wakes the running app.
  */
-export async function setupHotkeys(toggle: () => void): Promise<void> {
+export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
   if (process.platform === 'darwin') {
-    globalShortcut.register('Command+Shift+V', toggle)
+    globalShortcut.register('Command+Shift+V', actions.toggle)
+    globalShortcut.register('Command+Shift+R', actions.rewrite)
+    globalShortcut.register('Command+Shift+S', actions.screenshot)
+    globalShortcut.register('Command+Shift+E', actions.scratchpad)
     return
   }
-  await ensureGnomeKeybinding()
+  await ensureGnomeKeybindings()
 }
 
-const KEYBIND_PATH =
-  '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipboard-md/'
+interface Binding {
+  slug: string
+  name: string
+  binding: string
+  arg: string
+}
+
+const BINDINGS: Binding[] = [
+  { slug: 'clipboard-md', name: 'clipboard.md — palette', binding: '<Control><Alt>v', arg: '--toggle' },
+  { slug: 'clipboard-md-rewrite', name: 'clipboard.md — rewrite selection', binding: '<Control><Alt>r', arg: '--rewrite' },
+  { slug: 'clipboard-md-shot', name: 'clipboard.md — screenshot', binding: '<Control><Alt>s', arg: '--capture' },
+  { slug: 'clipboard-md-scratch', name: 'clipboard.md — scratchpad', binding: '<Control><Alt>e', arg: '--scratchpad' }
+]
+
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
-const ENTRY_SCHEMA = `org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBIND_PATH}`
 
 async function gsettings(args: string[]): Promise<string> {
   const { stdout } = await execFileP('gsettings', args)
   return stdout.trim()
 }
 
-/** Idempotently register Ctrl+Alt+V → `<app> --toggle` as a GNOME custom shortcut. */
-export async function ensureGnomeKeybinding(): Promise<boolean> {
+export async function ensureGnomeKeybindings(): Promise<boolean> {
   try {
     const current = await gsettings(['get', ...LIST_KEY.split(' ')])
-    if (!current.includes(KEYBIND_PATH)) {
-      const list: string[] = current === '@as []' ? [] : JSON.parse(current.replace(/'/g, '"'))
-      list.push(KEYBIND_PATH)
-      const ser = '[' + list.map((p) => `'${p}'`).join(', ') + ']'
-      await gsettings(['set', ...LIST_KEY.split(' '), ser])
+    const list: string[] = current === '@as []' ? [] : JSON.parse(current.replace(/'/g, '"'))
+    let changed = false
+    for (const b of BINDINGS) {
+      const path = `/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
+      if (!list.includes(path)) {
+        list.push(path)
+        changed = true
+      }
     }
-    // In dev, process.execPath is electron; route through the CLI wrapper if packaged.
-    const cmd = app.isPackaged
-      ? `${process.execPath} --toggle`
-      : `${process.execPath} ${app.getAppPath()} --toggle`
-    await gsettings(['set', ...ENTRY_SCHEMA.split(' '), 'name', 'clipboard.md'])
-    await gsettings(['set', ...ENTRY_SCHEMA.split(' '), 'command', cmd])
-    await gsettings(['set', ...ENTRY_SCHEMA.split(' '), 'binding', '<Control><Alt>v'])
+    if (changed) {
+      await gsettings(['set', ...LIST_KEY.split(' '), '[' + list.map((p) => `'${p}'`).join(', ') + ']'])
+    }
+    const cmdBase = app.isPackaged
+      ? process.execPath
+      : `${process.execPath} ${app.getAppPath()}`
+    for (const b of BINDINGS) {
+      const schema = `org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
+      await gsettings(['set', ...schema.split(' '), 'name', b.name])
+      await gsettings(['set', ...schema.split(' '), 'command', `${cmdBase} ${b.arg}`])
+      await gsettings(['set', ...schema.split(' '), 'binding', b.binding])
+    }
     return true
   } catch (err) {
-    console.error('[hotkeys] failed to register GNOME keybinding:', err)
+    console.error('[hotkeys] failed to register GNOME keybindings:', err)
     return false
   }
+}
+
+/** Route a second-instance argv to the matching action. */
+export function routeArgs(argv: string[], actions: HotkeyActions): void {
+  if (argv.includes('--rewrite')) actions.rewrite()
+  else if (argv.includes('--capture')) actions.screenshot()
+  else if (argv.includes('--scratchpad')) actions.scratchpad()
+  else actions.toggle()
 }
 
 export function teardownHotkeys(): void {

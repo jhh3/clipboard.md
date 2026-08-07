@@ -25,6 +25,8 @@ export const BUILTIN_ACTIONS: SavedAction[] = [
     prompt: 'Extract all URLs, one per line. Output only the URLs.' },
   { id: 'b-img-png', title: 'Convert to PNG', type: 'builtin', builtinId: 'img-png', appliesTo: ['image'] },
   { id: 'b-img-jpg', title: 'Convert to JPEG', type: 'builtin', builtinId: 'img-jpeg', appliesTo: ['image'] },
+  { id: 'b-img-redact', title: 'Auto-redact sensitive text', key: 'r', type: 'builtin', builtinId: 'img-redact', appliesTo: ['image'] },
+  { id: 'b-img-compress', title: 'Compress (JPEG 70)', type: 'builtin', builtinId: 'img-compress', appliesTo: ['image'] },
   { id: 'ai-img-describe', title: 'Describe image', type: 'prompt', appliesTo: ['image'],
     prompt: 'Describe this image concisely, then list any text it contains.' }
 ]
@@ -51,6 +53,11 @@ export function getSettings(): AppSettings {
     cached = { ...DEFAULT_SETTINGS }
   }
   if (cached!.savedActions.length === 0) cached!.savedActions = BUILTIN_ACTIONS
+  else {
+    // Merge in any newly shipped builtin actions the stored settings predate.
+    const have = new Set(cached!.savedActions.map((a) => a.id))
+    for (const b of BUILTIN_ACTIONS) if (!have.has(b.id)) cached!.savedActions.push(b)
+  }
   if (cached!.smartCollections.length === 0) cached!.smartCollections = DEFAULT_COLLECTIONS
   return cached!
 }

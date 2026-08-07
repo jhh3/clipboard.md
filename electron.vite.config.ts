@@ -10,7 +10,18 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        external: ['electron', 'better-sqlite3', 'sqlite-vec', 'zod', 'dbus-next'],
+        external: [
+          'electron',
+          'better-sqlite3',
+          'sqlite-vec',
+          'zod',
+          'dbus-next',
+          'sharp',
+          'tesseract.js',
+          '@huggingface/transformers',
+          '@anthropic-ai/claude-agent-sdk',
+          '@openai/codex-sdk'
+        ],
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts')
