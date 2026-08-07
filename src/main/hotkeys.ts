@@ -1,6 +1,7 @@
 import { app, globalShortcut } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 
 const execFileP = promisify(execFile)
 
@@ -79,9 +80,9 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
     if (changed) {
       await gsettings(['set', ...LIST_KEY.split(' '), '[' + list.map((p) => `'${p}'`).join(', ') + ']'])
     }
-    const cmdBase = app.isPackaged
-      ? process.execPath
-      : `${process.execPath} ${app.getAppPath()}`
+    const launch = app.isPackaged
+      ? `"${process.execPath}"`
+      : `"${process.execPath}" "${app.getAppPath()}"`
     for (const b of BINDINGS) {
       const schema = `org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
       const key = schema.split(' ')
@@ -92,8 +93,16 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
         /^'|'$/g,
         ''
       )
+      // Prefer gdbus (a few ms) over launching Electron (~1-3s, and GNOME re-runs
+      // the command on every key repeat). Fall back to the binary if the app isn't
+      // running yet, so a cold hotkey press still starts it.
+      const action = b.arg.replace(/^--/, '')
+      const gdbus =
+        `gdbus call --session --dest ${DBUS_NAME} --object-path ${DBUS_PATH} ` +
+        `--method ${DBUS_IFACE}.Trigger ${action}`
+      const command = `sh -c '${gdbus} >/dev/null 2>&1 || ${launch} ${b.arg}'`
       await gsettings(['set', ...key, 'name', b.name])
-      await gsettings(['set', ...key, 'command', `${cmdBase} ${b.arg}`])
+      await gsettings(['set', ...key, 'command', command])
       // Write the default only when the slot is empty, already ours, or still holds
       // a default we used to ship (so a bad pick can be corrected). A binding the
       // user chose themselves is never touched.

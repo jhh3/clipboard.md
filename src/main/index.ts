@@ -29,6 +29,7 @@ import { complete } from './modelport'
 import { portalScreenshot } from './portal'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
+import { startDbusService } from './dbusService'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
@@ -129,7 +130,58 @@ if (!gotLock) {
 } else {
   let pendingRewriteText: string | null = null
   let capture!: CaptureService
+
+  /**
+   * Push-to-talk built on key REPEAT.
+   *
+   * A held hotkey makes GNOME fire the binding over and over (~every 30-50ms).
+   * Treating each fire as a toggle made the HUD flash open/closed dozens of times
+   * a second and shredded the recording. Instead: the first fire starts recording,
+   * subsequent fires are "still holding", and when they stop arriving the key has
+   * been released — so we stop and transcribe.
+   *
+   * A single fire with no repeats is a tap, which latches recording on until the
+   * next tap. That keeps long dictations practical without holding a chord.
+   */
   let dictating = false
+  let dictateRepeats = 0
+  let lastDictateTrigger = 0
+  let holdWatchdog: ReturnType<typeof setInterval> | null = null
+  const HOLD_GAP_MS = 350
+
+  const endDictation = (): void => {
+    dictating = false
+    dictateRepeats = 0
+    if (holdWatchdog) clearInterval(holdWatchdog)
+    holdWatchdog = null
+    stopDictation()
+  }
+
+  const dictateTrigger = (): void => {
+    const now = Date.now()
+    const sinceLast = now - lastDictateTrigger
+    lastDictateTrigger = now
+
+    if (!dictating) {
+      dictating = true
+      dictateRepeats = 0
+      showDictationHud()
+      holdWatchdog = setInterval(() => {
+        if (!dictating) return
+        const idle = Date.now() - lastDictateTrigger
+        // Repeats stopped: the key came up. Only meaningful once we've actually
+        // seen repeats — a tap latches instead.
+        if (dictateRepeats >= 2 && idle > HOLD_GAP_MS) endDictation()
+      }, 100)
+      return
+    }
+
+    if (sinceLast < HOLD_GAP_MS) {
+      dictateRepeats++ // still held
+      return
+    }
+    endDictation() // a deliberate second press: stop a latched recording
+  }
 
   const actions: HotkeyActions = {
     toggle: () => togglePalette(),
@@ -152,17 +204,7 @@ if (!gotLock) {
       })()
     },
     scratchpad: () => openScratchpadWindow(),
-    dictate: () => {
-      // GNOME custom keybindings only fire on key-down, so the hotkey toggles:
-      // press to start, press again (or Esc) to stop and transcribe.
-      if (dictating) {
-        dictating = false
-        stopDictation()
-      } else {
-        dictating = true
-        showDictationHud()
-      }
-    }
+    dictate: () => dictateTrigger()
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -207,9 +249,17 @@ if (!gotLock) {
       getText: () => pendingRewriteText,
       onDictationDone: () => {
         dictating = false
+        dictateRepeats = 0
+        if (holdWatchdog) clearInterval(holdWatchdog)
+        holdWatchdog = null
         hideDictationHud()
       }
     })
+    // Hotkeys talk to us over D-Bus so a held key doesn't cold-start Electron.
+    if (process.platform === 'linux') {
+      await startDbusService((action) => routeArgs([`--${action}`], actions))
+    }
+
     createPaletteWindow()
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
