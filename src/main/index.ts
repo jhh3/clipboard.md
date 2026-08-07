@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, powerMonitor } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
@@ -192,6 +192,22 @@ if (!gotLock) {
       if (s.embeddings.enabled) startEmbeddings()
       else stopEmbeddings()
     })
+
+    // Don't capture while the session is locked or asleep. This kills idle wakeups
+    // and, more importantly, stops recording clips the user can't see happening.
+    powerMonitor.on('suspend', () => {
+      console.log('[power] suspending capture')
+      capture.stop()
+    })
+    powerMonitor.on('resume', () => {
+      // Let the compositor and X settle before re-attaching.
+      setTimeout(() => {
+        console.log('[power] resuming capture')
+        capture.start()
+      }, 5000)
+    })
+    powerMonitor.on('lock-screen', () => capture.stop())
+    powerMonitor.on('unlock-screen', () => capture.start())
 
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
     if (!isAutostartEnabled()) setAutostart(true)

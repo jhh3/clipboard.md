@@ -41,6 +41,7 @@ function imagesDir(): string {
 export class CaptureService {
   private timer: ReturnType<typeof setInterval> | null = null
   private reading = false
+  private paused = false
   private lastHash = ''
   /** Hash the service itself just wrote (paste/copy actions) — skip one echo. */
   private selfHash = ''
@@ -52,6 +53,7 @@ export class CaptureService {
   }
 
   start(): void {
+    this.paused = false
     if (this.timer) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     void this.tick(true)
@@ -122,6 +124,7 @@ export class CaptureService {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    this.paused = true
   }
 
   /** Re-read settings that were only sampled at startup (poll interval, enabled). */
@@ -155,6 +158,7 @@ export class CaptureService {
     // Never request a selection we own — that is asking ourselves for data, and a
     // self-request that stalls takes the compositor's bridge down with it.
     if (weOwnClipboard()) return
+    if (this.paused) return // session locked or suspended
     this.reading = true
     try {
       if (!getSettings().captureEnabled) return
