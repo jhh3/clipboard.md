@@ -1,4 +1,5 @@
-import { existsSync } from 'fs'
+import { app } from 'electron'
+import { existsSync, mkdirSync } from 'fs'
 import { createRequire } from 'module'
 import { dirname, join, sep } from 'path'
 
@@ -17,6 +18,26 @@ import { dirname, join, sep } from 'path'
  */
 
 const require_ = createRequire(__filename)
+
+/**
+ * A neutral working directory for spawned AI agents.
+ *
+ * Both subscription CLIs are coding agents: they inherit our TCC identity and, given
+ * an interesting cwd, will discover project settings and walk the filesystem. That
+ * produced a stream of "clipboard.md would like to access your Documents/Desktop/…"
+ * prompts attributed to us — for work that is only ever "summarise this clipboard
+ * text". Pointing them at an empty scratch directory under userData means there is
+ * nothing to find and nothing to ask about.
+ *
+ * Enrichment passes clip content in the prompt and never needs the user's files. The
+ * one exception is image enrichment, which allows the Read tool and passes an
+ * absolute path into our own images directory.
+ */
+export function agentScratchDir(): string {
+  const dir = join(app.getPath('userData'), 'agent-scratch')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
 
 /**
  * Map a path inside app.asar to its app.asar.unpacked twin, when one exists.

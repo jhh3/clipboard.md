@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
-import { resolveVendoredCli } from './nativeCli'
+import { resolveVendoredCli, agentScratchDir } from './nativeCli'
 
 /**
  * Subscription lane #1: Claude Agent SDK, riding the user's existing Claude Code
@@ -41,6 +41,12 @@ export async function claudeAgentComplete(req: PortRequest): Promise<string> {
     prompt,
     options: {
       ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+      // Keep the agent out of the user's files: an empty scratch dir, and none of the
+      // ambient CLAUDE.md/settings discovery that walking a real project implies.
+      // Without this it inherits our TCC identity and triggers folder-access prompts
+      // for work that only ever needs the text in the prompt.
+      cwd: agentScratchDir(),
+      settingSources: [],
       // Fast by default: haiku unless the user picks otherwise in Settings.
       model: getSettings().models['claude-agent'] ?? 'haiku',
       systemPrompt:

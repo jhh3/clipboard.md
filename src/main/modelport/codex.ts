@@ -3,7 +3,7 @@ import { constants } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
-import { resolveVendoredCli } from './nativeCli'
+import { resolveVendoredCli, agentScratchDir } from './nativeCli'
 
 /**
  * Subscription lane #2: Codex SDK riding the user's ChatGPT-plan Codex login
@@ -33,7 +33,14 @@ async function newThread(): Promise<import('@openai/codex-sdk').Thread> {
   // app.asar and get ENOTDIR. Undefined in dev leaves its own resolution alone.
   const codexPathOverride = resolveVendoredCli('@openai/codex', 'codex')
   const codex = new Codex(codexPathOverride ? { codexPathOverride } : {})
-  return codex.startThread({ sandboxMode: 'read-only', skipGitRepoCheck: true })
+  // workingDirectory for the same reason as the Claude lane: a coding agent pointed at
+  // an interesting directory inherits our TCC identity and makes macOS ask the user
+  // for folder access on our behalf. Enrichment only ever needs the prompt text.
+  return codex.startThread({
+    sandboxMode: 'read-only',
+    skipGitRepoCheck: true,
+    workingDirectory: agentScratchDir()
+  })
 }
 
 export async function codexComplete(req: PortRequest): Promise<string> {
