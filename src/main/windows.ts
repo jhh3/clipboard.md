@@ -241,7 +241,12 @@ export function showDictationHud(): void {
       resizable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
-      focusable: false, // never steal focus from the app you're dictating into
+      // Focusable so the HUD receives the KEY-UP that ends push-to-talk. The global
+      // hotkey only ever reports key-down (GNOME custom keybindings and Electron's
+      // globalShortcut both), so hold-to-talk is only observable once some window
+      // of ours has the keyboard. Focus returns to the target app when we hide, so
+      // the paste still lands where the user was typing.
+      focusable: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -264,7 +269,8 @@ export function showDictationHud(): void {
     x: Math.round(area.x + (area.width - W) / 2),
     y: Math.round(area.y + area.height - H - 80)
   })
-  win.showInactive()
+  win.show()
+  win.focus()
   // On the first invocation the renderer hasn't subscribed yet — a send here would
   // be dropped and the first hotkey press would silently do nothing.
   if (win.webContents.isLoading()) {

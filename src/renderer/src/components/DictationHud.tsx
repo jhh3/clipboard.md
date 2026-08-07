@@ -61,6 +61,10 @@ export default function DictationHud() {
   const levelsRef = useRef<Float32Array>(new Float32Array(BAR_COUNT))
   const rafRef = useRef(0)
   const timerRef = useRef(0)
+  /** When this recording began — distinguishes a tap (latch) from a hold (PTT). */
+  const startedAtRef = useRef(0)
+  const latchedRef = useRef(false)
+  const [latched, setLatched] = useState(false)
 
   // ── finishing ─────────────────────────────────────────────────────────────
 
@@ -203,7 +207,11 @@ export default function DictationHud() {
   }, [])
 
   useEffect(() => {
-    const offStart = on('dictation:start', () => void start())
+    const offStart = on('dictation:start', () => {
+      startedAtRef.current = Date.now()
+      latchedRef.current = false
+      void start()
+    })
     const offStop = on('dictation:stop', () => stop())
     return () => {
       offStart()
@@ -211,12 +219,37 @@ export default function DictationHud() {
     }
   }, [start, stop])
 
-  // Defensive only: the window is non-focusable, so this will not normally fire.
+  /**
+   * Push-to-talk. The global hotkey can only report key-DOWN, so the release is
+   * observed here: this window takes focus when it appears, and the first key-up
+   * of the trigger combo ends the recording.
+   *
+   * Tapping the hotkey instead of holding it latches recording on, so a quick
+   * press still works like a toggle — you don't have to keep a chord held down
+   * for a long dictation.
+   */
+  const LATCH_THRESHOLD_MS = 400
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (!recRef.current || latchedRef.current) return
+      const isTrigger = e.key === ' ' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta'
+      if (!isTrigger) return
+      if (Date.now() - startedAtRef.current < LATCH_THRESHOLD_MS) {
+        latchedRef.current = true // tapped, not held — stay recording
+        setLatched(true)
+        return
+      }
+      stop()
+    }
+    window.addEventListener('keyup', onKeyUp)
+    return () => window.removeEventListener('keyup', onKeyUp)
+  }, [stop])
+
   useKeymap((e) => {
     if (e.key !== 'Escape') return
     e.preventDefault()
     if (recRef.current) {
-      chunksRef.current = []
+      chunksRef.current = [] // discard: Esc cancels rather than transcribes
       stop()
     } else {
       finish()
@@ -300,9 +333,13 @@ export default function DictationHud() {
             {phase.fellBack ? (
               // Not an error: recording is running, just on a different mic.
               <span className="hud-note">Chosen mic unavailable — using the system default</span>
+            ) : latched ? (
+              <>
+                <kbd>⌃⌥Space</kbd> to stop · <kbd>Esc</kbd> cancel
+              </>
             ) : (
               <>
-                <kbd>⌃⌥D</kbd> again to stop · <kbd>Esc</kbd> cancel
+                Release <kbd>⌃⌥Space</kbd> to finish · <kbd>Esc</kbd> cancel
               </>
             )}
           </div>
