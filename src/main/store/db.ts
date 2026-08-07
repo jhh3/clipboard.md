@@ -91,10 +91,12 @@ const MIGRATIONS: string[] = [
 /** vec0 table lives outside migrations: created only when the extension loads.
  *  If the stored dimension differs (model change), drop and re-embed from scratch. */
 function ensureVecTable(d: Database.Database): void {
-  const dimRow = d.prepare("SELECT value FROM meta WHERE key = 'embedding_dim'").get() as
-    | { value: string }
-    | undefined
-  if (dimRow && Number(dimRow.value) !== EMBEDDING_DIM) {
+  // Introspect the real declared dimension — meta keys can lie after upgrades.
+  const tbl = d
+    .prepare("SELECT sql FROM sqlite_master WHERE name = 'items_vec'")
+    .get() as { sql: string } | undefined
+  const declared = tbl ? Number(/FLOAT\[(\d+)\]/i.exec(tbl.sql)?.[1] ?? 0) : null
+  if (declared !== null && declared !== EMBEDDING_DIM) {
     d.exec('DROP TABLE IF EXISTS items_vec')
     d.exec('UPDATE items SET embedded_at = NULL')
   }

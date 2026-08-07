@@ -94,7 +94,12 @@ async function drainEmbeddings(): Promise<void> {
       if (!text.trim()) continue
       const vec = await embed(text)
       if (vec) {
-        storeEmbedding(item.id, vec)
+        try {
+          storeEmbedding(item.id, vec)
+        } catch (err) {
+          console.error('[embed] store failed:', err)
+          break
+        }
         ready = true
       } else break // worker cold or erroring; retry next tick
     }

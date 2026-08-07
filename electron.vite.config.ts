@@ -24,7 +24,8 @@ export default defineConfig({
         ],
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
-          embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts')
+          embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts'),
+          mcp: resolve(__dirname, 'src/mcp/server.ts')
         }
       }
     }

@@ -47,6 +47,18 @@ Settings:
   Gemini. Sub-second; used for interactive transforms by default (~$0.20/month at
   normal usage).
 
+## MCP server (agents ⇄ your clipboard)
+
+A built-in stdio MCP server lets local agent sessions search and use your clipboard:
+
+```bash
+claude mcp add clipboard -- node /path/to/clipboard.md/out/main/mcp.mjs
+```
+
+Tools: `clipboard_search`, `clipboard_recent`, `clipboard_get`, `clipboard_sessions`,
+`clipboard_copy`. Secret-flagged clips are refused at the tool layer. Works even when
+the app isn't running (reads the same SQLite file; WAL keeps concurrent readers safe).
+
 ## Development
 
 ```bash
