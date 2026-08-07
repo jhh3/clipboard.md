@@ -102,6 +102,8 @@ export const ACTION_FLAGS = BINDINGS.map((b) => b.arg)
 
 /** Route a second-instance argv to the matching action. */
 export function routeArgs(argv: string[], actions: HotkeyActions): void {
+  // --background is a session-start launch: stay resident, show nothing.
+  if (argv.includes('--background')) return
   if (argv.includes('--rewrite')) actions.rewrite()
   else if (argv.includes('--capture')) actions.screenshot()
   else if (argv.includes('--scratchpad')) actions.scratchpad()

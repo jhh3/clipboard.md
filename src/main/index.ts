@@ -199,6 +199,7 @@ if (!gotLock) {
   function routeArgsOnLaunch(): void {
     // Any known action flag routes; routeArgs itself defaults to toggle. (A hand-
     // maintained list here silently dropped --dictate on cold start.)
+    if (process.argv.includes('--background')) return // autostart: no UI
     if (process.argv.some((a) => a.startsWith('--') && ACTION_FLAGS.includes(a))) {
       routeArgs(process.argv, actions)
     }
