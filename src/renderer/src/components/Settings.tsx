@@ -59,8 +59,8 @@ function useSyncedDraft<T>(
   useEffect(() => {
     if (el.current && document.activeElement === el.current) return
     setDraft(value)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value])
+    // `el` is a stable ref — value is the only real dependency.
+  }, [value, el])
   return [draft, setDraft]
 }
 

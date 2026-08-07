@@ -1424,6 +1424,18 @@ textarea {
   color: var(--danger);
 }
 
+.set-note.ok {
+  color: var(--success);
+}
+
+/* Control + explanatory note stacked in the right-hand column of a set-row. */
+.set-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
 .set-block {
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
@@ -1657,8 +1669,13 @@ select.set-input option {
     background 120ms ease;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   border-color: var(--border-strong);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .btn.primary {

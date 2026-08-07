@@ -15,7 +15,7 @@ import { execFile } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { openDb } from '../main/store/db'
+import { openReadOnlyDb } from '../main/store/db'
 import { searchKeyword, getItem, sessionsList } from '../main/store/items'
 
 function dataDir(): string {
@@ -45,7 +45,9 @@ async function main(): Promise<void> {
     console.error(`clipboard.md database not found at ${dir} — run the app once first.`)
     process.exit(1)
   }
-  openDb(dir)
+  // Read-only, and deliberately NOT via openDb(): that runs migrations, and a
+  // stale MCP binary racing the running app must never mutate its schema.
+  openReadOnlyDb(dir)
 
   const server = new McpServer({ name: 'clipboard-md', version: '0.1.0' })
 

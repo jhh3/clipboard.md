@@ -203,6 +203,20 @@ export function openDb(dataDir: string): Database.Database {
   return db
 }
 
+/**
+ * Open the same database read-only, without running migrations. Used by the MCP
+ * server, which may be an older binary than the running app: letting it migrate
+ * (or worse, drop and rebuild the vector table) would corrupt the app's schema
+ * underneath it.
+ */
+export function openReadOnlyDb(dataDir: string): Database.Database {
+  if (db) return db
+  db = new Database(join(dataDir, 'clipboard.db'), { readonly: true })
+  db.pragma('busy_timeout = 5000')
+  loadVecExtension(db)
+  return db
+}
+
 export function getDb(): Database.Database {
   if (!db) throw new Error('DB not opened')
   return db
