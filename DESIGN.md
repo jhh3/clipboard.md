@@ -50,6 +50,21 @@ never a subscription of its own.
 | macOS (all of the above) | Solved territory: NSPasteboard `changeCount` poll @500ms, `globalShortcut` works, CGEvent Cmd+V via small Swift helper + one-time Accessibility permission (the Maccy pattern). |
 | Available AI auth | `OPENAI_API_KEY`, `GEMINI_API_KEY` in env (Groq deliberately unused); `claude` + `codex` CLIs subscription-authed, consumed via their SDKs. |
 
+### Operational invariants (added after the mature-Electron-app review)
+- **Electron is pinned exactly** (43.2.0, no caret). 43.3.0 broke the AppIndicator
+  tray on GNOME 50 Wayland (electron#52674). Re-test tray + globalShortcut on every bump.
+- **Native modules must be verified in a PACKAGED build**, not just `pnpm dev`:
+  sqlite-vec silently failed to load from inside app.asar, disabling semantic search
+  in the installed app only.
+- **The UI process never owns the X clipboard and never reads it synchronously**
+  (see the freeze story below).
+- **Nothing heavy runs on the main thread**: SQL is synchronous but cheap; embeddings
+  and ASR live in utilityProcesses that unload when idle.
+- **Logs are redacted at the transport**, never by caller discipline, and clipboard
+  events log metadata only — never content.
+- **Fail closed**: an uncaught exception in main closes the DB and exits rather than
+  limping on with an open write handle.
+
 ### Hard-won rules (do not regress these)
 1. **Never own the X clipboard from the UI process.** It can freeze the user's whole desktop.
 2. **Never read the clipboard synchronously on the UI thread.** Same blast radius, smaller fuse.
