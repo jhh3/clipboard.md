@@ -140,4 +140,153 @@ anything you could not verify. If you change shared code, re-run `pnpm test` and
 
 ---
 
-*No macOS validation runs recorded yet.*
+## 2026-08-07 — first run on real hardware
+
+**Machine:** macOS 26.5.2 (25F84), Apple M2 Pro, arm64, single built-in display.
+**Electron:** 43.2.0 (unchanged). **Node:** v22.18.0. **pnpm:** 10.18.0 (now pinned).
+**Build verified:** both `pnpm dev` and a packaged `dist/mac-arm64/clipboard.md.app`.
+
+Branch `macos-buildout`. Every claim below says how it was checked. Anything not
+listed under "Verified" was **not** verified — see §Could not verify.
+
+### Commits
+
+| SHA | What |
+|---|---|
+| `bc217ed` | Pin pnpm 10 — the workspace config was being silently ignored |
+| `736cbfd` | Add the macOS side-car helper (paste, AX selection, frontmost, audio decode) |
+| `51626a0` | Wire macOS to the helper: paste, selection, source app, screenshot, audio |
+| `9219a6f` | macOS window behaviour, packaging and login item |
+| `5f5cd27` | Report global-shortcut registration failures instead of swallowing them |
+| `f308935` | Make macOS capture event-driven instead of polling the whole pasteboard |
+| `efc23b1` | Fix three bugs that only appear in a packaged build |
+
+### The blocker nobody expected: install was broken
+
+`pnpm install` **failed outright** on a clean checkout (exit 7). `pnpm-workspace.yaml`
+is written in pnpm 10 syntax but nothing pinned the package manager, so pnpm 9.4 read
+neither `overrides` nor the build allowlist: the `usocket: '-'` override never applied,
+and pnpm 9 injected its own bundled node-gyp 7.1.2, which assigns to a `process.config`
+that Node 22 freezes → `TypeError: Cannot assign to read only property 'cflags'`.
+Fixed by adding `packageManager`. Also renamed `allowBuilds:` (not a pnpm key — every
+listed package had its install script skipped) to `onlyBuiltDependencies:`.
+
+### Verified
+
+**Baseline** — clean `pnpm install` on arm64; better-sqlite3 rebuilds for Electron 43;
+sqlite-vec, onnxruntime-node, sharp and sherpa-onnx all resolve `darwin-arm64` binaries.
+`pnpm test` 64 passing (3 added). `pnpm typecheck` clean. `pnpm build:mac` produces a
+428MB dmg.
+
+**Swift helper** (`src/native/mac/clipmd-helper.swift`, built by `build.sh`) — universal
+`arm64 + x86_64`, verified with `lipo -archs`; the script now asserts both slices,
+because `swiftc` honours only the *last* `-target` and two of them silently yields a
+single-arch binary (it did: the first build was x86_64-only).
+
+- `frontmost` → `WezTerm\tcom.github.wez.wezterm`. Captured clips now record
+  `source_app` ("Google Chrome") — it was `NULL` for everything before.
+- `paste` → **5/5** ⌘V landed in a real NSTextView.
+- `selected-text` tier 1 (AX) → correct text, **~25ms** steady state, pasteboard
+  `changeCount` unchanged (non-destructive).
+- `selected-text` tier 2 (menu-bar Copy) → correct text, **73ms**, user's clipboard
+  restored intact.
+- Worst case (all three tiers run, real ⌘C posted): the user's clipboard content is
+  **preserved**. Checked explicitly with a sentinel.
+- Nothing selected → clean failure, no hang. 1576ms → 561ms after using a greyed-out
+  Copy item as proof of "no selection".
+- `decode-audio` → aiff, m4a/AAC and wav decode to 16k mono. **WebM/Opus does not** —
+  "no audio track" — which is why the renderer had to change.
+- `watch` → emits a baseline then exactly one line per change; **0.0% CPU, 1.6MB RSS**
+  idle; exits when stdin closes, no stray process left behind.
+
+**Three bugs found by measuring, not reading** (all would have shipped):
+
+1. Posting a CGEvent and exiting immediately **drops the keystroke** — the window
+   server delivers asynchronously and a short-lived CLI dies first. 0ms drain: 0/3
+   pastes landed. 5ms: 3/3. Now 30ms.
+2. `kAXSelectedText` on the **system-wide** element returns nothing for a background
+   CLI caller. Tier 1 would never have fired; every rewrite would have silently paid
+   for a destructive pasteboard round trip. Per-application element works.
+3. The capture loop re-encoded the whole clipboard **every 400ms**: 55.7ms per poll
+   with a screenshot on the pasteboard (~14% of a core, indefinitely, on the main
+   thread). Now event-driven via the helper's `watch`.
+
+**Packaged build** — helper at `Contents/Resources/clipmd-helper`, executable,
+universal. `LSUIElement` true; Accessibility/Screen-Recording/microphone usage strings
+present; entitlements applied. All native modules unpacked from the asar.
+sqlite-vec **loads** (the `CREATE VIRTUAL TABLE … USING vec0` succeeded) and
+embeddings are written — 3 clips → 3 vectors. Capture reports
+`event-driven (pasteboard watcher); polling disabled`. 5/5 global shortcuts register.
+Zero errors in the log.
+
+**Three more bugs that only exist when packaged** (all invisible in `pnpm dev`):
+
+1. **Semantic search was dead on macOS.** `electron-builder.yml` pruned
+   `onnxruntime-node/bin/napi-v6/{darwin,win32}/**` from the *top-level* `files` list,
+   which every target shares — so the macOS build deleted the binding the macOS app
+   loads. Now pruned per-platform.
+2. **Both subscription lanes failed on every request** with `spawn ENOTDIR`: the SDKs
+   derived their CLI path from inside `app.asar`, which is a file, so `spawn` got
+   ENOTDIR. Now resolved to the unpacked path explicitly.
+3. **Background embedding stopped ~5s after every launch** — platform-neutral, see
+   below.
+
+**Dictation decode chain** — proven end to end without a mic: Chromium's own
+MediaRecorder `audio/mp4;codecs=mp4a.40.2` output (5436 bytes) → helper AVFoundation
+decode → 1.06s of 16k mono WAV. This is the ffmpeg replacement, closed.
+
+### Could not verify — needs a human at the keyboard
+
+Be sceptical of anything here; none of it was watched working.
+
+- **Multi-display and Spaces.** Only one display is attached to this machine, so the
+  flagged risk area is *unverified*. The placement code was changed (cursor's display
+  rather than primary) and reviewed, but never exercised across monitors, and the
+  saved-bounds restore path was never tested with a display unplugged.
+- **Anything requiring GUI automation.** Driving another app needs Automation TCC
+  permission, whose prompt cannot be answered headlessly — it hung the session once.
+  So `selected-text` was validated against a purpose-built AppKit harness
+  (`src/native/mac/axprobe.swift`), **not** against Notes, Safari, Chrome, VS Code or
+  Terminal. Which of those fall back to which tier is still an open question.
+- **The palette as a user sees it** — that it appears, takes keyboard focus, filters,
+  and pastes on Enter. Only the main-process side was exercised.
+- **`item:paste` end to end** through the UI, and the hide → focus-return → ⌘V timing
+  in the real flow. The helper's half is solid (5/5); the sequencing is not proven.
+- **Secure Input.** Confirmed *off* during testing (`IsSecureEventInputEnabled()`), so
+  the degradation path with a password field focused was never exercised.
+- **Accessibility prompt attribution.** The build is unsigned (`identity: null`), so
+  whether the grant attaches to clipboard.md.app rather than a helper — DESIGN.md §6
+  open item 5 — remains open. In dev it attributes to the terminal.
+- **The interactive screenshot picker.** `screencapture -x` full-screen works and
+  Screen Recording is granted to the terminal, but `-i` (the picker the app uses) and
+  the app's own permission prompt were not driven.
+- **Dictation as a feature** — mic permission prompt, the HUD, and Parakeet actually
+  transcribing. Only the decode step is proven. The ~490MB model was never downloaded.
+- **Cloud/subscription AI providers.** `spawn ENOTDIR` is fixed and no longer logs, but
+  no successful enrichment response was observed.
+- **Autostart.** `setLoginItemSettings` is wired and now guarded to packaged builds; a
+  real login cycle was not tested.
+
+### Changes that affect Linux — please re-check
+
+- `package.json` `packageManager` + `onlyBuiltDependencies` — changes how *every*
+  machine installs.
+- **`embeddings/index.ts` idle-unload bug is platform-neutral** and almost certainly
+  affects Linux identically: `lastUse` started at 0, so the first drain killed the
+  worker 5s after launch, and `drainEmbeddings()` then returned early forever because
+  `worker` was null. Nothing captured after that was ever embedded. Worth confirming
+  how much of the Linux history actually has vectors.
+- `filters.ts` gained an optional `sourceAppId` (absent on Linux → byte-identical
+  behaviour, 3 new tests). `capture/index.ts` and `sourceApp.ts` now pass `{name, id}`
+  instead of a bare string.
+- `ipc.ts` / `index.ts` call `takeScreenshot()`, a passthrough to `portalScreenshot()`
+  on Linux. `paste.ts`'s 150ms Linux focus-settle is now a named constant, same value.
+- Autostart now only registers from a packaged build — on Linux too.
+- `electron-builder.yml`: the onnxruntime exclusion moved under `linux:` unchanged.
+
+### Still open
+
+- `tracks(withMediaType:)` in the helper is deprecated since macOS 13; kept because
+  the async replacement would raise the baseline above macOS 12.
+- Signing and notarization need a Developer ID; nothing here is signed.
+- No app icon is set (`default Electron icon is used`).

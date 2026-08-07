@@ -47,7 +47,12 @@ never a subscription of its own.
 | **X clipboard ownership** | **Our UI process must NEVER own the X CLIPBOARD selection.** Measured in Xvfb: with Electron as owner and its main thread busy 6s, another app's paste request blocked **5511ms**; with a detached `xclip` owner, **105ms**. On a real desktop the blocked requester is mutter — on its single compositor thread — so the ENTIRE session freezes (observed 15–20s). All writes go through a detached `xclip -i` owner. |
 | **Clipboard reads** | Must be off the UI thread. Electron's `clipboard.*` are synchronous X selection transfers; measured 107ms for plain text through mutter's bridge, and mutter#1065 documents hangs. All Linux reads are `xclip` child processes with a 1.5s timeout. |
 | GPU compositing | **Fine.** Reports `enabled` once a window exists — an earlier "GPU is disabled" reading was an artifact of probing before any window was created (Chromium starts the GPU process lazily). |
-| macOS (all of the above) | Solved territory: NSPasteboard `changeCount` poll @500ms, `globalShortcut` works, CGEvent Cmd+V via small Swift helper + one-time Accessibility permission (the Maccy pattern). |
+| macOS `globalShortcut` | **YES — verified** on macOS 26.5.2. All five register; `register()` returns false on a conflict, so the return value is checked and reported. |
+| macOS CGEvent ⌘V paste | **YES — verified** (5/5 into a real NSTextView) *provided the posting process does not exit immediately*. See rule 6. |
+| macOS AX selected text | **Partly.** `kAXSelectedText` on the **per-application** element works; on the **system-wide** element it returns nothing to a background CLI caller. Chain is AX → menu-bar Copy (found by ⌘C command-char, not the title) → synthetic ⌘C with full pasteboard backup/restore. |
+| macOS NSPasteboard polling | **Do not poll from the main process.** Reading the pasteboard to detect change costs 55.7ms per poll with a screenshot on it (measured, 3024x1964) — a PNG re-encode of something nobody touched. `changeCount` is polled by the helper in its own process (0.0% CPU, 1.6MB RSS) and pushes a line on real changes only. |
+| macOS audio decode | AVFoundation reads m4a/AAC, mp3, wav, aiff, caf. It **cannot** read WebM or Opus ("no audio track" — verified), so the renderer records `audio/mp4;codecs=mp4a.40.2` on darwin. macOS ships no ffmpeg. |
+| macOS interactive screenshot | `screencapture -i <file>` (to a file, not `-c`, so it doesn't bounce through the pasteboard where our own capture would re-ingest it). Cancelling exits 0 having written nothing — test for the file, not the exit code. |
 | Available AI auth | `OPENAI_API_KEY`, `GEMINI_API_KEY` in env (Groq deliberately unused); `claude` + `codex` CLIs subscription-authed, consumed via their SDKs. |
 
 ### Operational invariants (added after the mature-Electron-app review)
@@ -64,13 +69,21 @@ never a subscription of its own.
   events log metadata only — never content.
 - **Fail closed**: an uncaught exception in main closes the DB and exits rather than
   limping on with an open write handle.
+- **The package manager is pinned** (`packageManager: pnpm@10.18.0`). `pnpm-workspace.yaml`
+  uses pnpm 10 syntax; under pnpm 9 both `overrides` and the build allowlist are silently
+  ignored, and `pnpm install` fails outright on Node 22 (pnpm 9 injects node-gyp 7, which
+  writes to a frozen `process.config`). Config that is silently ignored is worse than
+  config that errors.
 
 ### Hard-won rules (do not regress these)
 1. **Never own the X clipboard from the UI process.** It can freeze the user's whole desktop.
 2. **Never read the clipboard synchronously on the UI thread.** Same blast radius, smaller fuse.
 3. **Never fight the Wayland compositor over window geometry.** No positioning, no saved bounds, no "recenter" logic on Wayland.
 4. **Never gate showing a window on `ready-to-show`** — a hidden window has no Wayland surface, so it may never paint and the event may never fire. Use `did-finish-load` + a timer backstop.
-5. **Measure before theorising.** Three wrong root causes were asserted here (sync settings writes, GPU, WM sync protocol) before an isolated Xvfb reproduction found the real one. `Xvfb :99` is the right tool; never experiment on the user's live session.
+5. **Measure before theorising.** Three wrong root causes were asserted here (sync settings writes, GPU, WM sync protocol) before an isolated Xvfb reproduction found the real one. `Xvfb :99` is the right tool; never experiment on the user's live session. On macOS the equivalent is `src/native/mac/axprobe.swift` — a disposable AppKit target the helper can be exercised against, because driving a real app needs Automation TCC permission whose prompt cannot be answered headlessly.
+6. **Never post a CGEvent and exit.** The window server delivers asynchronously; a short-lived process dies before the keystroke lands. Measured: 0ms drain → 0/3 pastes arrived, 5ms → 3/3. The helper sleeps 30ms after posting. This fails *intermittently*, which is the worst way for it to fail.
+7. **Never detect clipboard change by reading the clipboard.** On both platforms the read is the expensive part (Linux: a blocking X selection transfer; macOS: a full PNG re-encode, 55.7ms measured). Detect with a cheap change signal in another process — XFixes on Linux, `changeCount` in the helper on macOS — and read only when it fires.
+8. **Verify native modules and spawned binaries in a PACKAGED build.** Three separate bugs shipped invisibly in dev: sqlite-vec (historic), the onnxruntime binding pruned out of the macOS build by a shared `files` exclusion, and both AI SDKs spawning a CLI path inside `app.asar` — which is a *file*, so `spawn` fails with ENOTDIR even though `require` and `fs` work fine on it.
 
 ## 3. Architecture
 
