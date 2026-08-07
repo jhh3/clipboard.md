@@ -1,6 +1,13 @@
-import { clipboard, nativeImage, Notification } from 'electron'
+import { nativeImage, Notification } from 'electron'
 import { execFile } from 'child_process'
+import { readFileSync } from 'fs'
 import { join } from 'path'
+import {
+  writeClipboardText,
+  writeClipboardImage,
+  writeClipboardHtml,
+  markOwnedByUs
+} from './capture/clipboardIO'
 import type { PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
 import { getItem } from './store/items'
@@ -21,46 +28,55 @@ export class PasteService {
     private hideWindow: () => void
   ) {}
 
-  private setClipboard(itemId: number, plain: boolean): boolean {
+  /**
+   * All clipboard writes go through a detached owner process on Linux. Owning the
+   * X selection from this process is what froze the desktop: mutter bridges X
+   * selections on its single compositor thread, so any moment our UI thread was
+   * busy, every paste request in the session stalled behind it (measured: 5511ms
+   * with Electron as owner vs 105ms with a dedicated owner process).
+   */
+  private async setClipboard(itemId: number, plain: boolean): Promise<boolean> {
     const item = getItem(itemId)
     if (!item) return false
+    markOwnedByUs()
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
-      clipboard.writeImage(nativeImage.createFromPath(item.content))
+      await writeClipboardImage(readFileSync(item.content))
     } else if (item.html && !plain) {
       this.capture.markSelfWrite(item.content)
-      clipboard.write({ text: item.content, html: item.html })
+      await writeClipboardHtml(item.html, item.content)
     } else {
       this.capture.markSelfWrite(item.content)
-      clipboard.writeText(item.content)
+      await writeClipboardText(item.content)
     }
     return true
   }
 
-  setClipboardRaw(output: string, outputKind: 'text' | 'image'): void {
+  async setClipboardRaw(output: string, outputKind: 'text' | 'image'): Promise<void> {
+    markOwnedByUs()
     if (outputKind === 'image') {
       this.capture.markSelfWrite()
-      clipboard.writeImage(nativeImage.createFromDataURL(output))
+      await writeClipboardImage(nativeImage.createFromDataURL(output).toPNG())
     } else {
       this.capture.markSelfWrite(output)
-      clipboard.writeText(output)
+      await writeClipboardText(output)
     }
   }
 
   async pasteItem(itemId: number, plain: boolean): Promise<PasteOutcome> {
-    if (!this.setClipboard(itemId, plain)) {
+    if (!(await this.setClipboard(itemId, plain))) {
       return { method: 'copied', message: 'Item no longer exists' }
     }
     return this.deliver()
   }
 
   async pasteRaw(output: string, outputKind: 'text' | 'image'): Promise<PasteOutcome> {
-    this.setClipboardRaw(output, outputKind)
+    await this.setClipboardRaw(output, outputKind)
     return this.deliver()
   }
 
-  copyItem(itemId: number): void {
-    this.setClipboard(itemId, false)
+  async copyItem(itemId: number): Promise<void> {
+    await this.setClipboard(itemId, false)
   }
 
   private async deliver(): Promise<PasteOutcome> {

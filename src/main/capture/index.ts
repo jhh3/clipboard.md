@@ -1,5 +1,5 @@
 import { app, nativeImage } from 'electron'
-import { readClipboard, readHtml } from './clipboardIO'
+import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -120,6 +120,9 @@ export class CaptureService {
    */
   private async tick(prime = false): Promise<void> {
     if (this.reading) return // a read is already in flight; its result supersedes
+    // Never request a selection we own — that is asking ourselves for data, and a
+    // self-request that stalls takes the compositor's bridge down with it.
+    if (weOwnClipboard()) return
     this.reading = true
     try {
       if (!getSettings().captureEnabled) return
