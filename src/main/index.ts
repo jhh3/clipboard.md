@@ -3,7 +3,7 @@ import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
-import { openDb, getDb } from './store/db'
+import { openDb, closeDb, maintainDb } from './store/db'
 import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
@@ -27,6 +27,7 @@ import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { portalScreenshot } from './portal'
+import { hardenApp, applyPermissionPolicy } from './security'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
@@ -73,6 +74,8 @@ app.on('child-process-gone', (_e, details) => {
     }
   }
 })
+
+hardenApp()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -122,6 +125,7 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
+    applyPermissionPolicy()
     openDb(join(app.getPath('userData'), 'data'))
 
     capture = new CaptureService({
@@ -175,16 +179,7 @@ if (!gotLock) {
 
     // Keep the WAL from growing without bound in a long-lived process, and reclaim
     // space after retention deletes. Both are cheap and off the interactive path.
-    setInterval(
-      () => {
-        try {
-          getDb().pragma('wal_checkpoint(TRUNCATE)')
-        } catch (err) {
-          console.error('[db] checkpoint failed:', err)
-        }
-      },
-      30 * 60 * 1000
-    )
+    setInterval(maintainDb, 30 * 60 * 1000)
 
     // Settings used to require a restart to take effect anywhere: push changes to
     // every window, and let the services that cached values re-read them.
@@ -212,6 +207,7 @@ if (!gotLock) {
   app.on('will-quit', () => {
     teardownHotkeys()
     flushSettings() // don't lose a debounced write on exit
+    closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL
   })
 
   // Tray-less background app: closing windows must not quit.

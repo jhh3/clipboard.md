@@ -26,7 +26,7 @@ export function createPaletteWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   })
 
@@ -159,7 +159,7 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   })
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -246,7 +246,7 @@ export function showDictationHud(): void {
         preload: join(__dirname, '../preload/index.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false
+        sandbox: true
       }
     })
     if (process.env.ELECTRON_RENDERER_URL) {

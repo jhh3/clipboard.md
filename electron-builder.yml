@@ -5,6 +5,18 @@ directories:
 files:
   - out/**
   - package.json
+  # Prune ~600MB of binaries we never execute. Each exclusion is deliberate:
+  #  - onnxruntime ships CUDA/TensorRT providers (~330MB); embeddings run on CPU
+  #  - onnxruntime bundles every platform's binaries; keep this build's only
+  #  - the Codex and Claude Agent SDK native CLIs are large and only used by the
+  #    subscription lanes, which fall back to the API lane when absent (they are
+  #    re-added per-platform below for the platform being built)
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**'
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_cuda.so'
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_tensorrt.so'
+  - '!**/node_modules/onnxruntime-node/bin/napi-v6/*/*/libonnxruntime_providers_shared.so'
+  - '!**/node_modules/tesseract.js-core/*simd*'
+  - '!**/node_modules/@img/sharp-libvips-*/lib/*.a'
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
   - '**/node_modules/sqlite-vec*/**'
@@ -15,6 +27,7 @@ asarUnpack:
   - '**/node_modules/@anthropic-ai/claude-agent-sdk/**'
 
 linux:
+  syncDesktopName: true
   target:
     - AppImage
     - deb
@@ -22,7 +35,9 @@ linux:
   synopsis: Local-first AI clipboard manager
   desktop:
     entry:
-      StartupWMClass: clipboard.md
+      # Must match the WM_CLASS Electron reports, or the shell won't associate the
+      # running window with this launcher entry (wrong icon, no grouping).
+      StartupWMClass: clipboard-md
 
 deb:
   afterInstall: null

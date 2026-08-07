@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import { rmSync } from 'fs'
 import type { ClipItem, ClipKind, SearchQuery, SearchResult } from '@shared/types'
-import { getDb, hasVec, EMBEDDING_DIM } from './db'
+import { getDb, hasVec, secureDeleteNow, EMBEDDING_DIM } from './db'
 
 interface ItemRow {
   id: number
@@ -181,8 +181,9 @@ export function purgeItems(ids: number[]): number {
   return res.changes
 }
 
+/** Explicit user delete: overwrite the bytes, not just unlink the row. */
 export function deleteItem(id: number): void {
-  purgeItems([id])
+  secureDeleteNow(() => purgeItems([id]))
 }
 
 export function updateEnrichment(

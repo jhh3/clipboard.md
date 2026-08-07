@@ -1,5 +1,6 @@
 import { app, ipcMain, nativeImage, BrowserWindow } from 'electron'
 import { rmSync } from 'fs'
+import { isTrustedSender } from './security'
 import type { SearchQuery, TransformRequest, AppSettings, SavedAction } from '@shared/types'
 import {
   searchKeyword,
@@ -30,13 +31,33 @@ export interface RewriteState {
   onDictationDone: () => void
 }
 
+/**
+ * Wrap ipcMain.handle so every channel validates its sender and can never reject
+ * into the renderer with a raw stack. A handler that throws returns a plain error
+ * shape instead of an unhandled rejection.
+ */
+function handle(channel: string, fn: (e: Electron.IpcMainInvokeEvent, ...a: any[]) => unknown): void {
+  ipcMain.handle(channel, async (e, ...args) => {
+    if (!isTrustedSender(e.sender)) {
+      console.error(`[ipc] rejected ${channel} from untrusted sender`)
+      throw new Error('untrusted sender')
+    }
+    try {
+      return await fn(e, ...args)
+    } catch (err) {
+      console.error(`[ipc] ${channel} failed:`, err)
+      throw new Error(err instanceof Error ? err.message : String(err))
+    }
+  })
+}
+
 export function registerIpc(
   paste: PasteService,
   capture: CaptureService,
   rewrite: RewriteState
 ): void {
-  ipcMain.handle('dictation:done', () => rewrite.onDictationDone())
-  ipcMain.handle('search', async (_e, q: SearchQuery) => {
+  handle('dictation:done', () => rewrite.onDictationDone())
+  handle('search', async (_e, q: SearchQuery) => {
     if (q.mode === 'hybrid' && q.q.trim()) {
       const qe = await embedQuery(q.q)
       return searchHybrid(q, qe)
@@ -44,28 +65,28 @@ export function registerIpc(
     return searchKeyword(q)
   })
 
-  ipcMain.handle('item:get', (_e, id: number) => getItem(id))
-  ipcMain.handle('item:pin', (_e, id: number, pinned: boolean) => {
+  handle('item:get', (_e, id: number) => getItem(id))
+  handle('item:pin', (_e, id: number, pinned: boolean) => {
     setPinned(id, pinned)
     sendToPalette('items:changed', { reason: 'transformed' })
   })
-  ipcMain.handle('item:delete', (_e, id: number) => {
+  handle('item:delete', (_e, id: number) => {
     deleteItem(id)
     sendToPalette('items:changed', { reason: 'deleted' })
   })
-  ipcMain.handle('item:paste', (_e, id: number, opts: { plain?: boolean }) =>
+  handle('item:paste', (_e, id: number, opts: { plain?: boolean }) =>
     paste.pasteItem(id, !!opts?.plain)
   )
-  ipcMain.handle('item:copy', (_e, id: number) => paste.copyItem(id))
-  ipcMain.handle('item:image-data', (_e, id: number) => {
+  handle('item:copy', (_e, id: number) => paste.copyItem(id))
+  handle('item:image-data', (_e, id: number) => {
     const item = getItem(id)
     if (!item || item.kind !== 'image') return null
     const img = nativeImage.createFromPath(item.content)
     return img.isEmpty() ? null : img.toDataURL()
   })
 
-  ipcMain.handle('transform:run', (_e, req: TransformRequest) => runTransform(req))
-  ipcMain.handle(
+  handle('transform:run', (_e, req: TransformRequest) => runTransform(req))
+  handle(
     'transform:commit',
     (_e, req: TransformRequest & { output: string; outputKind: 'text' | 'image' }) => {
       const id = commitTransform(req)
@@ -73,25 +94,25 @@ export function registerIpc(
       return id
     }
   )
-  ipcMain.handle(
+  handle(
     'transform:paste-output',
     (_e, payload: { output: string; outputKind: 'text' | 'image'; plain?: boolean }) =>
       paste.pasteRaw(payload.output, payload.outputKind)
   )
 
-  ipcMain.handle('actions:list', (_e, kind: 'text' | 'image') =>
+  handle('actions:list', (_e, kind: 'text' | 'image') =>
     getSettings().savedActions.filter((a) => a.appliesTo.includes(kind))
   )
-  ipcMain.handle('actions:save', (_e, action: SavedAction) => {
+  handle('actions:save', (_e, action: SavedAction) => {
     const actions = getSettings().savedActions.filter((a) => a.id !== action.id)
     updateSettings({ savedActions: [...actions, action] })
   })
-  ipcMain.handle('actions:delete', (_e, id: string) => {
+  handle('actions:delete', (_e, id: string) => {
     updateSettings({ savedActions: getSettings().savedActions.filter((a) => a.id !== id) })
   })
 
-  ipcMain.handle('collections:list', () => getSettings().smartCollections)
-  ipcMain.handle('sessions:list', () =>
+  handle('collections:list', () => getSettings().smartCollections)
+  handle('sessions:list', () =>
     sessionsList().map((s) => ({
       id: s.id,
       title: s.title,
@@ -101,11 +122,11 @@ export function registerIpc(
     }))
   )
 
-  ipcMain.handle('settings:get', () => getSettings())
-  ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => updateSettings(patch))
+  handle('settings:get', () => getSettings())
+  handle('settings:set', (_e, patch: Partial<AppSettings>) => updateSettings(patch))
 
-  ipcMain.handle('providers:status', () => providersStatus())
-  ipcMain.handle('enrichment:status', () => {
+  handle('providers:status', () => providersStatus())
+  handle('enrichment:status', () => {
     const stats = enrichQueueStats()
     const run = enrichmentRunStats()
     return {
@@ -117,7 +138,7 @@ export function registerIpc(
     }
   })
 
-  ipcMain.handle('capture:screenshot', async () => {
+  handle('capture:screenshot', async () => {
     // Hide the palette so it isn't in the shot, then invoke GNOME's picker.
     hidePalette()
     const path = await portalScreenshot()
@@ -127,15 +148,15 @@ export function registerIpc(
     return { ok: true, id: result.id }
   })
 
-  ipcMain.handle('rewrite:get', () => {
+  handle('rewrite:get', () => {
     const text = rewrite.getText()
     return text ? { text } : null
   })
-  ipcMain.handle('rewrite:apply', (_e, payload: { output: string }) =>
+  handle('rewrite:apply', (_e, payload: { output: string }) =>
     paste.pasteRaw(payload.output, 'text')
   )
 
-  ipcMain.handle(
+  handle(
     'scratch:transcribe',
     async (_e, payload: { audioB64: string; mime: string; dictation?: boolean }) => {
       const audio = Buffer.from(payload.audioB64, 'base64')
@@ -183,7 +204,7 @@ export function registerIpc(
     }
   )
 
-  ipcMain.handle('dictation:retry', async (_e, itemId: number) => {
+  handle('dictation:retry', async (_e, itemId: number) => {
     const item = getItem(itemId)
     const path = item?.derivedVia?.startsWith('dictation:') ? item.derivedVia.slice(10) : null
     if (!path) return { ok: false, error: 'No stored recording for this item' }
@@ -194,7 +215,7 @@ export function registerIpc(
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
-  ipcMain.handle('scratch:save', (_e, payload: { text: string; itemId?: number }) => {
+  handle('scratch:save', (_e, payload: { text: string; itemId?: number }) => {
     // This path receives raw selections (rewrite hotkey) and scratchpad text, so it
     // must run the same secret scan as capture — otherwise highlighting an API key
     // and hitting rewrite stored it indexed, embedded and queued for enrichment.
@@ -212,19 +233,19 @@ export function registerIpc(
     return id
   })
 
-  ipcMain.handle('window:hide', (e) => {
+  handle('window:hide', (e) => {
     // Hide whichever window asked (palette hides; aux windows just hide too).
     const win = BrowserWindow.fromWebContents(e.sender)
     if (win && !win.isDestroyed()) win.hide()
     else hidePalette()
   })
-  ipcMain.handle('window:open-settings', () => {
+  handle('window:open-settings', () => {
     hidePalette() // the palette is always-on-top; don't let it cover what we open
     openSettingsWindow()
   })
-  ipcMain.handle('window:open-scratchpad', (_e, itemId?: number) => {
+  handle('window:open-scratchpad', (_e, itemId?: number) => {
     hidePalette()
     openScratchpadWindow(itemId)
   })
-  ipcMain.handle('app:version', () => app.getVersion())
+  handle('app:version', () => app.getVersion())
 }

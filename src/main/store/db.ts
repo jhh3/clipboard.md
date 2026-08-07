@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 import { join } from 'path'
-import { mkdirSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
 
 export const EMBEDDING_DIM = 384 // bge-small-en-v1.5
 
@@ -92,6 +92,46 @@ const MIGRATIONS: string[] = [
   `
 ]
 
+/**
+ * Load the sqlite-vec extension, packaged or not.
+ *
+ * In a packaged build the module resolves to a path inside app.asar, which is a
+ * bundle rather than a directory — dlopen can't read it, so the extension silently
+ * failed to load and semantic search was disabled in the installed app while
+ * working fine in dev. Native binaries live in app.asar.unpacked instead.
+ */
+function loadVecExtension(d: Database.Database): void {
+  const candidates: string[] = []
+  try {
+    const p = (sqliteVec as unknown as { getLoadablePath?: () => string }).getLoadablePath?.()
+    if (p) {
+      const unpacked = p.replace(/app\.asar(?![.\w])/, 'app.asar.unpacked')
+      // sqlite appends the platform suffix when the given path doesn't exist, so
+      // offer both the exact file and the extension-less form.
+      candidates.push(unpacked, unpacked.replace(/\.(so|dylib|dll)$/, ''))
+    }
+  } catch {
+    /* fall through to the module's own loader */
+  }
+
+  for (const candidate of candidates) {
+    try {
+      d.loadExtension(candidate)
+      vecAvailable = true
+      return
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  try {
+    sqliteVec.load(d)
+    vecAvailable = true
+  } catch (err) {
+    // Semantic search degrades to keyword-only; everything else works.
+    console.error('[db] sqlite-vec failed to load, semantic search disabled:', err)
+  }
+}
+
 /** vec0 table lives outside migrations: created only when the extension loads.
  *  If the stored dimension differs (model change), drop and re-embed from scratch. */
 function ensureVecTable(d: Database.Database): void {
@@ -118,20 +158,41 @@ export function openDb(dataDir: string): Database.Database {
   if (db) return db
   const dir = dataDir
   mkdirSync(dir, { recursive: true })
-  db = new Database(join(dir, 'clipboard.db'))
+  const file = join(dir, 'clipboard.db')
+  const isNew = !existsSync(file)
+  db = new Database(file)
+
+  // page_size and auto_vacuum are only settable before the first table exists.
+  if (isNew) {
+    db.pragma('page_size = 8192') // SQLite: best throughput for blob-ish rows
+    db.pragma('auto_vacuum = INCREMENTAL') // reclaim without a full VACUUM's 2x disk
+  }
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
   db.pragma('foreign_keys = ON')
+  db.pragma('busy_timeout = 5000')
+  db.pragma('cache_size = -20000') // ~20MB page cache (default is 2MB)
+  db.pragma('temp_store = MEMORY') // FTS5 ranking builds temp b-trees
+  db.pragma('mmap_size = 268435456')
+  // Overwrite deleted rows instead of leaving them readable in free pages: without
+  // this, a password the user deleted stays recoverable in the database file.
+  db.pragma('secure_delete = FAST')
+  // Long-lived connection: SQLite asks for this on open, then periodically.
+  db.pragma('optimize = 0x10002')
 
-  try {
-    sqliteVec.load(db)
-    vecAvailable = true
-  } catch (err) {
-    // Semantic search degrades to keyword-only; everything else works.
-    console.error('[db] sqlite-vec failed to load, semantic search disabled:', err)
-  }
+  loadVecExtension(db)
 
   const version = db.pragma('user_version', { simple: true }) as number
+  if (version > MIGRATIONS.length) {
+    // An older build opening a newer database would silently skip the migration
+    // loop and then operate against a schema it doesn't understand.
+    db.close()
+    db = null
+    throw new Error(
+      `Database schema is version ${version} but this build only knows ${MIGRATIONS.length}. ` +
+        'Run the newer version of clipboard.md; your data has not been touched.'
+    )
+  }
   for (let v = version; v < MIGRATIONS.length; v++) {
     db.transaction(() => {
       db!.exec(MIGRATIONS[v])
@@ -151,7 +212,44 @@ export function hasVec(): boolean {
   return vecAvailable
 }
 
+/**
+ * Flush and close cleanly. Previously the process exited with the DB open, leaving
+ * whatever sat in the WAL to be recovered on next start (and lost on a hard kill).
+ */
 export function closeDb(): void {
-  db?.close()
+  if (!db) return
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+    db.pragma('optimize') // SQLite recommends this immediately before closing
+  } catch (err) {
+    console.error('[db] checkpoint/optimize on close failed:', err)
+  }
+  db.close()
   db = null
+}
+
+/** Periodic maintenance for a long-lived connection. */
+export function maintainDb(): void {
+  if (!db) return
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+    db.pragma('incremental_vacuum(500)')
+    db.pragma('optimize')
+  } catch (err) {
+    console.error('[db] maintenance failed:', err)
+  }
+}
+
+/**
+ * Purge with forensic hygiene: used for explicit user deletes, where "delete"
+ * has to mean the bytes are gone, not just unlinked from the b-tree.
+ */
+export function secureDeleteNow<T>(fn: () => T): T {
+  if (!db) return fn()
+  db.pragma('secure_delete = ON')
+  try {
+    return fn()
+  } finally {
+    db.pragma('secure_delete = FAST')
+  }
 }
