@@ -1,6 +1,6 @@
 import { app, nativeImage } from 'electron'
 import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
-import { getSourceApp } from './sourceApp'
+import { getSourceApp, type SourceApp } from './sourceApp'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -191,9 +191,15 @@ export class CaptureService {
     }
   }
 
-  private async captureText(text: string, formats: string[], sourceApp?: string): Promise<void> {
+  private async captureText(text: string, formats: string[], sourceApp?: SourceApp): Promise<void> {
     const settings = getSettings()
-    const { verdict, reason } = runFilters({ text, formats, sourceApp, ignoreApps: settings.ignoreApps })
+    const { verdict, reason } = runFilters({
+      text,
+      formats,
+      sourceApp: sourceApp?.name,
+      sourceAppId: sourceApp?.id,
+      ignoreApps: settings.ignoreApps
+    })
     if (verdict === 'skip') return
 
     const kind = classifyText(text)
@@ -203,7 +209,7 @@ export class CaptureService {
       content: text,
       html,
       preview: text.slice(0, 500),
-      sourceApp,
+      sourceApp: sourceApp?.name,
       secret: verdict === 'store-secret'
     })
     if (created && verdict === 'store' && settings.enrichment.enabled) {
@@ -215,12 +221,17 @@ export class CaptureService {
     this.events.onItem(id, created)
   }
 
-  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: string): void {
-    const { verdict } = runFilters({ formats, sourceApp, ignoreApps: getSettings().ignoreApps })
+  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: SourceApp): void {
+    const { verdict } = runFilters({
+      formats,
+      sourceApp: sourceApp?.name,
+      sourceAppId: sourceApp?.id,
+      ignoreApps: getSettings().ignoreApps
+    })
     if (verdict === 'skip') return
     const img = nativeImage.createFromBuffer(png)
     if (img.isEmpty()) return
-    const result = ingestNativeImage(img, sourceApp)
+    const result = ingestNativeImage(img, sourceApp?.name)
     if (!result) return
     this.events.onItem(result.id, result.created)
   }

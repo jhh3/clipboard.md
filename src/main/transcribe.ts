@@ -8,6 +8,7 @@ import { pipeline as streamPipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { getSettings } from './settings'
 import { openaiTranscribe } from './modelport/openaiCompat'
+import { macDecodeAudio } from './mac/helper'
 
 const execFileP = promisify(execFile)
 
@@ -72,20 +73,66 @@ export async function ensureLocalModel(): Promise<boolean> {
   return downloading
 }
 
-/** Persist a recording; returns its path. */
+/**
+ * Persist a recording; returns its path.
+ *
+ * The extension is load-bearing on macOS: AVFoundation infers the container from it,
+ * and an mp4 written as `.wav` fails to open. mp4 is what darwin records now.
+ */
 export function saveRecording(audio: Buffer, mime: string): string {
-  const ext = mime.includes('webm') ? 'webm' : mime.includes('ogg') ? 'ogg' : 'wav'
+  const ext = mime.includes('webm')
+    ? 'webm'
+    : mime.includes('ogg')
+      ? 'ogg'
+      : mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')
+        ? 'm4a'
+        : 'wav'
   const sha = createHash('sha256').update(audio).digest('hex').slice(0, 16)
   const file = join(audioDir(), `${Date.now()}-${sha}.${ext}`)
   writeFileSync(file, audio)
   return file
 }
 
-/** Decode any container to 16k mono WAV via ffmpeg (sherpa needs raw samples). */
+/**
+ * Decode any container to 16k mono WAV — sherpa wants raw samples.
+ *
+ * Linux has ffmpeg (a documented dependency). macOS does not ship it and most users
+ * won't have it, so darwin decodes through the Swift helper's AVFoundation path
+ * instead. AVFoundation reads m4a/AAC, mp3, wav, aiff and caf but NOT WebM/Opus,
+ * which is why the renderer records mp4/AAC on darwin — see lib/audio.ts.
+ *
+ * ffmpeg is still tried as a fallback on macOS: a user who has it (Homebrew) can
+ * then still transcribe an old WebM recording from before that change.
+ */
 async function decodeToWav(path: string): Promise<string> {
   const wav = path.replace(/\.[^.]+$/, '.16k.wav')
+  if (process.platform === 'darwin') {
+    try {
+      await macDecodeAudio(path, wav)
+      return wav
+    } catch (err) {
+      console.error('[transcribe] AVFoundation decode failed, trying ffmpeg:', err)
+      if (!(await ffmpegAvailable())) {
+        throw new Error(
+          `could not decode ${path.split('.').pop()} audio: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+  }
   await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', path, '-ar', '16000', '-ac', '1', wav])
   return wav
+}
+
+let ffmpegPresent: boolean | null = null
+async function ffmpegAvailable(): Promise<boolean> {
+  if (ffmpegPresent !== null) return ffmpegPresent
+  try {
+    await execFileP('ffmpeg', ['-version'], { timeout: 3000 })
+    ffmpegPresent = true
+  } catch {
+    ffmpegPresent = false
+  }
+  return ffmpegPresent
 }
 
 /**

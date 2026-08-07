@@ -1,7 +1,5 @@
 import { nativeImage, Notification } from 'electron'
-import { execFile } from 'child_process'
 import { readFileSync } from 'fs'
-import { join } from 'path'
 import {
   writeClipboardText,
   writeClipboardImage,
@@ -13,8 +11,16 @@ import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { portalPaste } from './portal'
+import { macPaste } from './mac/helper'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * How long to wait after hiding our window before injecting the paste keystroke.
+ * Linux (mutter refocusing the previous surface) needed 150ms; macOS hands focus back
+ * faster, and the helper adds its own 30ms drain after posting.
+ */
+const FOCUS_SETTLE_MS = process.platform === 'darwin' ? 120 : 150
 
 /**
  * Paste tiers (see DESIGN.md §2):
@@ -81,17 +87,27 @@ export class PasteService {
 
   private async deliver(): Promise<PasteOutcome> {
     if (process.platform === 'darwin') {
+      // Hide first: macOS returns key focus to the previously active app, and the
+      // ⌘V has to arrive *there*, not at our palette.
       this.hideWindow()
-      const injected = await this.macInject()
+      await sleep(FOCUS_SETTLE_MS)
+      const { injected, untrusted } = await macPaste()
       if (injected) return { method: 'injected' }
-      return { method: 'copied', message: 'Copied — press ⌘V to paste' }
+      // Distinguish "we can't" from "we won't": a missing Accessibility grant is
+      // fixable by the user, and saying so beats a generic fallback message.
+      return {
+        method: 'copied',
+        message: untrusted
+          ? 'Copied — allow clipboard.md under Privacy & Security ▸ Accessibility to paste automatically'
+          : 'Copied — press ⌘V to paste'
+      }
     }
 
     // Linux tier 1: hide (mutter refocuses the previous surface), then inject
     // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
     if (getSettings().pasteInjection === 'portal') {
       this.hideWindow()
-      await sleep(150)
+      await sleep(FOCUS_SETTLE_MS)
       if (await portalPaste()) return { method: 'injected' }
       // Window is already hidden, so the renderer toast won't be seen — use a
       // desktop notification for the fallback hint instead.
@@ -103,13 +119,4 @@ export class PasteService {
     return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
   }
 
-  private macInject(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const helper = join(process.resourcesPath ?? '', 'clipmd-helper')
-      // Small delay lets focus return to the target app after our window hides.
-      setTimeout(() => {
-        execFile(helper, ['paste'], { timeout: 3000 }, (err) => resolve(!err))
-      }, 120)
-    })
-  }
 }

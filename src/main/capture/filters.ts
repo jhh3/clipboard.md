@@ -81,16 +81,29 @@ export interface FilterInput {
   text?: string
   formats: string[]
   sourceApp?: string
+  /**
+   * macOS bundle id of the source app, when known. Matched alongside the display
+   * name because the two disagree in exactly the cases that matter: 1Password's
+   * browser extension helper reports names like "1Password Extension Helper" but a
+   * stable `com.1password.*` id, and a localized app name may not contain the
+   * English substring the user put in their ignore list at all.
+   */
+  sourceAppId?: string
   ignoreApps: string[]
 }
 
 export function runFilters(input: FilterInput): { verdict: FilterVerdict; reason?: string } {
   if (hasConcealedFormat(input.formats)) return { verdict: 'skip', reason: 'concealed-format' }
 
-  if (input.sourceApp) {
-    const src = input.sourceApp.toLowerCase()
-    if (input.ignoreApps.some((a) => src.includes(a.toLowerCase())))
-      return { verdict: 'skip', reason: `ignored-app:${input.sourceApp}` }
+  const haystacks = [input.sourceApp, input.sourceAppId]
+    .filter((s): s is string => !!s)
+    .map((s) => s.toLowerCase())
+  if (haystacks.length > 0) {
+    const needle = input.ignoreApps.find((a) => {
+      const lower = a.toLowerCase()
+      return haystacks.some((h) => h.includes(lower))
+    })
+    if (needle) return { verdict: 'skip', reason: `ignored-app:${input.sourceApp ?? input.sourceAppId}` }
   }
 
   if (input.text) {

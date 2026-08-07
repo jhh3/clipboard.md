@@ -1,4 +1,4 @@
-import { app, powerMonitor, BrowserWindow } from 'electron'
+import { app, powerMonitor, BrowserWindow, Notification } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
@@ -26,7 +26,8 @@ import { startEnrichment, drain as drainEnrichment, assignSession } from './enri
 import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete } from './modelport'
-import { portalScreenshot } from './portal'
+import { takeScreenshot } from './screenshot'
+import { macSelectedText } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
 
@@ -131,11 +132,33 @@ if (!gotLock) {
   let capture!: CaptureService
   let dictating = false
 
+  /**
+   * What the user has highlighted right now, for the rewrite hotkey.
+   *
+   * Linux reads the PRIMARY selection (off the UI thread). macOS has no PRIMARY, so
+   * the fallback there was `clipboard.readText()` — which quietly rewrites whatever
+   * was last *copied* instead of what is *selected*. The helper's AX chain reads the
+   * real selection; if it can't, we return empty and the palette opens normally
+   * rather than acting on the wrong text.
+   */
+  async function currentSelection(): Promise<string> {
+    if (process.platform !== 'darwin') return readPrimarySelection()
+    const { text, untrusted } = await macSelectedText()
+    if (untrusted) {
+      new Notification({
+        title: 'clipboard.md needs Accessibility',
+        body: 'Allow clipboard.md under Privacy & Security ▸ Accessibility to rewrite selected text.',
+        silent: true
+      }).show()
+      return ''
+    }
+    return text ?? ''
+  }
+
   const actions: HotkeyActions = {
     toggle: () => togglePalette(),
     rewrite: () => {
-      // PRIMARY selection (what's highlighted right now), read off the UI thread.
-      void readPrimarySelection().then((text) => {
+      void currentSelection().then((text) => {
         if (!text.trim()) {
           showPalette()
           return
@@ -147,7 +170,7 @@ if (!gotLock) {
     },
     screenshot: () => {
       void (async () => {
-        const path = await portalScreenshot()
+        const path = await takeScreenshot()
         if (path) capture.ingestImageFile(path)
       })()
     },

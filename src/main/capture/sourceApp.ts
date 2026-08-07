@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { macFrontmost } from '../mac/helper'
 
 /**
  * Best-effort "which app did this copy come from".
@@ -34,17 +35,33 @@ async function linuxActiveApp(): Promise<string | undefined> {
   return m ? m[2] || m[1] : undefined
 }
 
-async function macActiveApp(helperPath: string): Promise<string | undefined> {
-  const out = await run(helperPath, ['frontmost'])
-  return out || undefined
+export interface SourceApp {
+  /** Human-readable, for display: "1Password", "Safari", "firefox". */
+  name: string
+  /** macOS bundle id when we have one — a far more reliable key for ignore rules. */
+  id?: string
 }
 
-export async function getSourceApp(macHelperPath?: string): Promise<string | undefined> {
+/**
+ * On darwin this used to take an optional helper path that no caller ever passed, so
+ * `getSourceApp()` returned undefined unconditionally and the ignore list was as dead
+ * on macOS as it had been on Linux before xprop. The helper module now resolves its
+ * own path, so there is nothing for a caller to forget.
+ */
+export async function getSourceApp(): Promise<SourceApp | undefined> {
   try {
     if (process.platform === 'darwin') {
-      return macHelperPath ? await macActiveApp(macHelperPath) : undefined
+      const front = await macFrontmost()
+      if (!front) return undefined
+      // Prefer the localized name for display, but never return an empty string — a
+      // bundle id is a worse label than a name and a much better one than nothing.
+      const name = front.name || front.bundleId
+      return name ? { name, id: front.bundleId || undefined } : undefined
     }
-    if (process.platform === 'linux') return await linuxActiveApp()
+    if (process.platform === 'linux') {
+      const name = await linuxActiveApp()
+      return name ? { name } : undefined
+    }
   } catch {
     /* best effort only */
   }
