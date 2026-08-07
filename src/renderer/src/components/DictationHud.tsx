@@ -64,6 +64,9 @@ export default function DictationHud() {
   /** When this recording began — distinguishes a tap (latch) from a hold (PTT). */
   const startedAtRef = useRef(0)
   const latchedRef = useRef(false)
+  /** Guards against stopping/delivering the same recording more than once. */
+  const stoppingRef = useRef(false)
+  const deliveringRef = useRef(false)
   const [latched, setLatched] = useState(false)
 
   // ── finishing ─────────────────────────────────────────────────────────────
@@ -129,6 +132,8 @@ export default function DictationHud() {
   // ── transcription (runs from MediaRecorder.onstop) ────────────────────────
 
   const deliver = useCallback(async () => {
+    if (deliveringRef.current) return // a second onstop must not split the audio
+    deliveringRef.current = true
     const rec = recRef.current
     recRef.current = null
     const mime = rec?.mimeType || preferredAudioMime()
@@ -181,8 +186,13 @@ export default function DictationHud() {
         if (e.data.size > 0) chunksRef.current.push(e.data)
       }
       rec.onstop = () => void deliverRef.current()
-      rec.start(250)
+      // No timeslice: one complete, self-contained file at stop. Chunked output is
+      // only valid when every chunk is concatenated, which made partial delivery
+      // silently produce headerless, unplayable audio.
+      rec.start()
       recRef.current = rec
+      stoppingRef.current = false
+      deliveringRef.current = false
       setElapsed(0)
       setPhase({ kind: 'recording', fellBack })
     } catch {
@@ -201,6 +211,12 @@ export default function DictationHud() {
    * early would hide the HUD mid-transcription.
    */
   const stop = useCallback(() => {
+    // Strictly once per recording. Releasing a chord fires a key-up per key, and
+    // each one used to stop the recorder: the audio was then delivered twice, so
+    // each half was an incomplete WebM (the second with no EBML header at all)
+    // and the transcription API rejected both as corrupt.
+    if (stoppingRef.current) return
+    stoppingRef.current = true
     const rec = recRef.current
     // The stream itself is deliberately left running — it is reused next time.
     if (rec && rec.state !== 'inactive') rec.stop()

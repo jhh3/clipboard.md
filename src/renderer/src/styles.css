@@ -1952,8 +1952,10 @@ body.route-dictation #root {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 9px;
-  padding: 16px;
+  /* Compact: on Wayland the compositor centres this over whatever you're doing,
+     so it needs to read at a glance without occupying the middle of the screen. */
+  gap: 7px;
+  padding: 12px 14px;
   border: 1px solid var(--border-strong);
   border-radius: 14px;
   background:

@@ -200,6 +200,9 @@ export function registerIpc(
         return { ok: true, text, id, pasted: false }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
+        // Log it: returning the error to the renderer only put it in a toast that
+        // vanished, so transcription failures left no trace to debug from.
+        console.error('[dictation] transcription failed:', msg)
         return { ok: false, error: keep ? `${msg} (recording kept at ${path})` : msg }
       }
     }

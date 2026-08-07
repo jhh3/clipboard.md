@@ -229,8 +229,12 @@ export function getDictationWindow(): BrowserWindow | null {
 }
 
 export function showDictationHud(): void {
-  const W = 360
-  const H = 132
+  // Deliberately small: on Wayland the compositor decides where this lands (our
+  // setBounds x/y is a no-op), so it will be centred no matter what we ask for.
+  // A compact pill is far less obtrusive there than a panel, and the bottom
+  // placement below still applies on X11 and macOS.
+  const W = 300
+  const H = 96
   if (!getDictationWindow()) {
     dictationWin = new BrowserWindow({
       width: W,
@@ -267,7 +271,8 @@ export function showDictationHud(): void {
     width: W,
     height: H,
     x: Math.round(area.x + (area.width - W) / 2),
-    y: Math.round(area.y + area.height - H - 80)
+    // Bottom-centre, above where a dock/dash usually sits (honoured off Wayland).
+    y: Math.round(area.y + area.height - H - 120)
   })
   win.show()
   win.focus()
