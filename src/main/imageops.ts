@@ -25,7 +25,8 @@ async function ocrWords(png: Buffer): Promise<Word[]> {
   const { createWorker } = await import('tesseract.js')
   const worker = await createWorker('eng')
   try {
-    const { data } = await worker.recognize(png)
+    // tesseract.js v6 omits block/word structure unless explicitly requested.
+    const { data } = await worker.recognize(png, {}, { blocks: true, text: true })
     const words: Word[] = []
     for (const block of data.blocks ?? []) {
       for (const para of block.paragraphs ?? []) {
