@@ -124,6 +124,14 @@ export class CaptureService {
     this.timer = null
   }
 
+  /** Re-read settings that were only sampled at startup (poll interval, enabled). */
+  applySettings(): void {
+    if (!this.timer) return // event-driven; nothing interval-based to retune
+    clearInterval(this.timer)
+    this.timer = null
+    this.startPolling('settings changed')
+  }
+
   /** Call before programmatically writing to the clipboard so we don't capture our own writes. */
   markSelfWrite(text?: string): void {
     // The next tick's snapshot will match this hash and be ignored once.

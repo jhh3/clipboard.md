@@ -41,12 +41,23 @@ function entropy(s: string): number {
   return h
 }
 
-/** A lone high-entropy token with no spaces smells like key material. */
+/**
+ * A lone high-entropy token with no spaces smells like key material — but plenty of
+ * ordinary things are long, spaceless and mixed-case. Everything excluded here is a
+ * false positive we've actually seen; a wrongly-flagged clip is invisible to search
+ * and enrichment, so precision matters as much as recall.
+ */
 function looksLikeLoneSecret(text: string): boolean {
   const t = text.trim()
   if (t.length < 20 || t.length > 512) return false
   if (/\s/.test(t)) return false
-  if (/^https?:\/\//i.test(t)) return false
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return false // any URL scheme
+  if (/^~?\.{0,2}\//.test(t) || (t.match(/\//g)?.length ?? 0) >= 2) return false // filesystem paths
+  if (/^[A-Za-z]:\\/.test(t) || t.includes('\\')) return false // Windows paths
+  if (/\.[a-z0-9]{1,5}$/i.test(t) && (t.includes('/') || t.includes('.'))) {
+    // Looks like a filename or a dotted identifier (com.example.Thing, file.tar.gz).
+    if (!/[^A-Za-z0-9._/-]/.test(t)) return false
+  }
   // Require mixed char classes so hashes-you-meant-to-copy (hex SHAs) don't trip it.
   const classes =
     Number(/[a-z]/.test(t)) + Number(/[A-Z]/.test(t)) + Number(/\d/.test(t)) + Number(/[^A-Za-z0-9]/.test(t))

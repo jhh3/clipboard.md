@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, existsSync, createWriteStream } from 'fs'
 import { createHash } from 'crypto'
@@ -81,56 +81,70 @@ export function saveRecording(audio: Buffer, mime: string): string {
   return file
 }
 
-/** Decode any container to 16k mono PCM via ffmpeg (sherpa needs raw samples). */
-async function decodeToPcm(path: string): Promise<{ samples: Float32Array; sampleRate: number }> {
+/** Decode any container to 16k mono WAV via ffmpeg (sherpa needs raw samples). */
+async function decodeToWav(path: string): Promise<string> {
   const wav = path.replace(/\.[^.]+$/, '.16k.wav')
   await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', path, '-ar', '16000', '-ac', '1', wav])
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const sherpa = require('sherpa-onnx-node') as {
-    readWave: (p: string) => { samples: Float32Array; sampleRate: number }
-  }
-  return sherpa.readWave(wav)
+  return wav
 }
 
-let recognizer: unknown = null
+/**
+ * Inference runs in a utilityProcess: it's a synchronous native call of several
+ * seconds plus a ~490MB model load, which would freeze every window if it ran on
+ * the main thread. The worker is spawned per transcription and exits after, so the
+ * weights don't sit resident between dictations.
+ */
+let asrWorker: UtilityProcess | null = null
+let asrSeq = 0
+const asrPending = new Map<number, { resolve: (t: string) => void; reject: (e: Error) => void }>()
 
-function getRecognizer(): unknown {
-  if (recognizer) return recognizer
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const sherpa = require('sherpa-onnx-node') as {
-    OfflineRecognizer: new (cfg: unknown) => unknown
-  }
-  const d = modelDir()
-  recognizer = new sherpa.OfflineRecognizer({
-    featConfig: { sampleRate: 16000, featureDim: 80 },
-    modelConfig: {
-      transducer: {
-        encoder: join(d, 'encoder.int8.onnx'),
-        decoder: join(d, 'decoder.int8.onnx'),
-        joiner: join(d, 'joiner.int8.onnx')
-      },
-      tokens: join(d, 'tokens.txt'),
-      numThreads: 4,
-      provider: 'cpu',
-      modelType: 'nemo_transducer',
-      debug: false
-    }
+function ensureAsrWorker(): UtilityProcess {
+  if (asrWorker) return asrWorker
+  asrWorker = utilityProcess.fork(join(__dirname, 'asrWorker.mjs'), [], {
+    serviceName: 'clipmd-asr'
   })
-  return recognizer
+  asrWorker.on('message', (m: { type: string; id: number; text?: string; error?: string }) => {
+    const p = asrPending.get(m.id)
+    if (!p) return
+    asrPending.delete(m.id)
+    if (m.type === 'text') p.resolve((m.text ?? '').trim())
+    else p.reject(new Error(m.error ?? 'transcription failed'))
+  })
+  asrWorker.on('exit', () => {
+    asrWorker = null
+    for (const [, p] of asrPending) p.reject(new Error('transcription worker exited'))
+    asrPending.clear()
+  })
+  return asrWorker
 }
 
 async function localTranscribe(path: string): Promise<string> {
   if (!(await ensureLocalModel())) throw new Error('local model unavailable')
-  const { samples, sampleRate } = await decodeToPcm(path)
-  const rec = getRecognizer() as {
-    createStream: () => unknown
-    decode: (s: unknown) => void
-    getResult: (s: unknown) => { text: string }
-  }
-  const stream = rec.createStream() as { acceptWaveform: (w: unknown) => void }
-  stream.acceptWaveform({ sampleRate, samples })
-  rec.decode(stream)
-  return rec.getResult(stream).text.trim()
+  const wav = await decodeToWav(path)
+  const worker = ensureAsrWorker()
+  const id = ++asrSeq
+  const text = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      asrPending.delete(id)
+      reject(new Error('transcription timed out'))
+    }, 120_000)
+    asrPending.set(id, {
+      resolve: (t) => {
+        clearTimeout(timer)
+        resolve(t)
+      },
+      reject: (e) => {
+        clearTimeout(timer)
+        reject(e)
+      }
+    })
+    worker.postMessage({ type: 'transcribe', id, wavPath: wav, modelDir: modelDir() })
+  })
+  // Release the model between dictations rather than holding it resident.
+  setTimeout(() => {
+    if (asrPending.size === 0 && asrWorker) asrWorker.kill()
+  }, 30_000)
+  return text
 }
 
 /** Transcribe a saved recording using the configured backend, with fallback. */

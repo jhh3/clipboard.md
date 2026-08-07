@@ -9,7 +9,12 @@ import type { PortRequest } from './index'
  * (~/.codex/auth.json).
  */
 
-let threadPromise: Promise<import('@openai/codex-sdk').Thread> | null = null
+/**
+ * A thread per request. Reusing one thread for the app's lifetime meant every
+ * clip's text accumulated in a single conversation: unbounded token cost,
+ * cross-contamination between unrelated clips, and eventual hard failure at the
+ * context limit with no recovery path.
+ */
 
 export async function codexAvailable(): Promise<{ ok: boolean; detail: string }> {
   try {
@@ -21,22 +26,14 @@ export async function codexAvailable(): Promise<{ ok: boolean; detail: string }>
   }
 }
 
-async function getThread(): Promise<import('@openai/codex-sdk').Thread> {
-  if (!threadPromise) {
-    threadPromise = (async () => {
-      const { Codex } = await import('@openai/codex-sdk')
-      const codex = new Codex()
-      return codex.startThread({
-        sandboxMode: 'read-only',
-        skipGitRepoCheck: true
-      })
-    })()
-  }
-  return threadPromise
+async function newThread(): Promise<import('@openai/codex-sdk').Thread> {
+  const { Codex } = await import('@openai/codex-sdk')
+  const codex = new Codex()
+  return codex.startThread({ sandboxMode: 'read-only', skipGitRepoCheck: true })
 }
 
 export async function codexComplete(req: PortRequest): Promise<string> {
-  const thread = await getThread()
+  const thread = await newThread()
   const prompt =
     (req.system ? `[Instructions]\n${req.system}\n\n` : '') +
     'Return ONLY the requested output, no preamble.' +

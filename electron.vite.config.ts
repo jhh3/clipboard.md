@@ -19,6 +19,7 @@ export default defineConfig({
           'sharp',
           'tesseract.js',
           'x11',
+          'sherpa-onnx-node',
           '@huggingface/transformers',
           '@anthropic-ai/claude-agent-sdk',
           '@openai/codex-sdk'
@@ -26,6 +27,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts'),
+          asrWorker: resolve(__dirname, 'src/main/asr/worker.ts'),
           mcp: resolve(__dirname, 'src/mcp/server.ts')
         }
       }

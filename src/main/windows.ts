@@ -106,6 +106,13 @@ export function sendToPalette(channel: string, payload: unknown): void {
   getPalette()?.webContents.send(channel, payload)
 }
 
+/** Broadcast to every open window (settings changes must reach all surfaces). */
+export function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload)
+  }
+}
+
 /** Settings and scratchpad are normal opaque windows sharing the SPA via hash routes. */
 let settingsWin: BrowserWindow | null = null
 let scratchWin: BrowserWindow | null = null

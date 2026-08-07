@@ -51,19 +51,30 @@ export function enrichmentRunStats(): { processed: number; lastError?: string } 
   return { processed, lastError }
 }
 
+/** Circuit breaker: consecutive failures pause the queue instead of hammering. */
+let consecutiveFailures = 0
+let pausedUntil = 0
+const MAX_PER_DRAIN = 20
+
 export async function drain(): Promise<void> {
   if (running) return
   const settings = getSettings()
   if (!settings.enrichment.enabled) return
+  if (Date.now() < pausedUntil) return
   running = true
   try {
-    for (;;) {
+    // Bounded per drain: an outage previously meant every queued item burned
+    // 4 providers x 3 attempts x a 90s timeout, back to back, forever.
+    let handled = 0
+    while (handled < MAX_PER_DRAIN) {
       const batch = nextEnrichQueueBatch(2)
       if (batch.length === 0) break
       for (const item of batch) {
+        handled++
         try {
           await enrichOne(item.id)
           dequeueEnrichment(item.id)
+          consecutiveFailures = 0
           processed++
           notify()
         } catch (err) {
@@ -71,6 +82,16 @@ export async function drain(): Promise<void> {
           lastError = msg
           console.error(`[enrich] item ${item.id} failed:`, msg)
           dequeueEnrichment(item.id, msg)
+          consecutiveFailures++
+          if (consecutiveFailures >= 5) {
+            // Exponential, capped: 1m, 2m, 4m … 30m.
+            const backoff = Math.min(60_000 * 2 ** (consecutiveFailures - 5), 30 * 60_000)
+            pausedUntil = Date.now() + backoff
+            console.error(
+              `[enrich] ${consecutiveFailures} consecutive failures; pausing ${Math.round(backoff / 1000)}s`
+            )
+            return
+          }
         }
       }
     }

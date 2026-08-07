@@ -95,11 +95,28 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null
  * Update in memory immediately; flush to disk on a short debounce so bursty callers
  * (window drags, slider drags in Settings) can't stall the main process on I/O.
  */
+type SettingsListener = (s: AppSettings) => void
+const listeners = new Set<SettingsListener>()
+
+/** Subscribe to settings changes (windows, capture, embeddings — anything that
+ *  previously only read settings once at startup and needed a restart to notice). */
+export function onSettingsChanged(fn: SettingsListener): () => void {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
+
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   const next = { ...getSettings(), ...patch }
   cached = next
   if (flushTimer) clearTimeout(flushTimer)
   flushTimer = setTimeout(flushSettings, 250)
+  for (const fn of listeners) {
+    try {
+      fn(next)
+    } catch (err) {
+      console.error('[settings] listener failed:', err)
+    }
+  }
   return next
 }
 

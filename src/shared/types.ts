@@ -273,6 +273,8 @@ export interface IpcEventMap {
   'dictation:start': Record<string, never>
   'dictation:stop': Record<string, never>
   'toast': { message: string; kind: 'info' | 'error' | 'success' }
+  /** Broadcast after any settings change so every window/service picks it up live. */
+  'settings:changed': { settings: AppSettings }
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

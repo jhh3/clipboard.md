@@ -74,9 +74,21 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
       : `${process.execPath} ${app.getAppPath()}`
     for (const b of BINDINGS) {
       const schema = `org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
-      await gsettings(['set', ...schema.split(' '), 'name', b.name])
-      await gsettings(['set', ...schema.split(' '), 'command', `${cmdBase} ${b.arg}`])
-      await gsettings(['set', ...schema.split(' '), 'binding', b.binding])
+      const key = schema.split(' ')
+      // Command/name are ours to own — the binding is not. If the user rebound it,
+      // leave their choice alone; only write the default when it's unset or still
+      // matches what we last wrote. (We were clobbering rebinds on every launch.)
+      const current = (await gsettings(['get', ...key, 'binding']).catch(() => "''")).replace(
+        /^'|'$/g,
+        ''
+      )
+      await gsettings(['set', ...key, 'name', b.name])
+      await gsettings(['set', ...key, 'command', `${cmdBase} ${b.arg}`])
+      if (!current || current === '@as []' || current === b.binding) {
+        await gsettings(['set', ...key, 'binding', b.binding])
+      } else {
+        console.log(`[hotkeys] keeping user binding for ${b.slug}: ${current}`)
+      }
     }
     return true
   } catch (err) {

@@ -14,15 +14,16 @@ import {
   showPalette,
   hidePalette,
   sendToPalette,
+  broadcast,
   openScratchpadWindow,
   showDictationHud,
   stopDictation,
   hideDictationHud
 } from './windows'
 import { setupHotkeys, routeArgs, teardownHotkeys, ACTION_FLAGS, type HotkeyActions } from './hotkeys'
-import { getSettings, flushSettings } from './settings'
+import { getSettings, flushSettings, onSettingsChanged } from './settings'
 import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
-import { startEmbeddings } from './embeddings'
+import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { portalScreenshot } from './portal'
@@ -184,6 +185,15 @@ if (!gotLock) {
       },
       30 * 60 * 1000
     )
+
+    // Settings used to require a restart to take effect anywhere: push changes to
+    // every window, and let the services that cached values re-read them.
+    onSettingsChanged((s) => {
+      broadcast('settings:changed', { settings: s })
+      capture.applySettings()
+      if (s.embeddings.enabled) startEmbeddings()
+      else stopEmbeddings()
+    })
 
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
     if (!isAutostartEnabled()) setAutostart(true)
