@@ -32,24 +32,32 @@ export interface HelperResult {
 let cachedPath: string | null | undefined
 
 /**
- * Packaged: electron-builder copies the binary to Contents/Resources. In dev there is
- * no resourcesPath worth speaking of, so fall back to the build output in the repo —
- * this is what makes `pnpm dev` behave like the shipped app instead of silently
- * losing every helper-backed feature.
+ * Packaged: electron-builder copies the binary to Contents/Resources (extraResources).
+ * In dev it lives in the repo at resources/mac/, and we have to find it there or every
+ * helper-backed feature is silently missing from `pnpm dev` — present only in a
+ * packaged build, which is the hardest possible way to notice a problem.
+ *
+ * Dev resolution is anchored on `__dirname` (out/main/), NOT `app.getAppPath()`:
+ * getAppPath returns the directory of the entry script when that directory has no
+ * package.json, so it points at out/main in dev and at a temp dir if the entry is run
+ * from elsewhere. `__dirname` is stable under both electron-vite dev and the packaged
+ * asar layout.
  */
 export function helperPath(): string | null {
   if (cachedPath !== undefined) return cachedPath
   if (!DARWIN) return (cachedPath = null)
+  const repoRelative = join(__dirname, '..', '..', 'resources', 'mac', 'clipmd-helper')
   const candidates = [
     join(process.resourcesPath ?? '', 'clipmd-helper'),
-    join(app.getAppPath(), 'resources', 'mac', 'clipmd-helper'),
-    join(app.getAppPath(), '..', 'resources', 'mac', 'clipmd-helper')
+    repoRelative,
+    join(app.getAppPath(), 'resources', 'mac', 'clipmd-helper')
   ]
   cachedPath = candidates.find((p) => existsSync(p)) ?? null
-  if (!cachedPath) {
+  if (cachedPath) console.log(`[mac] helper: ${cachedPath}`)
+  else {
     console.error(
       '[mac] clipmd-helper not found — paste injection, selection capture and local ' +
-        'dictation are unavailable. Run src/native/mac/build.sh.'
+        `dictation are unavailable. Run src/native/mac/build.sh. Looked in: ${candidates.join(', ')}`
     )
   }
   return cachedPath
