@@ -257,6 +257,8 @@ export interface IpcInvokeMap {
   'dictation:retry': (itemId: number) => { ok: boolean; text?: string; error?: string }
   /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
   'scratch:save': (payload: { text: string; itemId?: number }) => number
+  /** Write the whole history to a JSON file the user picks. Secrets are excluded. */
+  'data:export': () => { ok: boolean; path?: string; count?: number; error?: string }
   'window:hide': () => void
   /** Dictation HUD tells main it finished (transcript delivered or aborted). */
   'dictation:done': () => void

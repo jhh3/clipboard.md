@@ -1,4 +1,4 @@
-import { app, powerMonitor } from 'electron'
+import { app, powerMonitor, BrowserWindow } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
@@ -50,13 +50,38 @@ if (process.platform === 'linux') {
   if (existsSync(gpuFallbackFlag())) app.disableHardwareAcceleration()
 }
 
-// A background clipboard manager must never dialog-bomb the user: log and carry on.
-// (Electron's default uncaught-exception handler shows a blocking error dialog.)
+// A background clipboard manager must never dialog-bomb the user (Electron's
+// default handler shows a blocking error dialog). But it must also not limp on
+// after the main process is in an unknown state while holding an open SQLite
+// write handle — that is how databases get corrupted. So: log, close the DB
+// cleanly, then exit. Autostart brings us back.
+let fatalHandled = false
 process.on('uncaughtException', (err) => {
   console.error('[main] uncaught exception:', err)
+  if (fatalHandled) return
+  fatalHandled = true
+  try {
+    flushSettings()
+    closeDb()
+    closeLogging()
+  } catch (e) {
+    console.error('[main] shutdown after fatal error failed:', e)
+  }
+  app.exit(1)
 })
+
+// Rejections are routinely recoverable here (a provider timing out, a portal
+// call being cancelled), so these are logged and survived rather than fatal.
 process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandled rejection:', reason)
+})
+
+// A renderer crashing must not take capture down with it — recreate the window.
+app.on('render-process-gone', (_e, contents, details) => {
+  if (details.reason === 'clean-exit') return
+  console.error(`[main] renderer gone (${details.reason}); it will be recreated on next use`)
+  const win = BrowserWindow.fromWebContents(contents)
+  if (win && !win.isDestroyed()) win.destroy()
 })
 
 // Watchdog: if the GPU process crash-loops at runtime, persist the fallback flag

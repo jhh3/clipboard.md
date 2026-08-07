@@ -1,5 +1,5 @@
-import { app, ipcMain, nativeImage, BrowserWindow } from 'electron'
-import { rmSync } from 'fs'
+import { app, ipcMain, nativeImage, BrowserWindow, dialog } from 'electron'
+import { rmSync, writeFileSync } from 'fs'
 import { isTrustedSender } from './security'
 import type { SearchQuery, TransformRequest, AppSettings, SavedAction } from '@shared/types'
 import {
@@ -12,7 +12,8 @@ import {
   sessionsList,
   upsertClip,
   enqueueEnrichment,
-  updateEnrichment
+  updateEnrichment,
+  exportAll
 } from './store/items'
 import { saveRecording, transcribeFile } from './transcribe'
 import { detectSecret } from './capture/filters'
@@ -239,6 +240,25 @@ export function registerIpc(
     if (win && !win.isDestroyed()) win.hide()
     else hidePalette()
   })
+  handle('data:export', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const stamp = new Date().toISOString().slice(0, 10)
+    const { canceled, filePath } = await dialog.showSaveDialog(win ?? undefined!, {
+      title: 'Export clipboard history',
+      defaultPath: `clipboard-md-export-${stamp}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (canceled || !filePath) return { ok: false, error: 'Cancelled' }
+    // Secret-flagged clips are deliberately omitted: an export is a plaintext file
+    // that leaves the app's control, and shipping credentials into it is a trap.
+    const items = exportAll().filter((i) => !i.secret)
+    writeFileSync(
+      filePath,
+      JSON.stringify({ app: 'clipboard.md', version: app.getVersion(), exportedAt: Date.now(), items }, null, 2)
+    )
+    return { ok: true, path: filePath, count: items.length }
+  })
+
   handle('window:open-settings', () => {
     hidePalette() // the palette is always-on-top; don't let it cover what we open
     openSettingsWindow()
