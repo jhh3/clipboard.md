@@ -6,7 +6,8 @@ import {
   writeClipboardText,
   writeClipboardImage,
   writeClipboardHtml,
-  markOwnedByUs
+  markOwnedByUs,
+  waitForClipboard
 } from './capture/clipboardIO'
 import type { PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
@@ -48,6 +49,11 @@ export class PasteService {
     } else {
       this.capture.markSelfWrite(item.content)
       await writeClipboardText(item.content)
+      // Don't inject a paste until the selection really holds this text.
+      if (!(await waitForClipboard(item.content))) {
+        console.error('[paste] clipboard did not take ownership in time')
+        return false
+      }
     }
     return true
   }
@@ -91,12 +97,19 @@ export class PasteService {
     // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
     if (getSettings().pasteInjection === 'portal') {
       this.hideWindow()
-      await sleep(150)
-      if (await portalPaste()) return { method: 'injected' }
-      // Window is already hidden, so the renderer toast won't be seen — use a
-      // desktop notification for the fallback hint instead.
+      // Focus has to land back on the target window before the keystroke arrives,
+      // or it goes nowhere. 150ms was too tight on a loaded system.
+      await sleep(300)
+      if (await portalPaste()) {
+        console.log('[paste] injected via portal')
+        return { method: 'injected' }
+      }
+      // Previously this still reported 'injected', so a failed paste looked
+      // identical to a successful one: the window closed and nothing happened.
+      // Tell the truth so the UI can say "press Ctrl+V".
+      console.error('[paste] portal injection failed; content is on the clipboard')
       new Notification({ title: 'Copied', body: 'Press Ctrl+V to paste', silent: true }).show()
-      return { method: 'injected' } // renderer should not re-toast or re-hide
+      return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
     }
 
     // Tier 0: the renderer shows the toast, then hides the window.

@@ -128,6 +128,26 @@ function spawnOwner(args: string[], data: Buffer): Promise<void> {
 }
 
 /**
+ * Wait until the selection actually holds what we just wrote.
+ *
+ * Flushing stdin to `xclip` is not the same as `xclip` having taken ownership of
+ * the X selection. Injecting Ctrl+V before that happens pastes the *previous*
+ * clipboard contents — or nothing. The gap scales with payload size, so short
+ * clips appeared to work while longer ones silently failed.
+ */
+export async function waitForClipboard(expected: string, timeoutMs = 800): Promise<boolean> {
+  if (process.platform !== 'linux') return true
+  const deadline = Date.now() + timeoutMs
+  const head = expected.slice(0, 64)
+  while (Date.now() < deadline) {
+    const got = (await xclip(['-selection', 'clipboard', '-o'], 'utf8')) as string | null
+    if (got !== null && got.slice(0, 64) === head) return true
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  return false
+}
+
+/**
  * True when our own process owns the X CLIPBOARD selection. Requesting a selection
  * we own means asking ourselves for data — a self-deadlock risk that can take the
  * compositor down with it. Callers skip reads when this is true.
