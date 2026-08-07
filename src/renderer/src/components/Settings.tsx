@@ -9,6 +9,7 @@ import type {
 import { invoke } from '../lib/ipc'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
+import DragStrip from './DragStrip'
 import Toasts from './Toasts'
 import { PlusIcon, TrashIcon } from './icons'
 
@@ -18,6 +19,14 @@ const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
   { id: 'openai', label: 'OpenAI' },
   { id: 'gemini', label: 'Gemini' }
 ]
+
+/** Placeholder = the default model used when no override is set. */
+const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
+  'claude-agent': 'haiku',
+  codex: '(codex default)',
+  openai: 'gpt-5.6-luna',
+  gemini: 'gemini-flash-lite-latest'
+}
 
 const SECTIONS = [
   ['general', 'General'],
@@ -91,6 +100,39 @@ function NumberField({
       inputMode="numeric"
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+      }}
+    />
+  )
+}
+
+/** Draft-then-commit text input: persists on blur / Enter, not per keystroke. */
+function TextField({
+  value,
+  placeholder,
+  password,
+  onCommit
+}: {
+  value: string
+  placeholder?: string
+  password?: boolean
+  onCommit: (v: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+  return (
+    <input
+      className="set-input text-field"
+      type={password ? 'password' : 'text'}
+      value={draft}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoComplete="off"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft.trim() !== value) onCommit(draft.trim())
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
       }}
@@ -220,6 +262,30 @@ function ActionEditor({
             {k}
           </label>
         ))}
+        <label className="action-provider">
+          Provider
+          <select
+            className="set-input"
+            value={draft.provider ?? ''}
+            title="Provider override for this action — blank uses the default transforms provider"
+            onChange={(e) => {
+              const v = e.target.value
+              const next: SavedAction = {
+                ...draft,
+                provider: v === '' ? undefined : (v as ProviderId)
+              }
+              setDraft(next)
+              onSave(next)
+            }}
+          >
+            <option value="">Default</option>
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
     </div>
   )
@@ -314,6 +380,7 @@ export default function Settings() {
   if (!settings) {
     return (
       <div className="appwin" data-theme={theme}>
+        <DragStrip title="Settings" />
         <div className="appwin-loading">Loading settings…</div>
       </div>
     )
@@ -329,10 +396,10 @@ export default function Settings() {
 
   return (
     <div className="appwin settings-win" data-theme={theme}>
-      <header className="appwin-header">
-        <div className="appwin-title">Settings</div>
-        <span className={'saved-flash' + (savedFlash ? ' show' : '')}>Saved</span>
-      </header>
+      <DragStrip
+        title="Settings"
+        tools={<span className={'saved-flash' + (savedFlash ? ' show' : '')}>Saved</span>}
+      />
       <div className="settings-body">
         <nav className="settings-nav">
           {SECTIONS.map(([id, label]) => (
@@ -440,6 +507,29 @@ export default function Settings() {
                 />
               </Row>
               <div className="set-block">
+                <div className="set-label">Models</div>
+                <div className="set-sub">
+                  Fast models by default; pick any model your provider supports.
+                </div>
+                <div className="model-grid">
+                  {PROVIDERS.map((p) => (
+                    <label key={p.id} className="model-row">
+                      <span className="model-provider">{p.label}</span>
+                      <TextField
+                        value={s.models[p.id] ?? ''}
+                        placeholder={MODEL_PLACEHOLDERS[p.id]}
+                        onCommit={(v) => {
+                          const models = { ...s.models }
+                          if (v) models[p.id] = v
+                          else delete models[p.id]
+                          patch({ models })
+                        }}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="set-block">
                 <div className="set-label">Provider status</div>
                 <div className="provider-list">
                   {providers.length === 0 && (
@@ -483,24 +573,56 @@ export default function Settings() {
               <Row label="Fetch & summarize copied links" sub="Enrich copied URLs with page titles and summaries.">
                 <Toggle checked={s.linkEnrichment} onChange={(v) => patch({ linkEnrichment: v })} />
               </Row>
+              <Row
+                label="Firecrawl API key"
+                sub="Upgrades link extraction for JS-heavy pages. Stored locally, never required."
+              >
+                <TextField
+                  password
+                  value={s.firecrawlApiKey ?? ''}
+                  placeholder="fc-… (optional — better article extraction)"
+                  onCommit={(v) => patch({ firecrawlApiKey: v || undefined })}
+                />
+              </Row>
               <Row label="Sessions" sub="Group bursts of copying into titled work sessions.">
                 <Toggle checked={s.sessionsEnabled} onChange={(v) => patch({ sessionsEnabled: v })} />
               </Row>
-              <Row label="Transcription" sub="Speech-to-text engine for the scratchpad mic.">
+              <Row
+                label="Transcription"
+                sub="Speech-to-text engine for dictation and the scratchpad mic."
+              >
                 <select
                   className="set-input"
                   value={s.transcription.provider}
                   onChange={(e) =>
                     patch({
-                      transcription: { provider: e.target.value as AppSettings['transcription']['provider'] }
+                      transcription: {
+                        provider: e.target.value as AppSettings['transcription']['provider']
+                      }
                     })
                   }
                 >
                   <option value="openai">OpenAI</option>
-                  <option value="local" disabled>
-                    Local (coming soon)
-                  </option>
+                  <option value="local">Local (Parakeet, offline)</option>
                 </select>
+              </Row>
+              <Row
+                label="Auto-paste dictation"
+                sub="Paste dictation into the focused app automatically."
+              >
+                <Toggle
+                  checked={s.dictation.autoPaste}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, autoPaste: v } })}
+                />
+              </Row>
+              <Row
+                label="Keep dictation audio"
+                sub="Keep recordings so transcripts can be retried."
+              >
+                <Toggle
+                  checked={s.dictation.keepAudio}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, keepAudio: v } })}
+                />
               </Row>
             </>
           )}

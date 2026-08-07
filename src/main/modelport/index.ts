@@ -40,8 +40,12 @@ function routedProvider(feature: Feature): ProviderId {
   return feature === 'enrichment' ? s.enrichment.provider : s.transforms.provider
 }
 
-export async function complete(feature: Feature, req: PortRequest): Promise<string> {
-  const primary = routedProvider(feature)
+export async function complete(
+  feature: Feature,
+  req: PortRequest,
+  providerOverride?: ProviderId
+): Promise<string> {
+  const primary = providerOverride ?? routedProvider(feature)
   const order = [primary, ...FALLBACKS.filter((p) => p !== primary)]
   let lastErr: unknown = null
   for (const provider of order) {

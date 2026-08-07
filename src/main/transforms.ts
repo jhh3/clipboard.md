@@ -30,7 +30,12 @@ const TEXT_BUILTINS: Partial<Record<BuiltinTransformId, TextFn>> = {
 }
 
 /** AI lane hook — wired to ModelPort when it lands; kept as a seam so transforms.ts has no provider knowledge. */
-export type AiTransformFn = (prompt: string, content: string, isImagePath?: string) => Promise<string>
+export type AiTransformFn = (
+  prompt: string,
+  content: string,
+  isImagePath?: string,
+  provider?: import('@shared/types').ProviderId
+) => Promise<string>
 let aiTransform: AiTransformFn | null = null
 
 export function setAiTransform(fn: AiTransformFn): void {
@@ -58,7 +63,8 @@ export async function runTransform(req: TransformRequest): Promise<TransformResu
       return await runAi(
         action.prompt ?? '',
         item.kind === 'image' ? '' : item.content,
-        item.kind === 'image' ? item.content : undefined
+        item.kind === 'image' ? item.content : undefined,
+        action.provider
       )
     }
 
@@ -94,11 +100,16 @@ export async function runTransform(req: TransformRequest): Promise<TransformResu
   }
 }
 
-async function runAi(prompt: string, content: string, imagePath?: string): Promise<TransformResult> {
+async function runAi(
+  prompt: string,
+  content: string,
+  imagePath?: string,
+  provider?: import('@shared/types').ProviderId
+): Promise<TransformResult> {
   if (!aiTransform) {
     return { ok: false, error: 'AI transforms not configured yet — set up a provider in Settings' }
   }
-  const output = await aiTransform(prompt, content, imagePath)
+  const output = await aiTransform(prompt, content, imagePath, provider)
   return { ok: true, output, outputKind: 'text' }
 }
 

@@ -2,6 +2,7 @@
 export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html'
 
 export type ContentClass =
+  | 'transcription'
   | 'code'
   | 'link'
   | 'error'
@@ -86,6 +87,8 @@ export interface SavedAction {
   prompt?: string
   /** Which clip kinds this action applies to. */
   appliesTo: Array<'text' | 'image'>
+  /** Optional per-action provider override (falls back to the transforms default). */
+  provider?: ProviderId
 }
 
 export type BuiltinTransformId =
@@ -181,7 +184,23 @@ export interface AppSettings {
   embeddings: { enabled: boolean }
   transcription: { provider: 'openai' | 'local' }
   linkEnrichment: boolean
+  /** Optional Firecrawl key: upgrades link enrichment for JS-heavy pages. */
+  firecrawlApiKey?: string
   sessionsEnabled: boolean
+  /** Per-provider model overrides (fast models by default). */
+  models: Partial<Record<ProviderId, string>>
+  /** Saved geometry per aux window (hash route -> bounds). */
+  windowBounds?: Record<string, { x: number; y: number; width: number; height: number }>
+  dictation: {
+    /** Auto-paste the transcript into the focused app when injection is available. */
+    autoPaste: boolean
+    /** Keep the recorded audio file so a transcript can be retried. */
+    keepAudio: boolean
+    /** MediaDevices deviceId for the mic; empty = system default. */
+    deviceId?: string
+    /** Human-readable label of the chosen mic, for display when it's unplugged. */
+    deviceLabel?: string
+  }
   voiceSamples: string[]
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
@@ -227,11 +246,20 @@ export interface IpcInvokeMap {
   'rewrite:get': () => { text: string } | null
   /** Replace the selection: clipboard + injection. */
   'rewrite:apply': (payload: { output: string }) => PasteOutcome
-  /** Transcribe recorded audio (base64) -> text. */
-  'scratch:transcribe': (payload: { audioB64: string; mime: string }) => { ok: boolean; text?: string; error?: string }
+  /** Transcribe recorded audio (base64) -> text. Also used by the dictation overlay. */
+  'scratch:transcribe': (payload: {
+    audioB64: string
+    mime: string
+    /** Dictation flow: save as a transcription clip and auto-paste per settings. */
+    dictation?: boolean
+  }) => { ok: boolean; text?: string; error?: string; pasted?: boolean; id?: number }
+  /** Retry transcription of a stored dictation recording. */
+  'dictation:retry': (itemId: number) => { ok: boolean; text?: string; error?: string }
   /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
   'scratch:save': (payload: { text: string; itemId?: number }) => number
   'window:hide': () => void
+  /** Dictation HUD tells main it finished (transcript delivered or aborted). */
+  'dictation:done': () => void
   'window:open-settings': () => void
   'window:open-scratchpad': (itemId?: number) => void
   'app:version': () => string
@@ -242,6 +270,8 @@ export interface IpcEventMap {
   'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' }
   'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
   'scratchpad:shown': { itemId?: number }
+  'dictation:start': Record<string, never>
+  'dictation:stop': Record<string, never>
   'toast': { message: string; kind: 'info' | 'error' | 'success' }
 }
 
@@ -258,6 +288,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   transcription: { provider: 'openai' },
   linkEnrichment: true,
   sessionsEnabled: true,
+  // Fast-by-default: haiku on the Claude lane, Luna on OpenAI, flash-lite on Gemini.
+  models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
+  dictation: { autoPaste: true, keepAudio: true },
   voiceSamples: [],
   savedActions: [],
   smartCollections: [],

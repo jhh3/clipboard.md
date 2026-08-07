@@ -9,6 +9,8 @@ export interface HotkeyActions {
   rewrite: () => void
   screenshot: () => void
   scratchpad: () => void
+  /** Push-to-talk dictation: toggles recording (GNOME keybindings can't report key-up). */
+  dictate: () => void
 }
 
 /**
@@ -24,6 +26,7 @@ export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
     globalShortcut.register('Command+Shift+R', actions.rewrite)
     globalShortcut.register('Command+Shift+S', actions.screenshot)
     globalShortcut.register('Command+Shift+E', actions.scratchpad)
+    globalShortcut.register('Command+Shift+D', actions.dictate)
     return
   }
   await ensureGnomeKeybindings()
@@ -40,7 +43,8 @@ const BINDINGS: Binding[] = [
   { slug: 'clipboard-md', name: 'clipboard.md — palette', binding: '<Control><Alt>v', arg: '--toggle' },
   { slug: 'clipboard-md-rewrite', name: 'clipboard.md — rewrite selection', binding: '<Control><Alt>r', arg: '--rewrite' },
   { slug: 'clipboard-md-shot', name: 'clipboard.md — screenshot', binding: '<Control><Alt>s', arg: '--capture' },
-  { slug: 'clipboard-md-scratch', name: 'clipboard.md — scratchpad', binding: '<Control><Alt>e', arg: '--scratchpad' }
+  { slug: 'clipboard-md-scratch', name: 'clipboard.md — scratchpad', binding: '<Control><Alt>e', arg: '--scratchpad' },
+  { slug: 'clipboard-md-dictate', name: 'clipboard.md — dictate', binding: '<Control><Alt>d', arg: '--dictate' }
 ]
 
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
@@ -86,6 +90,7 @@ export function routeArgs(argv: string[], actions: HotkeyActions): void {
   if (argv.includes('--rewrite')) actions.rewrite()
   else if (argv.includes('--capture')) actions.screenshot()
   else if (argv.includes('--scratchpad')) actions.scratchpad()
+  else if (argv.includes('--dictate')) actions.dictate()
   else actions.toggle()
 }
 

@@ -69,6 +69,8 @@ export default function Palette() {
 
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const actionInputRef = useRef<HTMLInputElement | null>(null)
+  /** Synchronous double-submit guard: `running` state lags a render behind. */
+  const runningRef = useRef(false)
 
   // ── chips / filters ───────────────────────────────────────────────────────
   const chips = useMemo<Chip[]>(
@@ -252,12 +254,15 @@ export default function Palette() {
     const item = visible[sel]
     if (!item) return
     try {
+      // Keep the 'actions:list' order verbatim (never alphabetize): the
+      // interesting AI actions come first by design.
       const list = await invoke('actions:list', item.kind === 'image' ? 'image' : 'text')
       setActions(list)
     } catch {
       setActions([])
     }
     setActionInput('')
+    // Empty input → the first action is preselected.
     setActionHighlight(0)
     setMode({ name: 'action', item })
   }, [visible, sel])
@@ -275,6 +280,8 @@ export default function Palette() {
 
   const runTransform = useCallback(
     async (item: ClipItem, req: TransformRequest, label: string) => {
+      if (runningRef.current) return
+      runningRef.current = true
       setRunning(true)
       try {
         const res = await invoke('transform:run', req)
@@ -295,6 +302,7 @@ export default function Palette() {
       } catch {
         addToast('Transform failed', 'error')
       } finally {
+        runningRef.current = false
         setRunning(false)
       }
     },
@@ -387,6 +395,8 @@ export default function Palette() {
         return
       }
       const itemId = rewrite.itemId
+      if (runningRef.current) return
+      runningRef.current = true
       setRunning(true)
       try {
         const res = await invoke('transform:run', { itemId, ...partial })
@@ -402,6 +412,7 @@ export default function Palette() {
       } catch {
         addToast('Transform failed', 'error')
       } finally {
+        runningRef.current = false
         setRunning(false)
       }
     },
@@ -422,6 +433,23 @@ export default function Palette() {
       }
     } catch {
       addToast('Apply failed', 'error')
+    }
+  }, [rewrite, addToast, hideSoon])
+
+  /** One step back from the rewrite result to the action list (result stays committed to history). */
+  const backRewrite = useCallback(() => {
+    setRewrite((r) => (r ? { ...r, out: null } : r))
+  }, [])
+
+  const copyRewrite = useCallback(async () => {
+    const out = rewrite?.out
+    if (!out) return
+    try {
+      await navigator.clipboard.writeText(out.output)
+      addToast('Result copied to clipboard', 'success')
+      hideSoon()
+    } catch {
+      addToast('Copy failed', 'error')
     }
   }, [rewrite, addToast, hideSoon])
 
@@ -459,12 +487,17 @@ export default function Palette() {
     if (rewrite) {
       if (e.key === 'Escape') {
         e.preventDefault()
-        exitRewrite()
+        // Step back one level: result → action list → close.
+        if (rewrite.out) backRewrite()
+        else exitRewrite()
         return
       }
       if (running) return
       if (rewrite.out) {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' && mod) {
+          e.preventDefault()
+          void copyRewrite()
+        } else if (e.key === 'Enter') {
           e.preventDefault()
           void applyRewrite()
         }
@@ -643,13 +676,14 @@ export default function Palette() {
     const rewriteHints: Array<[string, string]> = rewrite.out
       ? [
           ['↵', 'replace selection'],
-          ['esc', 'cancel']
+          ['⌃↵', 'copy'],
+          ['esc', 'back']
         ]
       : [
           ['↵', 'run'],
           ['↑↓', 'choose'],
           ['key', 'instant action'],
-          ['esc', 'cancel']
+          ['esc', 'close']
         ]
     return (
       <div className="palette rewrite-mode" data-theme={theme}>
@@ -672,6 +706,18 @@ export default function Palette() {
               <span className="result-badge">rewritten</span>
             </div>
             <pre className="preview-text result-output">{rewrite.out.output}</pre>
+            <div className="result-actions">
+              <button className="btn primary" onClick={() => void applyRewrite()}>
+                Replace <kbd>↵</kbd>
+              </button>
+              <button className="btn" onClick={() => void copyRewrite()}>
+                Copy <kbd>⌃↵</kbd>
+              </button>
+              <button className="btn" onClick={backRewrite}>
+                Back <kbd>esc</kbd>
+              </button>
+            </div>
+            <div className="replace-hint">↵ replaces your selection</div>
           </div>
         ) : (
           <>
@@ -779,14 +825,14 @@ export default function Palette() {
           />
         </div>
         <div className="right-pane">
-          {mode.name !== 'normal' && (
+          {mode.name === 'action' && (
             <ActionBar
               input={actionInput}
               onInput={(v) => {
                 setActionInput(v)
                 setActionHighlight(0)
               }}
-              actions={mode.name === 'action' ? filteredActions : []}
+              actions={filteredActions}
               highlight={actionHighlight}
               onHighlight={setActionHighlight}
               onRunAction={(a) => runSavedAction(mode.item, a)}
@@ -795,6 +841,19 @@ export default function Palette() {
             />
           )}
           <PreviewPane item={previewItem} result={resultView} />
+          {mode.name === 'result' && (
+            <div className="result-actions pane-actions">
+              <button className="btn primary" onClick={() => void pasteResult(mode, false)}>
+                Paste <kbd>↵</kbd>
+              </button>
+              <button className="btn" onClick={() => void copyResult(mode)}>
+                Copy <kbd>⌃↵</kbd>
+              </button>
+              <button className="btn" onClick={() => setMode({ name: 'action', item: mode.item })}>
+                Back <kbd>esc</kbd>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       <div className="footer-bar">

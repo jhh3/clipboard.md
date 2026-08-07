@@ -129,11 +129,38 @@ async function enrichOne(id: number): Promise<void> {
   })
 }
 
+/** Firecrawl scrape when a key is configured — much better on JS-heavy pages. */
+async function firecrawlScrape(url: string): Promise<{ text: string; title: string } | null> {
+  const key = getSettings().firecrawlApiKey
+  if (!key) return null
+  try {
+    const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true })
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as {
+      data?: { markdown?: string; metadata?: { title?: string } }
+    }
+    const text = data.data?.markdown?.slice(0, 8000) ?? ''
+    if (!text) return null
+    return { text, title: data.data?.metadata?.title ?? '' }
+  } catch (err) {
+    console.log('[enrich] firecrawl failed, falling back to local fetch:', err)
+    return null
+  }
+}
+
 /** Fetch a copied URL, extract readable text, summarize + tag it into the index. */
 async function enrichLink(id: number, url: string): Promise<void> {
   let pageText = ''
   let pageTitle = ''
-  try {
+  const fc = await firecrawlScrape(url.startsWith('http') ? url : `https://${url}`)
+  if (fc) {
+    pageText = fc.text
+    pageTitle = fc.title
+  } else try {
     const controller = new AbortController()
     const t = setTimeout(() => controller.abort(), 15_000)
     const res = await fetch(url.startsWith('http') ? url : `https://${url}`, {

@@ -12,10 +12,13 @@ import {
   showPalette,
   hidePalette,
   sendToPalette,
-  openScratchpadWindow
+  openScratchpadWindow,
+  showDictationHud,
+  stopDictation,
+  hideDictationHud
 } from './windows'
 import { setupHotkeys, routeArgs, teardownHotkeys, type HotkeyActions } from './hotkeys'
-import { getSettings } from './settings'
+import { getSettings, flushSettings } from './settings'
 import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
 import { startEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
@@ -73,6 +76,7 @@ if (!gotLock) {
 } else {
   let pendingRewriteText: string | null = null
   let capture!: CaptureService
+  let dictating = false
 
   const actions: HotkeyActions = {
     toggle: () => togglePalette(),
@@ -94,7 +98,18 @@ if (!gotLock) {
         if (path) capture.ingestImageFile(path)
       })()
     },
-    scratchpad: () => openScratchpadWindow()
+    scratchpad: () => openScratchpadWindow(),
+    dictate: () => {
+      // GNOME custom keybindings only fire on key-down, so the hotkey toggles:
+      // press to start, press again (or Esc) to stop and transcribe.
+      if (dictating) {
+        dictating = false
+        stopDictation()
+      } else {
+        dictating = true
+        showDictationHud()
+      }
+    }
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -114,21 +129,31 @@ if (!gotLock) {
     const paste = new PasteService(capture, hidePalette)
 
     // AI transforms: the "my voice" system context rides along when samples exist.
-    setAiTransform(async (prompt, content, imagePath) => {
+    setAiTransform(async (prompt, content, imagePath, provider) => {
       const samples = getSettings().voiceSamples
       const system =
         samples.length > 0
           ? `Samples of the user's writing voice:\n${samples.map((s) => `---\n${s}`).join('\n')}\n---`
           : undefined
-      return complete('transforms', {
-        system,
-        prompt: `${prompt}\n\nINPUT:\n${content}`,
-        imagePath,
-        maxTokens: 4000
-      })
+      return complete(
+        'transforms',
+        {
+          system,
+          prompt: `${prompt}\n\nINPUT:\n${content}`,
+          imagePath,
+          maxTokens: 4000
+        },
+        provider
+      )
     })
 
-    registerIpc(paste, capture, { getText: () => pendingRewriteText })
+    registerIpc(paste, capture, {
+      getText: () => pendingRewriteText,
+      onDictationDone: () => {
+        dictating = false
+        hideDictationHud()
+      }
+    })
     createPaletteWindow()
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
@@ -152,7 +177,10 @@ if (!gotLock) {
     }
   }
 
-  app.on('will-quit', () => teardownHotkeys())
+  app.on('will-quit', () => {
+    teardownHotkeys()
+    flushSettings() // don't lose a debounced write on exit
+  })
 
   // Tray-less background app: closing windows must not quit.
   app.on('window-all-closed', () => {

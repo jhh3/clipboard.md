@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs'
 import type { PortRequest } from './index'
+import { getSettings } from '../settings'
 
 /**
  * One client for every OpenAI-compatible API. OpenAI and Gemini expose the same
@@ -55,7 +56,7 @@ export async function openaiCompatComplete(
     : req.prompt
 
   const body: Record<string, unknown> = {
-    model: cfg.model,
+    model: getSettings().models[provider] ?? cfg.model,
     messages: [
       ...(req.system ? [{ role: 'system', content: req.system }] : []),
       { role: 'user', content: userContent }

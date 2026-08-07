@@ -18,6 +18,7 @@ export default defineConfig({
           'dbus-next',
           'sharp',
           'tesseract.js',
+          'x11',
           '@huggingface/transformers',
           '@anthropic-ai/claude-agent-sdk',
           '@openai/codex-sdk'

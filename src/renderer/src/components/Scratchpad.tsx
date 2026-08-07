@@ -1,22 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, on } from '../lib/ipc'
+import { blobToB64, preferredAudioMime } from '../lib/audio'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
+import DragStrip from './DragStrip'
 import Toasts from './Toasts'
 import { MicIcon } from './icons'
-
-function blobToB64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onerror = () => reject(r.error)
-    r.onload = () => {
-      const s = String(r.result)
-      resolve(s.slice(s.indexOf(',') + 1))
-    }
-    r.readAsDataURL(blob)
-  })
-}
 
 function formatElapsed(sec: number): string {
   const m = Math.floor(sec / 60)
@@ -113,9 +103,7 @@ export default function Scratchpad() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
+      const mime = preferredAudioMime()
       const rec = new MediaRecorder(stream, { mimeType: mime })
       chunksRef.current = []
       rec.ondataavailable = (e) => {
@@ -222,16 +210,20 @@ export default function Scratchpad() {
 
   return (
     <div className="appwin scratch-win" data-theme={theme}>
-      <header className="appwin-header">
-        <div className="appwin-title">
-          Scratchpad
-          {itemId != null && <span className="scratch-item-badge">clip #{itemId}</span>}
-        </div>
-        <label className="mono-toggle">
-          <input type="checkbox" checked={mono} onChange={(e) => setMono(e.target.checked)} />
-          monospace
-        </label>
-      </header>
+      <DragStrip
+        title={
+          <>
+            Scratchpad
+            {itemId != null && <span className="scratch-item-badge">clip #{itemId}</span>}
+          </>
+        }
+        tools={
+          <label className="mono-toggle">
+            <input type="checkbox" checked={mono} onChange={(e) => setMono(e.target.checked)} />
+            monospace
+          </label>
+        }
+      />
       <div className="scratch-body">
         <textarea
           ref={taRef}

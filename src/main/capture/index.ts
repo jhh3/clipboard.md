@@ -51,8 +51,48 @@ export class CaptureService {
     if (this.timer) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     this.lastHash = this.snapshotHash()
-    const interval = getSettings().pollIntervalMs
-    this.timer = setInterval(() => this.tick(), interval)
+    if (process.platform === 'linux' && this.startXFixesPush()) {
+      // Push mode: XFixes owner-change events via the Xwayland bridge. Keep a slow
+      // safety-net poll in case the X connection drops silently.
+      this.timer = setInterval(() => this.tick(), 2000)
+    } else {
+      // macOS (no push API exists — NSPasteboard is poll-only by design) and fallback.
+      this.timer = setInterval(() => this.tick(), getSettings().pollIntervalMs)
+    }
+  }
+
+  /** Event-driven capture: XFixes SetSelectionOwner notifications. Returns success. */
+  private startXFixesPush(): boolean {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const x11 = require('x11') as { createClient: (cb: (err: Error | null, d: any) => void) => void }
+      x11.createClient((err: Error | null, display: any) => {
+        if (err) {
+          console.error('[capture] x11 push unavailable, staying on poll:', err.message)
+          return
+        }
+        const X = display.client
+        X.require('fixes', (ferr: Error | null, Fixes: any) => {
+          if (ferr) return
+          const root = display.screen[0].root
+          X.InternAtom(false, 'CLIPBOARD', (aerr: Error | null, clipAtom: number) => {
+            if (aerr) return
+            Fixes.SelectSelectionInput(root, clipAtom, 1 /* SetSelectionOwner */)
+            X.on('event', (ev: { name?: string }) => {
+              if (ev.name === 'SelectionNotify') {
+                // Owner changed; give the new owner a beat to serve targets.
+                setTimeout(() => this.tick(), 60)
+              }
+            })
+          })
+        })
+        X.on('error', (e: Error) => console.error('[capture] x11 event error:', e.message))
+      })
+      return true
+    } catch (err) {
+      console.error('[capture] x11 module unavailable:', err)
+      return false
+    }
   }
 
   stop(): void {

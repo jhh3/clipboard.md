@@ -42,7 +42,8 @@ body {
 /* ── theme tokens (shared by the palette and the opaque app windows) ── */
 
 .palette,
-.appwin {
+.appwin,
+.hud {
   --accent: #8b5cf6;
   --accent-bright: #a78bfa;
   --accent-dim: rgba(139, 92, 246, 0.14);
@@ -85,7 +86,8 @@ body {
 }
 
 .palette[data-theme='light'],
-.appwin[data-theme='light'] {
+.appwin[data-theme='light'],
+.hud[data-theme='light'] {
   --accent: #6d3df0;
   --accent-bright: #7c4dff;
   --accent-dim: rgba(109, 61, 240, 0.1);
@@ -471,6 +473,9 @@ code {
   overflow: auto;
   padding: 14px;
   min-height: 0;
+  /* Preview content is inspection surface: clicks select text, never trigger
+     row actions — keep it copyable everywhere (body is user-select: none). */
+  user-select: text;
 }
 
 .preview-text {
@@ -718,6 +723,43 @@ code {
   background: var(--border);
 }
 
+/* Visible primary controls for result views — the keyboard shortcuts still
+   work, but the buttons make the flow discoverable with a mouse. */
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.result-actions .btn kbd {
+  margin-left: 2px;
+  opacity: 0.85;
+}
+
+.btn.primary kbd {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.pane-actions {
+  flex: none;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.rewrite-result .result-actions {
+  margin-top: 12px;
+}
+
+.replace-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* ── action bar ── */
 
 .action-bar {
@@ -774,6 +816,20 @@ code {
   font-size: 10.5px;
   color: var(--accent-bright);
   white-space: nowrap;
+}
+
+/* "↵ runs the highlighted match" variant — quieter than the free-prompt hint. */
+.free-hint.match {
+  color: var(--text-dim);
+}
+
+.free-hint .hint-title {
+  display: inline-block;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .spinner {
@@ -846,6 +902,60 @@ code {
 
 .action-key.inactive {
   opacity: 0.35;
+}
+
+/* in-flight transform: shimmer over the running row, everything else muted */
+.action-item:disabled {
+  cursor: default;
+}
+
+.action-item.running {
+  position: relative;
+  overflow: hidden;
+  color: var(--text-dim);
+}
+
+.action-item.running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 25%, var(--accent-dim) 50%, transparent 75%);
+  animation: shimmer 1.1s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* progress underline on the prompt row while a free prompt / transform runs */
+.action-input-row.running {
+  position: relative;
+}
+
+.action-input-row.running::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-bright), transparent);
+  background-size: 200% 100%;
+  animation: progress-slide 1.2s linear infinite;
+}
+
+@keyframes progress-slide {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 /* ── footer / status line ── */
@@ -987,22 +1097,66 @@ textarea {
   font-size: 12px;
 }
 
-.appwin-header {
+/* ── drag strip: 32px draggable titlebar for aux windows ──
+   Fallback for WMs that tile/undecorate the frameless settings/scratchpad
+   windows; interactive children live in explicit no-drag zones. */
+
+.drag-strip {
   flex: none;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 20px;
+  gap: 10px;
+  padding: 0 6px 0 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
+  -webkit-app-region: drag;
 }
 
-.appwin-title {
-  font-size: 15px;
-  font-weight: 600;
+.drag-strip-title {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.drag-strip-tools {
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  -webkit-app-region: no-drag;
+}
+
+.drag-strip-close {
+  flex: none;
+  -webkit-app-region: no-drag;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.drag-strip-close:hover {
+  color: var(--text);
+  background: var(--sel-bg-hover);
 }
 
 /* ── search-bar icon buttons ── */
@@ -1551,6 +1705,47 @@ select.set-input option {
   cursor: pointer;
 }
 
+.applies-group label.action-provider {
+  margin-left: auto;
+  gap: 6px;
+}
+
+/* per-provider model overrides */
+
+.model-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.model-provider {
+  flex: none;
+  width: 108px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.model-row .set-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.set-input.text-field {
+  min-width: 240px;
+}
+
+.model-row .set-input.text-field {
+  min-width: 0;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Scratchpad window
    ───────────────────────────────────────────────────────────────────────── */
@@ -1694,4 +1889,252 @@ select.set-input option {
   font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Dictation HUD (#dictation) — 360×132 frameless, transparent, non-focusable
+   overlay. The 10px root margin is the shadow's runway; every shadow layer
+   must fade to ~0 inside it or the window clips it into a hard rectangle.
+   ───────────────────────────────────────────────────────────────────────── */
+
+body.route-dictation #root {
+  padding: 10px;
+}
+
+.hud {
+  --shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.6),
+    0 1px 3px rgba(0, 0, 0, 0.4),
+    0 4px 10px rgba(0, 0, 0, 0.32);
+
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 70px),
+    var(--bg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: hud-in 130ms ease-out;
+}
+
+.hud[data-theme='light'] {
+  --shadow:
+    0 0 0 0.5px rgba(20, 20, 40, 0.12),
+    0 1px 3px rgba(30, 20, 60, 0.12),
+    0 4px 10px rgba(30, 20, 60, 0.16);
+
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0) 70px),
+    var(--bg);
+}
+
+@keyframes hud-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* header: dot + the one word you read at a glance + right-aligned meta */
+
+.hud-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.hud-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-status.done {
+  color: var(--success);
+}
+
+.hud-status.error {
+  color: var(--danger);
+}
+
+.hud-elapsed {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.hud-footnote {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-glow);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.hud-rec-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 60%, transparent);
+  animation: hud-pulse 1.4s ease-out infinite;
+}
+
+@keyframes hud-pulse {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent);
+  }
+  70% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 6px rgba(0, 0, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+/* input-level meter: 24 bars scaled per-frame from an AnalyserNode */
+
+.hud-meter {
+  flex: none;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.hud-bar {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  transform: scaleY(0.1);
+  opacity: 0.28;
+  will-change: transform, opacity;
+}
+
+/* Reduced motion: one calm static bar instead of a dancing spectrum. */
+@media (prefers-reduced-motion: reduce) {
+  .hud {
+    animation: none;
+  }
+  .hud-rec-dot {
+    animation: none;
+  }
+  .hud-meter {
+    gap: 0;
+  }
+  .hud-bar {
+    transform: scaleY(0.28);
+    opacity: 0.45;
+    border-radius: 0;
+  }
+  .hud-bar:first-child {
+    border-radius: 2px 0 0 2px;
+  }
+  .hud-bar:last-child {
+    border-radius: 0 2px 2px 0;
+  }
+}
+
+/* indeterminate shimmer while the audio is in flight */
+
+.hud-shimmer {
+  flex: none;
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  overflow: hidden;
+}
+
+.hud-shimmer span {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 10%,
+    var(--accent-bright) 50%,
+    transparent 90%
+  );
+  animation: shimmer 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-shimmer span {
+    animation: none;
+    background: var(--accent);
+    opacity: 0.55;
+  }
+}
+
+/* result + error bodies — both clamp so the HUD can never grow past its window */
+
+.hud-transcript {
+  flex: 1;
+  min-height: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.hud-error {
+  flex: 1;
+  min-height: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.hud-hint {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.hud-hint kbd {
+  font-size: 9.5px;
+  padding: 1px 4px 0;
 }

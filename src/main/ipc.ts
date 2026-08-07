@@ -1,4 +1,5 @@
 import { app, ipcMain, nativeImage, BrowserWindow } from 'electron'
+import { rmSync } from 'fs'
 import type { SearchQuery, TransformRequest, AppSettings, SavedAction } from '@shared/types'
 import {
   searchKeyword,
@@ -9,21 +10,23 @@ import {
   enrichQueueStats,
   sessionsList,
   upsertClip,
-  enqueueEnrichment
+  enqueueEnrichment,
+  updateEnrichment
 } from './store/items'
+import { saveRecording, transcribeFile } from './transcribe'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import { hidePalette, sendToPalette, openSettingsWindow, openScratchpadWindow } from './windows'
 import type { PasteService } from './paste'
 import type { CaptureService } from './capture'
 import { providersStatus } from './modelport'
-import { openaiTranscribe } from './modelport/openaiCompat'
 import { enrichmentRunStats } from './enrichment'
 import { embedQuery } from './embeddings'
 import { portalScreenshot } from './portal'
 
 export interface RewriteState {
   getText: () => string | null
+  onDictationDone: () => void
 }
 
 export function registerIpc(
@@ -31,6 +34,7 @@ export function registerIpc(
   capture: CaptureService,
   rewrite: RewriteState
 ): void {
+  ipcMain.handle('dictation:done', () => rewrite.onDictationDone())
   ipcMain.handle('search', async (_e, q: SearchQuery) => {
     if (q.mode === 'hybrid' && q.q.trim()) {
       const qe = await embedQuery(q.q)
@@ -130,9 +134,60 @@ export function registerIpc(
     paste.pasteRaw(payload.output, 'text')
   )
 
-  ipcMain.handle('scratch:transcribe', async (_e, payload: { audioB64: string; mime: string }) => {
+  ipcMain.handle(
+    'scratch:transcribe',
+    async (_e, payload: { audioB64: string; mime: string; dictation?: boolean }) => {
+      const audio = Buffer.from(payload.audioB64, 'base64')
+      // Persist first when retries are wanted: a failed transcript shouldn't cost the
+      // user their words. With keepAudio off we still need a temp file to decode from,
+      // but it's removed once transcription finishes.
+      const keep = getSettings().dictation.keepAudio
+      const path = saveRecording(audio, payload.mime)
+      const cleanup = (): void => {
+        if (keep) return
+        for (const p of [path, path.replace(/\.[^.]+$/, '.16k.wav')]) {
+          try {
+            rmSync(p, { force: true })
+          } catch {
+            /* best effort */
+          }
+        }
+      }
+      try {
+        const text = await transcribeFile(path, audio, payload.mime)
+        cleanup()
+        if (!payload.dictation) return { ok: true, text }
+        if (!text) return { ok: false, error: 'Nothing was transcribed' }
+
+        const { id } = upsertClip({
+          kind: 'text',
+          content: text,
+          preview: text.slice(0, 500),
+          secret: false,
+          derivedVia: keep ? `dictation:${path}` : 'dictation'
+        })
+        updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
+        sendToPalette('items:changed', { reason: 'captured' })
+
+        if (getSettings().dictation.autoPaste) {
+          const outcome = await paste.pasteRaw(text, 'text')
+          return { ok: true, text, id, pasted: outcome.method === 'injected' }
+        }
+        paste.setClipboardRaw(text, 'text')
+        return { ok: true, text, id, pasted: false }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: keep ? `${msg} (recording kept at ${path})` : msg }
+      }
+    }
+  )
+
+  ipcMain.handle('dictation:retry', async (_e, itemId: number) => {
+    const item = getItem(itemId)
+    const path = item?.derivedVia?.startsWith('dictation:') ? item.derivedVia.slice(10) : null
+    if (!path) return { ok: false, error: 'No stored recording for this item' }
     try {
-      const text = await openaiTranscribe(Buffer.from(payload.audioB64, 'base64'), payload.mime)
+      const text = await transcribeFile(path)
       return { ok: true, text }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

@@ -3,6 +3,7 @@ import { constants } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
+import { getSettings } from '../settings'
 
 /**
  * Subscription lane #1: Claude Agent SDK, riding the user's existing Claude Code
@@ -33,6 +34,8 @@ export async function claudeAgentComplete(req: PortRequest): Promise<string> {
   const q = query({
     prompt,
     options: {
+      // Fast by default: haiku unless the user picks otherwise in Settings.
+      model: getSettings().models['claude-agent'] ?? 'haiku',
       systemPrompt:
         (req.system ? req.system + '\n\n' : '') +
         'You are a silent text-processing engine inside a clipboard manager. Return ONLY the requested output — no preamble, no commentary.' +
