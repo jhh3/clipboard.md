@@ -4,6 +4,7 @@ import { join } from 'path'
 import { createHash } from 'crypto'
 import type { BuiltinTransformId, TransformRequest, TransformResult, SavedAction } from '@shared/types'
 import { getItem, upsertClip } from './store/items'
+import { detectSecret } from './capture/filters'
 import { getSettings } from './settings'
 
 type TextFn = (s: string) => string
@@ -49,6 +50,12 @@ function findAction(actionId: string): SavedAction | undefined {
 export async function runTransform(req: TransformRequest): Promise<TransformResult> {
   const item = getItem(req.itemId)
   if (!item) return { ok: false, error: 'Item not found' }
+  // The UI promises secrets are never sent to a model — honour that here, where it
+  // is actually enforceable, rather than trusting every call site.
+  if (item.secret) {
+    const isAi = req.freePrompt || findAction(req.actionId ?? '')?.type === 'prompt'
+    if (isAi) return { ok: false, error: 'This clip is flagged as a secret — AI actions are blocked' }
+  }
 
   try {
     // Free-text prompt → AI lane.
@@ -120,6 +127,11 @@ export function commitTransform(
   const via = req.freePrompt
     ? `prompt: ${req.freePrompt.slice(0, 80)}`
     : findAction(req.actionId ?? '')?.title ?? 'transform'
+  // A derived clip inherits its source's secret flag, and is re-scanned on its own
+  // merits — otherwise "trim whitespace" laundered a secret into an indexed clip.
+  const source = getItem(req.itemId)
+  const secret =
+    !!source?.secret || (req.outputKind === 'text' && detectSecret(req.output) !== null)
 
   if (req.outputKind === 'image') {
     // Image outputs come back as data URLs; store as file alongside captures.
@@ -138,7 +150,7 @@ export function commitTransform(
       thumb: img.resize({ width: Math.min(320, width) }).toDataURL(),
       width,
       height,
-      secret: false,
+      secret,
       derivedFrom: req.itemId,
       derivedVia: via
     })
@@ -149,7 +161,7 @@ export function commitTransform(
     kind: 'text',
     content: req.output,
     preview: req.output.slice(0, 500),
-    secret: false,
+    secret,
     derivedFrom: req.itemId,
     derivedVia: via
   })

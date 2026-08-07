@@ -129,6 +129,46 @@ async function enrichOne(id: number): Promise<void> {
   })
 }
 
+/**
+ * Copying a URL is not consent to visit it. Refuse anything that would turn the
+ * clipboard into an SSRF gadget (loopback, LAN, link-local, non-http schemes) or
+ * that would leak a credentialed link to a third party.
+ */
+function isFetchableUrl(raw: string): URL | null {
+  let url: URL
+  try {
+    url = new URL(raw.startsWith('http') ? raw : `https://${raw}`)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  if (url.username || url.password) return null
+
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host === '::1' ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^169\.254\./.test(host) || // link-local, incl. cloud metadata
+    /^f[cd][0-9a-f]{2}:/i.test(host) || // unique-local IPv6
+    /^fe80:/i.test(host) // link-local IPv6
+  ) {
+    return null
+  }
+  // Signed/pre-authenticated links: fetching them is an action, and shipping them
+  // to a scraper leaks the credential.
+  if (/(^|[?&])(token|access_token|api_key|apikey|signature|sig|x-amz-signature|password)=/i.test(url.search)) {
+    return null
+  }
+  return url
+}
+
 /** Firecrawl scrape when a key is configured — much better on JS-heavy pages. */
 async function firecrawlScrape(url: string): Promise<{ text: string; title: string } | null> {
   const key = getSettings().firecrawlApiKey
@@ -156,19 +196,39 @@ async function firecrawlScrape(url: string): Promise<{ text: string; title: stri
 async function enrichLink(id: number, url: string): Promise<void> {
   let pageText = ''
   let pageTitle = ''
-  const fc = await firecrawlScrape(url.startsWith('http') ? url : `https://${url}`)
+  const safe = isFetchableUrl(url)
+  if (!safe) {
+    updateEnrichment(id, { autoTitle: url.slice(0, 80), contentClass: 'link' })
+    return
+  }
+  const fc = await firecrawlScrape(safe.toString())
   if (fc) {
     pageText = fc.text
     pageTitle = fc.title
   } else try {
     const controller = new AbortController()
     const t = setTimeout(() => controller.abort(), 15_000)
-    const res = await fetch(url.startsWith('http') ? url : `https://${url}`, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' },
-      redirect: 'follow'
-    })
-    clearTimeout(t)
+    let res: Response
+    try {
+      res = await fetch(safe.toString(), {
+        signal: controller.signal,
+        headers: { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' },
+        // 'manual' so a public URL can't redirect us onto a private address.
+        redirect: 'manual'
+      })
+      if (res.status >= 300 && res.status < 400) {
+        const next = res.headers.get('location')
+        const safeNext = next ? isFetchableUrl(new URL(next, safe).toString()) : null
+        if (!safeNext) throw new Error(`refusing redirect to ${next ?? 'unknown'}`)
+        res = await fetch(safeNext.toString(), {
+          signal: controller.signal,
+          headers: { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' },
+          redirect: 'manual'
+        })
+      }
+    } finally {
+      clearTimeout(t) // was leaked whenever fetch threw
+    }
     const type = res.headers.get('content-type') ?? ''
     if (res.ok && type.includes('html')) {
       const html = (await res.text()).slice(0, 500_000)

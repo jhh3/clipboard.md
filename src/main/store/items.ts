@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { rmSync } from 'fs'
 import type { ClipItem, ClipKind, SearchQuery, SearchResult } from '@shared/types'
 import { getDb, hasVec, EMBEDDING_DIM } from './db'
 
@@ -28,6 +29,17 @@ interface ItemRow {
   char_count: number
   enriched_at: number | null
   embedded_at: number | null
+}
+
+/**
+ * List rows omit the heavy fields. `content` is unbounded and `thumb` is a base64
+ * data URL, so returning full items for a 400-row result meant tens of MB
+ * structure-cloned across IPC on every keystroke. The renderer fetches full content
+ * and full-res images lazily for the single selected item.
+ */
+function rowToListItem(r: ItemRow): ClipItem {
+  const item = rowToItem(r)
+  return { ...item, content: item.kind === 'image' ? item.content : '', html: undefined }
 }
 
 function rowToItem(r: ItemRow): ClipItem {
@@ -132,10 +144,45 @@ export function setPinned(id: number, pinned: boolean): void {
   getDb().prepare('UPDATE items SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id)
 }
 
-export function deleteItem(id: number): void {
+/**
+ * Delete rows, their vectors, and any image files they were the last reference to.
+ * "Delete" that leaves the image on disk is a privacy bug, not just a space leak —
+ * and orphaned vectors keep occupying slots in the KNN top-K, degrading search.
+ */
+export function purgeItems(ids: number[]): number {
+  if (ids.length === 0) return 0
   const db = getDb()
-  if (hasVec()) db.prepare('DELETE FROM items_vec WHERE item_id = ?').run(id)
-  db.prepare('DELETE FROM items WHERE id = ?').run(id)
+  const list = ids.map((n) => Number(n)).join(',')
+
+  const files = (
+    db.prepare(`SELECT DISTINCT content FROM items WHERE id IN (${list}) AND kind = 'image'`).all() as
+      Array<{ content: string }>
+  ).map((r) => r.content)
+
+  if (hasVec()) db.prepare(`DELETE FROM items_vec WHERE item_id IN (${list})`).run()
+  const res = db.prepare(`DELETE FROM items WHERE id IN (${list})`).run()
+
+  // Images are content-addressed, so several rows can share a file: only unlink
+  // once nothing references it any more.
+  for (const file of files) {
+    const stillUsed = (
+      db.prepare("SELECT COUNT(*) c FROM items WHERE kind = 'image' AND content = ?").get(file) as {
+        c: number
+      }
+    ).c
+    if (stillUsed === 0) {
+      try {
+        rmSync(file, { force: true })
+      } catch (err) {
+        console.error('[store] could not remove image file:', err)
+      }
+    }
+  }
+  return res.changes
+}
+
+export function deleteItem(id: number): void {
+  purgeItems([id])
 }
 
 export function updateEnrichment(
@@ -238,7 +285,7 @@ export function searchKeyword(q: SearchQuery): SearchResult {
     const total = (
       db.prepare(`SELECT COUNT(*) c FROM items WHERE 1=1 ${where}`).get(params) as { c: number }
     ).c
-    return { items: rows.map(rowToItem), total, mode: 'keyword' }
+    return { items: rows.map(rowToListItem), total, mode: 'keyword' }
   }
 
   const match = ftsQuery(q.q)
@@ -251,7 +298,7 @@ export function searchKeyword(q: SearchQuery): SearchResult {
        LIMIT @limit OFFSET @offset`
     )
     .all({ ...params, match, limit, offset }) as ItemRow[]
-  return { items: rows.map(rowToItem), total: rows.length, mode: 'keyword' }
+  return { items: rows.map(rowToListItem), total: rows.length, mode: 'keyword' }
 }
 
 /**
@@ -294,15 +341,19 @@ export function searchHybrid(q: SearchQuery, queryEmbedding: Float32Array | null
   const ranked = [...rrf.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit)
   if (ranked.length === 0) return searchKeyword(q)
 
-  const placeholders = ranked.map(() => '?').join(',')
+  // The vector arm can't express the chip filters, so apply them during hydration —
+  // otherwise a semantic hit ignores "Images only" and friends.
+  // ids come from our own rowids; inlining them avoids mixing positional and named
+  // bindings in one statement (the filter clauses use named params).
+  const idList = ranked.map(([id]) => Number(id)).join(',')
   const rows = db
-    .prepare(`SELECT * FROM items WHERE id IN (${placeholders})`)
-    .all(...ranked.map(([id]) => id)) as ItemRow[]
+    .prepare(`SELECT * FROM items WHERE id IN (${idList}) AND secret = 0 ${where}`)
+    .all(params) as ItemRow[]
   const byId = new Map(rows.map((r) => [r.id, r]))
   const items = ranked
     .map(([id]) => byId.get(id))
     .filter((r): r is ItemRow => !!r)
-    .map(rowToItem)
+    .map(rowToListItem)
   return { items, total: items.length, mode: 'hybrid' }
 }
 
@@ -352,11 +403,20 @@ export function itemsNeedingEmbedding(limit: number): ClipItem[] {
     .prepare(
       `SELECT * FROM items
        WHERE embedded_at IS NULL AND secret = 0
-         AND (kind != 'image' OR ocr_text IS NOT NULL)
+         AND (kind != 'image' OR (ocr_text IS NOT NULL AND length(trim(ocr_text)) > 0))
        ORDER BY last_copied_at DESC LIMIT ?`
     )
     .all(limit) as ItemRow[]
   return rows.map(rowToItem)
+}
+
+/**
+ * Mark an item as "embedding attempted, nothing to embed" so it stops occupying the
+ * head of the queue. Without this a handful of empty items permanently starved the
+ * embedder and no newer clip ever got a vector.
+ */
+export function markEmbeddingSkipped(id: number): void {
+  getDb().prepare('UPDATE items SET embedded_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
 export function sessionsList(): Array<{
@@ -389,17 +449,18 @@ export function sessionsList(): Array<{
 export function applyRetention(retentionDays: number, maxItems: number): number {
   const db = getDb()
   const cutoff = Date.now() - retentionDays * 86_400_000
-  const r1 = db
-    .prepare('DELETE FROM items WHERE pinned = 0 AND last_copied_at < ?')
-    .run(cutoff)
-  const r2 = db
+  // Select then purge, so vectors and image files go with the rows.
+  const expired = db
+    .prepare('SELECT id FROM items WHERE pinned = 0 AND last_copied_at < ?')
+    .all(cutoff) as Array<{ id: number }>
+  const overflow = db
     .prepare(
-      `DELETE FROM items WHERE pinned = 0 AND id IN (
-         SELECT id FROM items WHERE pinned = 0
-         ORDER BY last_copied_at DESC LIMIT -1 OFFSET ?)`
+      `SELECT id FROM items WHERE pinned = 0
+       ORDER BY last_copied_at DESC LIMIT -1 OFFSET ?`
     )
-    .run(maxItems)
-  return r1.changes + r2.changes
+    .all(maxItems) as Array<{ id: number }>
+  const ids = [...new Set([...expired, ...overflow].map((r) => r.id))]
+  return purgeItems(ids)
 }
 
 export function exportAll(): ClipItem[] {

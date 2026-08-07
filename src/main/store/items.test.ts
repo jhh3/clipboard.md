@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { openDb, closeDb, hasVec, EMBEDDING_DIM } from './db'
@@ -15,7 +15,8 @@ import {
   enqueueEnrichment,
   dequeueEnrichment,
   enrichQueueStats,
-  applyRetention
+  applyRetention,
+  purgeItems
 } from './items'
 
 let dir: string
@@ -61,7 +62,35 @@ describe('store', () => {
   it('finds items via FTS with prefix matching', () => {
     textClip('postgres connection string for staging environment')
     const res = searchKeyword({ q: 'postgres conn' })
-    expect(res.items.some((i) => i.content.includes('postgres connection'))).toBe(true)
+    expect(res.items.some((i) => i.preview.includes('postgres connection'))).toBe(true)
+  })
+
+  it('omits heavy fields from list results but keeps them on item:get', () => {
+    // Guards the IPC payload: list rows must not carry full bodies (a 400-row
+    // result was shipping tens of MB per keystroke).
+    const big = 'x'.repeat(50_000)
+    const { id } = textClip(big)
+    const listed = searchKeyword({ q: '' }).items.find((i) => i.id === id)!
+    expect(listed.content).toBe('')
+    expect(listed.preview.length).toBeLessThanOrEqual(500)
+    expect(getItem(id)!.content).toHaveLength(50_000)
+  })
+
+  it('purges image files and vectors, not just rows', () => {
+    const file = join(dir, 'purge-me.png')
+    writeFileSync(file, 'not-a-real-png')
+    const { id } = upsertClip({
+      kind: 'image',
+      content: file,
+      preview: 'Image 1x1',
+      secret: false
+    })
+    const v = new Float32Array(EMBEDDING_DIM).fill(0)
+    v[5] = 1
+    storeEmbedding(id, v)
+    purgeItems([id])
+    expect(getItem(id)).toBeNull()
+    expect(existsSync(file)).toBe(false)
   })
 
   it('excludes secret content from FTS index', () => {
@@ -91,6 +120,19 @@ describe('store', () => {
     updateEnrichment(id, { contentClass: 'code', language: 'sql' })
     const res = searchKeyword({ q: '', kind: 'code' })
     expect(res.items.map((i) => i.id)).toContain(id)
+  })
+
+  it('applies chip filters to semantic (vector) hits', () => {
+    // Regression guard: the vector arm can't express filters, so hydration must.
+    const { id } = textClip('a semantic-only match about kubernetes autoscaling')
+    const v = new Float32Array(EMBEDDING_DIM).fill(0)
+    v[3] = 1
+    storeEmbedding(id, v)
+    const q = new Float32Array(EMBEDDING_DIM).fill(0)
+    q[3] = 1
+    // Same query, filtered to images: the text hit must not come back.
+    const res = searchHybrid({ q: 'kubernetes', kind: 'image' }, q)
+    expect(res.items.map((i) => i.id)).not.toContain(id)
   })
 
   it('runs hybrid search with RRF when vectors exist', () => {

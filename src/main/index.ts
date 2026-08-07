@@ -3,7 +3,7 @@ import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
-import { openDb } from './store/db'
+import { openDb, getDb } from './store/db'
 import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
@@ -19,7 +19,7 @@ import {
   stopDictation,
   hideDictationHud
 } from './windows'
-import { setupHotkeys, routeArgs, teardownHotkeys, type HotkeyActions } from './hotkeys'
+import { setupHotkeys, routeArgs, teardownHotkeys, ACTION_FLAGS, type HotkeyActions } from './hotkeys'
 import { getSettings, flushSettings } from './settings'
 import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
 import { startEmbeddings } from './embeddings'
@@ -27,9 +27,6 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { portalScreenshot } from './portal'
 
-// Linux: run under Xwayland deliberately. Mutter's Xwayland bridge is the one
-// clipboard path verified to work focuslessly on GNOME Wayland (DESIGN.md §2),
-// and it restores window positioning that native-Wayland Electron lacks.
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
 if (process.platform === 'linux') {
@@ -175,6 +172,19 @@ if (!gotLock) {
     runRetention()
     setInterval(runRetention, 24 * 60 * 60 * 1000)
 
+    // Keep the WAL from growing without bound in a long-lived process, and reclaim
+    // space after retention deletes. Both are cheap and off the interactive path.
+    setInterval(
+      () => {
+        try {
+          getDb().pragma('wal_checkpoint(TRUNCATE)')
+        } catch (err) {
+          console.error('[db] checkpoint failed:', err)
+        }
+      },
+      30 * 60 * 1000
+    )
+
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
     if (!isAutostartEnabled()) setAutostart(true)
 
@@ -182,7 +192,9 @@ if (!gotLock) {
   })
 
   function routeArgsOnLaunch(): void {
-    if (process.argv.some((a) => ['--toggle', '--rewrite', '--capture', '--scratchpad'].includes(a))) {
+    // Any known action flag routes; routeArgs itself defaults to toggle. (A hand-
+    // maintained list here silently dropped --dictate on cold start.)
+    if (process.argv.some((a) => a.startsWith('--') && ACTION_FLAGS.includes(a))) {
       routeArgs(process.argv, actions)
     }
   }

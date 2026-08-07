@@ -85,6 +85,9 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
   }
 }
 
+/** Every CLI flag that maps to an action — keep in sync with routeArgs. */
+export const ACTION_FLAGS = BINDINGS.map((b) => b.arg)
+
 /** Route a second-instance argv to the matching action. */
 export function routeArgs(argv: string[], actions: HotkeyActions): void {
   if (argv.includes('--rewrite')) actions.rewrite()

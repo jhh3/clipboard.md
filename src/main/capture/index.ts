@@ -1,5 +1,6 @@
 import { app, nativeImage } from 'electron'
 import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
+import { getSourceApp } from './sourceApp'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -43,6 +44,7 @@ export class CaptureService {
   private lastHash = ''
   /** Hash the service itself just wrote (paste/copy actions) — skip one echo. */
   private selfHash = ''
+  private selfHashExpires = 0
   private events: CaptureEvents
 
   constructor(events: CaptureEvents) {
@@ -53,49 +55,68 @@ export class CaptureService {
     if (this.timer) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     void this.tick(true)
-    if (process.platform === 'linux' && this.startXFixesPush()) {
-      // Push mode: XFixes owner-change events. No polling at all — every read is a
-      // child-process round trip, and doing that on a timer is pure waste (and was
-      // stalling the UI thread back when reads were synchronous).
-      console.log('[capture] event-driven (XFixes); polling disabled')
+    if (process.platform === 'linux') {
+      // Every failure path below must fall back to polling: silently capturing
+      // nothing for a whole session is the worst possible outcome for this app.
+      this.startXFixesPush().then((ok) => {
+        if (ok) console.log('[capture] event-driven (XFixes); polling disabled')
+        else this.startPolling('XFixes unavailable')
+      })
     } else {
       // macOS has no clipboard-change notification API; polling is the only option.
-      this.timer = setInterval(() => void this.tick(), getSettings().pollIntervalMs)
+      this.startPolling('platform has no clipboard events')
     }
   }
 
-  /** Event-driven capture: XFixes SetSelectionOwner notifications. Returns success. */
-  private startXFixesPush(): boolean {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const x11 = require('x11') as { createClient: (cb: (err: Error | null, d: any) => void) => void }
-      x11.createClient((err: Error | null, display: any) => {
-        if (err) {
-          console.error('[capture] x11 push unavailable, staying on poll:', err.message)
-          return
-        }
-        const X = display.client
-        X.require('fixes', (ferr: Error | null, Fixes: any) => {
-          if (ferr) return
-          const root = display.screen[0].root
-          X.InternAtom(false, 'CLIPBOARD', (aerr: Error | null, clipAtom: number) => {
-            if (aerr) return
-            Fixes.SelectSelectionInput(root, clipAtom, 1 /* SetSelectionOwner */)
-            X.on('event', (ev: { name?: string }) => {
-              if (ev.name === 'SelectionNotify') {
-                // Owner changed; give the new owner a beat to serve targets.
-                setTimeout(() => void this.tick(), 60)
-              }
+  private startPolling(reason: string): void {
+    if (this.timer) return
+    console.log(`[capture] polling every ${getSettings().pollIntervalMs}ms (${reason})`)
+    this.timer = setInterval(() => void this.tick(), getSettings().pollIntervalMs)
+  }
+
+  /**
+   * Event-driven capture: XFixes SetSelectionOwner notifications. Resolves false if
+   * the X connection can't be established or the extension isn't usable, so the
+   * caller can start polling instead.
+   */
+  private startXFixesPush(): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false
+      const done = (ok: boolean, why?: string): void => {
+        if (settled) return
+        settled = true
+        if (!ok) console.error(`[capture] XFixes unavailable: ${why}`)
+        resolve(ok)
+      }
+      // If the X handshake never calls back at all, don't hang capture forever.
+      setTimeout(() => done(false, 'timed out connecting to X'), 3000)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const x11 = require('x11') as { createClient: (cb: (err: Error | null, d: any) => void) => void }
+        x11.createClient((err: Error | null, display: any) => {
+          if (err) return done(false, err.message)
+          const X = display.client
+          X.require('fixes', (ferr: Error | null, Fixes: any) => {
+            if (ferr) return done(false, `fixes extension: ${ferr.message}`)
+            const root = display.screen[0].root
+            X.InternAtom(false, 'CLIPBOARD', (aerr: Error | null, clipAtom: number) => {
+              if (aerr) return done(false, `InternAtom: ${aerr.message}`)
+              Fixes.SelectSelectionInput(root, clipAtom, 1 /* SetSelectionOwner */)
+              X.on('event', (ev: { name?: string }) => {
+                if (ev.name === 'SelectionNotify') {
+                  // Owner changed; give the new owner a beat to serve targets.
+                  setTimeout(() => void this.tick(), 60)
+                }
+              })
+              done(true)
             })
           })
+          X.on('error', (e: Error) => console.error('[capture] x11 event error:', e.message))
         })
-        X.on('error', (e: Error) => console.error('[capture] x11 event error:', e.message))
-      })
-      return true
-    } catch (err) {
-      console.error('[capture] x11 module unavailable:', err)
-      return false
-    }
+      } catch (err) {
+        done(false, String(err))
+      }
+    })
   }
 
   stop(): void {
@@ -107,6 +128,9 @@ export class CaptureService {
   markSelfWrite(text?: string): void {
     // The next tick's snapshot will match this hash and be ignored once.
     this.selfHash = text !== undefined ? this.hashText(text) : '*any*'
+    // '*any*' must expire: without this, pasting an image armed a wildcard that
+    // silently swallowed whatever the user copied next, minutes later.
+    this.selfHashExpires = Date.now() + 2000
   }
 
   private hashText(text: string): string {
@@ -134,7 +158,8 @@ export class CaptureService {
           ? this.hashText(snap.text)
           : ''
       if (!hash || hash === this.lastHash) return
-      if (this.selfHash === '*any*' || hash === this.selfHash) {
+      const selfArmed = this.selfHash !== '' && Date.now() < this.selfHashExpires
+      if (selfArmed && (this.selfHash === '*any*' || hash === this.selfHash)) {
         this.selfHash = ''
         this.lastHash = hash
         return
@@ -143,8 +168,10 @@ export class CaptureService {
       // Priming at startup: remember what's already there, don't capture it.
       if (prime) return
 
-      if (snap.image) this.captureImageBuffer(snap.image, snap.formats)
-      else await this.captureText(snap.text, snap.formats)
+      // Resolve the source app before storing so the ignore-list can actually act.
+      const sourceApp = await getSourceApp()
+      if (snap.image) this.captureImageBuffer(snap.image, snap.formats, sourceApp)
+      else await this.captureText(snap.text, snap.formats, sourceApp)
     } catch (err) {
       console.error('[capture] tick failed:', err)
     } finally {
@@ -152,9 +179,9 @@ export class CaptureService {
     }
   }
 
-  private async captureText(text: string, formats: string[]): Promise<void> {
+  private async captureText(text: string, formats: string[], sourceApp?: string): Promise<void> {
     const settings = getSettings()
-    const { verdict, reason } = runFilters({ text, formats, ignoreApps: settings.ignoreApps })
+    const { verdict, reason } = runFilters({ text, formats, sourceApp, ignoreApps: settings.ignoreApps })
     if (verdict === 'skip') return
 
     const kind = classifyText(text)
@@ -164,6 +191,7 @@ export class CaptureService {
       content: text,
       html,
       preview: text.slice(0, 500),
+      sourceApp,
       secret: verdict === 'store-secret'
     })
     if (created && verdict === 'store' && settings.enrichment.enabled) {
@@ -175,12 +203,12 @@ export class CaptureService {
     this.events.onItem(id, created)
   }
 
-  private captureImageBuffer(png: Buffer, formats: string[]): void {
-    const { verdict } = runFilters({ formats, ignoreApps: getSettings().ignoreApps })
+  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: string): void {
+    const { verdict } = runFilters({ formats, sourceApp, ignoreApps: getSettings().ignoreApps })
     if (verdict === 'skip') return
     const img = nativeImage.createFromBuffer(png)
     if (img.isEmpty()) return
-    const result = ingestNativeImage(img)
+    const result = ingestNativeImage(img, sourceApp)
     if (!result) return
     this.events.onItem(result.id, result.created)
   }
@@ -195,7 +223,7 @@ export class CaptureService {
   }
 }
 
-function ingestNativeImage(img: Electron.NativeImage): { id: number; created: boolean } | null {
+function ingestNativeImage(img: Electron.NativeImage, sourceApp?: string): { id: number; created: boolean } | null {
   const png = img.toPNG()
   const sha = createHash('sha256').update(png).digest('hex')
   const file = join(imagesDir(), `${sha}.png`)
@@ -211,7 +239,8 @@ function ingestNativeImage(img: Electron.NativeImage): { id: number; created: bo
     thumb,
     width,
     height,
-    secret: false
+    secret: false,
+    sourceApp
   })
   if (result.created && getSettings().enrichment.enabled) enqueueEnrichment(result.id)
   return result

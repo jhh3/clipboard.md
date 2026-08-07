@@ -137,11 +137,9 @@ async function localTranscribe(path: string): Promise<string> {
 export async function transcribeFile(path: string, audio?: Buffer, mime?: string): Promise<string> {
   const provider = getSettings().transcription.provider
   if (provider === 'local') {
-    try {
-      return await localTranscribe(path)
-    } catch (err) {
-      console.error('[transcribe] local failed, falling back to cloud:', err)
-    }
+    // No silent local→cloud fallback: choosing local transcription is a privacy
+    // decision, and quietly uploading the recording would violate it.
+    return localTranscribe(path)
   }
   const buf = audio ?? (await import('fs')).readFileSync(path)
   return (await openaiTranscribe(buf, mime ?? 'audio/webm')).trim()

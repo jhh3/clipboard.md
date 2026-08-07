@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { DEFAULT_SETTINGS, type AppSettings, type SavedAction, type SmartCollection } from '@shared/types'
 
@@ -57,7 +57,19 @@ export function getSettings(): AppSettings {
   try {
     const raw = JSON.parse(readFileSync(settingsFile(), 'utf8'))
     cached = { ...DEFAULT_SETTINGS, ...raw }
-  } catch {
+  } catch (err) {
+    const file = settingsFile()
+    if (existsSync(file)) {
+      // Don't quietly pretend this is a fresh install: preserve the damaged file
+      // so the user's configuration can be recovered, and say so loudly.
+      const backup = `${file}.corrupt-${Date.now()}`
+      try {
+        renameSync(file, backup)
+        console.error(`[settings] unreadable settings file backed up to ${backup}:`, err)
+      } catch (e) {
+        console.error('[settings] unreadable settings file and backup failed:', e)
+      }
+    }
     cached = { ...DEFAULT_SETTINGS }
   }
   const stored = cached!.savedActions
@@ -100,7 +112,12 @@ export function flushSettings(): void {
   try {
     const file = settingsFile()
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(cached, null, 2))
+    // Write-then-rename: a crash mid-write used to leave truncated JSON, which
+    // getSettings() would silently treat as "no settings", losing the user's saved
+    // actions, voice samples, portal token and mic choice with no error.
+    const tmp = `${file}.tmp`
+    writeFileSync(tmp, JSON.stringify(cached, null, 2))
+    renameSync(tmp, file)
   } catch (err) {
     console.error('[settings] write failed:', err)
   }

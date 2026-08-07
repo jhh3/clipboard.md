@@ -14,6 +14,7 @@ import {
   updateEnrichment
 } from './store/items'
 import { saveRecording, transcribeFile } from './transcribe'
+import { detectSecret } from './capture/filters'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import { hidePalette, sendToPalette, openSettingsWindow, openScratchpadWindow } from './windows'
@@ -194,15 +195,19 @@ export function registerIpc(
     }
   })
   ipcMain.handle('scratch:save', (_e, payload: { text: string; itemId?: number }) => {
+    // This path receives raw selections (rewrite hotkey) and scratchpad text, so it
+    // must run the same secret scan as capture — otherwise highlighting an API key
+    // and hitting rewrite stored it indexed, embedded and queued for enrichment.
+    const secret = detectSecret(payload.text) !== null
     const { id, created } = upsertClip({
       kind: 'text',
       content: payload.text,
       preview: payload.text.slice(0, 500),
-      secret: false,
+      secret,
       derivedFrom: payload.itemId,
       derivedVia: payload.itemId ? 'scratchpad edit' : undefined
     })
-    if (created && getSettings().enrichment.enabled) enqueueEnrichment(id)
+    if (created && !secret && getSettings().enrichment.enabled) enqueueEnrichment(id)
     sendToPalette('items:changed', { reason: 'captured' })
     return id
   })

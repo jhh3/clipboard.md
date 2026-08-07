@@ -85,6 +85,10 @@ const MIGRATIONS: string[] = [
     started_at INTEGER NOT NULL,
     ended_at INTEGER NOT NULL
   );
+  `,
+  `
+  CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
+  CREATE INDEX IF NOT EXISTS idx_items_secret ON items(secret);
   `
 ]
 

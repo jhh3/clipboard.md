@@ -8,6 +8,39 @@ import { KindIcon, SparkIcon } from './icons'
 const imageCache = new Map<number, string>()
 const IMAGE_CACHE_MAX = 24
 
+/**
+ * Search results carry only previews — full text is fetched for the selected item
+ * alone, so a 400-row result doesn't ship every clip's body across IPC. Returns the
+ * item unchanged once hydrated (or immediately if it already has content).
+ */
+function useHydratedItem(item: ClipItem | null): ClipItem | null {
+  const [full, setFull] = useState<ClipItem | null>(item)
+
+  useEffect(() => {
+    if (!item) {
+      setFull(null)
+      return
+    }
+    // Images keep their file path in `content`; only text-ish kinds are stripped.
+    if (item.kind === 'image' || item.content || item.secret) {
+      setFull(item)
+      return
+    }
+    setFull(item) // show preview text immediately, upgrade when the body arrives
+    let live = true
+    invoke('item:get', item.id)
+      .then((res) => {
+        if (live && res) setFull(res)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [item])
+
+  return full
+}
+
 /** Debounced fetch of the full-res image for `id`; null while loading / unavailable. */
 function useFullImage(id: number | null): string | null {
   const [src, setSrc] = useState<string | null>(() =>
@@ -113,7 +146,10 @@ function ContentBlock({ item, dimmed }: { item: ClipItem; dimmed?: boolean }) {
       </div>
     )
   }
-  return <pre className={'preview-text' + (dimmed ? ' dimmed' : '')}>{item.content}</pre>
+  // Falls back to the preview while the full body is in flight.
+  return (
+    <pre className={'preview-text' + (dimmed ? ' dimmed' : '')}>{item.content || item.preview}</pre>
+  )
 }
 
 function MetaFooter({ item }: { item: ClipItem }) {
@@ -153,7 +189,8 @@ function MetaFooter({ item }: { item: ClipItem }) {
   )
 }
 
-export default function PreviewPane({ item, result }: Props) {
+export default function PreviewPane({ item: listItem, result }: Props) {
+  const item = useHydratedItem(listItem)
   if (!item) {
     return (
       <div className="preview-pane preview-empty">

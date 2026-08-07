@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ProviderId, ProviderStatus } from '@shared/types'
+import type { ProviderId, ProviderLane, ProviderStatus } from '@shared/types'
 import { getSettings } from '../settings'
 import { openaiCompatComplete, openaiCompatAvailable } from './openaiCompat'
 import { claudeAgentComplete, claudeAgentAvailable } from './claudeAgent'
@@ -32,8 +32,22 @@ const BACKENDS: Record<ProviderId, Backend> = {
   gemini: (req) => openaiCompatComplete('gemini', req)
 }
 
-/** Fallback order when the routed provider fails or is unavailable (subscription first). */
-const FALLBACKS: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini']
+const SUBSCRIPTION_LANE: ProviderId[] = ['claude-agent', 'codex']
+const API_LANE: ProviderId[] = ['openai', 'gemini']
+
+function laneOf(p: ProviderId): ProviderLane {
+  return SUBSCRIPTION_LANE.includes(p) ? 'subscription' : 'api'
+}
+
+/**
+ * Fallback stays inside the lane the user chose. Silently crossing from the
+ * subscription lane to third-party APIs would ship clipboard content to a provider
+ * they deliberately didn't pick — a privacy decision, not an availability one.
+ */
+function fallbacksFor(primary: ProviderId): ProviderId[] {
+  const lane = laneOf(primary) === 'subscription' ? SUBSCRIPTION_LANE : API_LANE
+  return lane.filter((p) => p !== primary)
+}
 
 function routedProvider(feature: Feature): ProviderId {
   const s = getSettings()
@@ -46,7 +60,7 @@ export async function complete(
   providerOverride?: ProviderId
 ): Promise<string> {
   const primary = providerOverride ?? routedProvider(feature)
-  const order = [primary, ...FALLBACKS.filter((p) => p !== primary)]
+  const order = [primary, ...fallbacksFor(primary)]
   let lastErr: unknown = null
   for (const provider of order) {
     try {
@@ -59,7 +73,8 @@ export async function complete(
     }
   }
   throw new Error(
-    `No AI provider succeeded (${String(lastErr ?? 'none available')}). Check Settings → AI Providers.`
+    `No ${laneOf(primary)}-lane provider succeeded (${String(lastErr ?? 'none available')}). ` +
+      'Check Settings → AI Providers.'
   )
 }
 

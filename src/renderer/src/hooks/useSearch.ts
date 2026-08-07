@@ -16,7 +16,9 @@ export function useSearch(q: string, kind: ClipKind | 'all', collection: string 
   const refresh = useCallback(async () => {
     const ticket = ++seq.current
     try {
-      const res = await invoke('search', { q, kind, collection, limit: LIMIT })
+      // 'hybrid' fuses keyword + semantic results; main falls back to keyword
+      // automatically when embeddings are cold or disabled.
+      const res = await invoke('search', { q, kind, collection, limit: LIMIT, mode: 'hybrid' })
       if (ticket === seq.current) setResult(res)
     } catch {
       // main process not ready / channel error — keep last good result
