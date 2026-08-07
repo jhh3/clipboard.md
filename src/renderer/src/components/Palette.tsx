@@ -144,6 +144,9 @@ export default function Palette() {
       loadCollections()
     })
     const offToast = on('toast', (t) => addToast(t.message, t.kind))
+    // Smart collections live in settings — re-pull the (counted) list whenever
+    // settings change anywhere, so edits in the Settings window land live here.
+    const offSettings = on('settings:changed', () => loadCollections())
     const offShown = on('palette:shown', (p) => {
       setMode({ name: 'normal' })
       setQuery('')
@@ -173,6 +176,7 @@ export default function Palette() {
       offItems()
       offToast()
       offShown()
+      offSettings()
     }
   }, [addToast, loadCollections])
 

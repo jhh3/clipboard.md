@@ -45,9 +45,28 @@ if (process.platform === 'linux') {
   // Loosen only the GPU process sandbox; the renderer sandbox is unaffected.
   app.commandLine.appendSwitch('disable-gpu-sandbox')
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
-  // Auto-detected fallback: if HW accel crash-looped before, this flag file exists
-  // and we run software-rendered. Delete the file to retry hardware acceleration.
-  if (existsSync(gpuFallbackFlag())) app.disableHardwareAcceleration()
+}
+
+// Chromium features a background clipboard manager has no use for. Read-then-append,
+// because repeated appendSwitch calls overwrite rather than merge:
+//  - SpareRendererForSitePerProcess pre-launches an entire spare renderer we will
+//    never navigate into
+//  - CalculateNativeWinOcclusion does periodic work for a window that is hidden
+//    most of its life
+disableFeatures('SpareRendererForSitePerProcess,CalculateNativeWinOcclusion,HardwareMediaKeyHandling')
+
+// Auto-detected fallback: if HW accel crash-looped before, this flag file exists and
+// we run software-rendered. Delete the file to retry hardware acceleration.
+if (existsSync(gpuFallbackFlag())) {
+  app.disableHardwareAcceleration()
+  // disableHardwareAcceleration alone doesn't set the command-line switch, and
+  // several Chromium subsystems check that switch directly (electron#51363).
+  app.commandLine.appendSwitch('disable-gpu')
+}
+
+function disableFeatures(list: string): void {
+  const existing = app.commandLine.getSwitchValue('disable-features')
+  app.commandLine.appendSwitch('disable-features', existing ? `${list},${existing}` : list)
 }
 
 // A background clipboard manager must never dialog-bomb the user (Electron's

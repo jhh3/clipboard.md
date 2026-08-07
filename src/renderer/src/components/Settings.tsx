@@ -6,7 +6,7 @@ import type {
   ProviderStatus,
   SavedAction
 } from '@shared/types'
-import { invoke } from '../lib/ipc'
+import { invoke, on } from '../lib/ipc'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
@@ -38,6 +38,31 @@ const SECTIONS = [
 ] as const
 
 type SectionId = (typeof SECTIONS)[number][0]
+
+/** Long file paths read better with the middle elided — head and tail carry the meaning. */
+function truncateMiddle(text: string, max = 54): string {
+  if (text.length <= max) return text
+  const head = Math.ceil((max - 1) / 2)
+  const tail = max - 1 - head
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`
+}
+
+/**
+ * External settings updates (the 'settings:changed' broadcast) must not yank a
+ * field out from under the user, so draft inputs only re-sync while unfocused.
+ */
+function useSyncedDraft<T>(
+  value: T,
+  el: { current: HTMLElement | null }
+): [T, (v: T) => void] {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => {
+    if (el.current && document.activeElement === el.current) return
+    setDraft(value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
+  return [draft, setDraft]
+}
 
 // ── small building blocks ────────────────────────────────────────────────────
 
@@ -86,8 +111,8 @@ function NumberField({
   max: number
   onCommit: (n: number) => void
 }) {
-  const [draft, setDraft] = useState(String(value))
-  useEffect(() => setDraft(String(value)), [value])
+  const ref = useRef<HTMLInputElement | null>(null)
+  const [draft, setDraft] = useSyncedDraft(String(value), ref)
   const commit = () => {
     const n = Number(draft)
     if (Number.isFinite(n)) onCommit(Math.min(max, Math.max(min, Math.round(n))))
@@ -95,6 +120,7 @@ function NumberField({
   }
   return (
     <input
+      ref={ref}
       className="set-input num"
       value={draft}
       inputMode="numeric"
@@ -119,10 +145,11 @@ function TextField({
   password?: boolean
   onCommit: (v: string) => void
 }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
+  const ref = useRef<HTMLInputElement | null>(null)
+  const [draft, setDraft] = useSyncedDraft(value, ref)
   return (
     <input
+      ref={ref}
       className="set-input text-field"
       type={password ? 'password' : 'text'}
       value={draft}
@@ -258,11 +285,12 @@ function VoiceSample({
   onCommit: (v: string) => void
   onRemove: () => void
 }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  const [draft, setDraft] = useSyncedDraft(value, ref)
   return (
     <div className="voice-sample">
       <textarea
+        ref={ref}
         className="set-textarea"
         value={draft}
         placeholder="A sample of your writing voice…"
@@ -387,6 +415,10 @@ export default function Settings() {
   const [section, setSection] = useState<SectionId>('general')
   const [savedFlash, setSavedFlash] = useState(false)
   const [newApp, setNewApp] = useState('')
+  const [exporting, setExporting] = useState(false)
+  const [exportNote, setExportNote] = useState<{ ok: boolean; text: string; title?: string } | null>(
+    null
+  )
   const { toasts, addToast } = useToasts()
   const theme = useTheme(settings?.theme)
   const flashTimer = useRef(0)
@@ -400,6 +432,10 @@ export default function Settings() {
       .then(setProviders)
       .catch(() => {})
   }, [addToast])
+
+  // Settings can change from other windows (or main itself) — adopt the
+  // broadcast wholesale. Focused draft inputs keep their draft (useSyncedDraft).
+  useEffect(() => on('settings:changed', (p) => setSettings(p.settings)), [])
 
   // Saved actions get their own local list (persisted via actions:save/:delete,
   // not settings:set) — seed it once from the loaded settings.
@@ -453,6 +489,30 @@ export default function Settings() {
       .then(flashSaved)
       .catch(() => addToast('Failed to save action', 'error'))
   }, [addToast, flashSaved])
+
+  /** Native save dialog lives in main; a user-cancelled dialog reports nothing. */
+  const exportHistory = useCallback(async () => {
+    setExporting(true)
+    setExportNote(null)
+    try {
+      const res = await invoke('data:export')
+      if (res.ok) {
+        const n = res.count ?? 0
+        const path = res.path ?? ''
+        setExportNote({
+          ok: true,
+          text: `Exported ${n.toLocaleString()} item${n === 1 ? '' : 's'} to ${truncateMiddle(path)}`,
+          title: path
+        })
+      } else if ((res.error ?? '').toLowerCase() !== 'cancelled') {
+        setExportNote({ ok: false, text: res.error ?? 'Export failed' })
+      }
+    } catch {
+      setExportNote({ ok: false, text: 'Export failed' })
+    } finally {
+      setExporting(false)
+    }
+  }, [])
 
   const deleteAction = useCallback(
     (id: string) => {
@@ -678,20 +738,27 @@ export default function Settings() {
                 label="Transcription"
                 sub="Speech-to-text engine for dictation and the scratchpad mic."
               >
-                <select
-                  className="set-input"
-                  value={s.transcription.provider}
-                  onChange={(e) =>
-                    patch({
-                      transcription: {
-                        provider: e.target.value as AppSettings['transcription']['provider']
-                      }
-                    })
-                  }
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="local">Local (Parakeet, offline)</option>
-                </select>
+                <div className="set-stack">
+                  <select
+                    className="set-input"
+                    value={s.transcription.provider}
+                    onChange={(e) =>
+                      patch({
+                        transcription: {
+                          provider: e.target.value as AppSettings['transcription']['provider']
+                        }
+                      })
+                    }
+                  >
+                    <option value="openai">OpenAI</option>
+                    <option value="local">Local (Parakeet, offline — ~490MB download)</option>
+                  </select>
+                  {s.transcription.provider === 'local' && (
+                    <div className="set-note">
+                      First use downloads a ~490MB model once, then runs fully offline.
+                    </div>
+                  )}
+                </div>
               </Row>
               <Row
                 label="Microphone"
@@ -779,6 +846,28 @@ export default function Settings() {
                   checked={s.secretAutoClear}
                   onChange={(v) => patch({ secretAutoClear: v })}
                 />
+              </Row>
+              <Row
+                label="Export history"
+                sub="Writes a JSON file of your clipboard history. Items flagged as secrets are excluded."
+              >
+                <div className="set-stack">
+                  <button
+                    className="btn"
+                    disabled={exporting}
+                    onClick={() => void exportHistory()}
+                  >
+                    {exporting ? 'Exporting…' : 'Export…'}
+                  </button>
+                  {exportNote && (
+                    <div
+                      className={'set-note' + (exportNote.ok ? ' ok' : ' warn')}
+                      title={exportNote.title}
+                    >
+                      {exportNote.text}
+                    </div>
+                  )}
+                </div>
               </Row>
             </>
           )}
