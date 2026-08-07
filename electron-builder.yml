@@ -25,6 +25,10 @@ asarUnpack:
   - '**/node_modules/onnxruntime-node/**'
   - '**/node_modules/tesseract.js*/**'
   - '**/node_modules/@anthropic-ai/claude-agent-sdk/**'
+  # sherpa-onnx loads its .node addon and dylibs by path at runtime; from inside
+  # app.asar those paths don't exist, which is exactly how sqlite-vec silently
+  # disabled semantic search in the installed build only.
+  - '**/node_modules/sherpa-onnx*/**'
 
 linux:
   syncDesktopName: true
@@ -48,9 +52,24 @@ mac:
   category: public.app-category.productivity
   hardenedRuntime: true
   gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     NSMicrophoneUsageDescription: Dictation in the scratchpad records audio to transcribe it.
     NSAppleEventsUsageDescription: Used to paste into the previously focused app.
+    # The rewrite hotkey reads the current selection through the accessibility API.
+    NSAccessibilityUsageDescription: Used to read the text you have selected so it can be rewritten, and to paste into the app you were using.
+    # Interactive screenshot capture goes through `screencapture`, which is gated by
+    # Screen Recording on modern macOS.
+    NSScreenCaptureUsageDescription: Used to capture a region of the screen into your clipboard history.
+    # Background app: no Dock icon, no ⌘-Tab entry. Set here as well as via
+    # app.dock.hide() so the icon never appears at all, not even during launch.
+    LSUIElement: true
+  extraResources:
+    # paste.ts looks for this at <resourcesPath>/clipmd-helper. It must stay
+    # executable — asar would strip that, and it is a binary, not app code.
+    - from: resources/mac/clipmd-helper
+      to: clipmd-helper
   # Signing/notarization configured on the Mac side (see MACOS-VALIDATION.md).
   identity: null
 

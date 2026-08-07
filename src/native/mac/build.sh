@@ -21,6 +21,13 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 0
 fi
 
+# Skip when already up to date, so wiring this into `pnpm dev` doesn't add ~15s of
+# swiftc to every start. `--force` rebuilds regardless.
+if [[ "${1:-}" != "--force" && -f "$out/clipmd-helper" && "$out/clipmd-helper" -nt "$here/clipmd-helper.swift" ]]; then
+  echo "[helper] up to date ($(lipo -archs "$out/clipmd-helper"))"
+  exit 0
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

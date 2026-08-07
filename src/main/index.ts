@@ -196,6 +196,10 @@ if (!gotLock) {
     const logFile = initLogging()
     console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()
+    // No Dock icon and no ⌘-Tab entry: this is a background app summoned by a hotkey,
+    // and a Dock bounce on every launch is exactly the "it feels like an app" texture
+    // Maccy avoids. Windows that genuinely need activation call app.focus() instead.
+    if (process.platform === 'darwin') app.dock?.hide()
     openDb(join(app.getPath('userData'), 'data'))
 
     capture = new CaptureService({
@@ -277,7 +281,10 @@ if (!gotLock) {
     powerMonitor.on('unlock-screen', () => capture.start())
 
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
-    if (!isAutostartEnabled()) setAutostart(true)
+    // Only from a packaged build: in dev this would register the Electron binary
+    // inside node_modules as a login item on the developer's machine, which then
+    // fails at every login once the checkout moves or the dep is reinstalled.
+    if (app.isPackaged && !isAutostartEnabled()) setAutostart(true)
 
     routeArgsOnLaunch()
   })
