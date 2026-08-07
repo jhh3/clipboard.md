@@ -116,12 +116,10 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
     ...bounds,
     show: false,
     autoHideMenuBar: true,
-    // Frameless + our own titlebar. Rationale: with WM decorations, dragging goes
-    // through the WM's interactive-move path, which on mutter uses
-    // _NET_WM_SYNC_REQUEST — if the client doesn't acknowledge frames fast enough
-    // the WM declares the app "Not Responding" about a second into the drag
-    // (reproduced consistently). We move the window ourselves instead.
-    frame: false,
+    // Native decorations. The freeze during drags was never the frame: clipboard
+    // reads on the UI thread (mutter's Wayland→X11 selection bridge) stalled the
+    // frame/ping handshake. Those reads are now off-thread — see capture/clipboardIO.
+    frame: true,
     movable: true,
     resizable: true,
     webPreferences: {

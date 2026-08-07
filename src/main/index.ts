@@ -1,4 +1,5 @@
-import { app, clipboard } from 'electron'
+import { app } from 'electron'
+import { readPrimarySelection } from './capture/clipboardIO'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
 import { openDb } from './store/db'
@@ -81,16 +82,16 @@ if (!gotLock) {
   const actions: HotkeyActions = {
     toggle: () => togglePalette(),
     rewrite: () => {
-      // PRIMARY selection (what's highlighted right now) via the Xwayland bridge.
-      const text =
-        process.platform === 'linux' ? clipboard.readText('selection') : clipboard.readText()
-      if (!text.trim()) {
+      // PRIMARY selection (what's highlighted right now), read off the UI thread.
+      void readPrimarySelection().then((text) => {
+        if (!text.trim()) {
+          showPalette()
+          return
+        }
+        pendingRewriteText = text
         showPalette()
-        return
-      }
-      pendingRewriteText = text
-      showPalette()
-      sendToPalette('palette:shown', { mode: 'rewrite', rewriteText: text })
+        sendToPalette('palette:shown', { mode: 'rewrite', rewriteText: text })
+      })
     },
     screenshot: () => {
       void (async () => {

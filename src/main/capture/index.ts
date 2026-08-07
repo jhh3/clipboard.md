@@ -1,4 +1,5 @@
-import { clipboard, app, nativeImage } from 'electron'
+import { app, nativeImage } from 'electron'
+import { readClipboard, readHtml } from './clipboardIO'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -38,6 +39,7 @@ function imagesDir(): string {
  */
 export class CaptureService {
   private timer: ReturnType<typeof setInterval> | null = null
+  private reading = false
   private lastHash = ''
   /** Hash the service itself just wrote (paste/copy actions) — skip one echo. */
   private selfHash = ''
@@ -50,14 +52,15 @@ export class CaptureService {
   start(): void {
     if (this.timer) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
-    this.lastHash = this.snapshotHash()
+    void this.tick(true)
     if (process.platform === 'linux' && this.startXFixesPush()) {
-      // Push mode: XFixes owner-change events via the Xwayland bridge. Keep a slow
-      // safety-net poll in case the X connection drops silently.
-      this.timer = setInterval(() => this.tick(), 2000)
+      // Push mode: XFixes owner-change events. No polling at all — every read is a
+      // child-process round trip, and doing that on a timer is pure waste (and was
+      // stalling the UI thread back when reads were synchronous).
+      console.log('[capture] event-driven (XFixes); polling disabled')
     } else {
-      // macOS (no push API exists — NSPasteboard is poll-only by design) and fallback.
-      this.timer = setInterval(() => this.tick(), getSettings().pollIntervalMs)
+      // macOS has no clipboard-change notification API; polling is the only option.
+      this.timer = setInterval(() => void this.tick(), getSettings().pollIntervalMs)
     }
   }
 
@@ -81,7 +84,7 @@ export class CaptureService {
             X.on('event', (ev: { name?: string }) => {
               if (ev.name === 'SelectionNotify') {
                 // Owner changed; give the new owner a beat to serve targets.
-                setTimeout(() => this.tick(), 60)
+                setTimeout(() => void this.tick(), 60)
               }
             })
           })
@@ -110,29 +113,23 @@ export class CaptureService {
     return createHash('sha256').update('text').update(text).digest('hex')
   }
 
-  private snapshotHash(): string {
-    const formats = clipboard.availableFormats()
-    if (formats.some((f) => f.startsWith('image/'))) {
-      const img = clipboard.readImage()
-      if (!img.isEmpty()) {
-        return createHash('sha256').update('image').update(img.toBitmap()).digest('hex')
-      }
-    }
-    const text = clipboard.readText()
-    return text ? this.hashText(text) : ''
-  }
-
-  private tick(): void {
+  /**
+   * Read the clipboard and store anything new. Never touches the clipboard on the
+   * UI thread on Linux (see clipboardIO) — a blocked read there stalls the WM
+   * frame/ping handshake and GNOME declares the app unresponsive mid-interaction.
+   */
+  private async tick(prime = false): Promise<void> {
+    if (this.reading) return // a read is already in flight; its result supersedes
+    this.reading = true
     try {
-      const settings = getSettings()
-      if (!settings.captureEnabled) return
+      if (!getSettings().captureEnabled) return
 
-      const formats = clipboard.availableFormats()
-      const isImage = formats.some((f) => f.startsWith('image/'))
-      const text = isImage ? '' : clipboard.readText()
-      if (!isImage && !text) return
-
-      const hash = isImage ? this.snapshotHash() : text ? this.hashText(text) : ''
+      const snap = await readClipboard()
+      const hash = snap.image
+        ? createHash('sha256').update('image').update(snap.image).digest('hex')
+        : snap.text
+          ? this.hashText(snap.text)
+          : ''
       if (!hash || hash === this.lastHash) return
       if (this.selfHash === '*any*' || hash === this.selfHash) {
         this.selfHash = ''
@@ -140,22 +137,25 @@ export class CaptureService {
         return
       }
       this.lastHash = hash
+      // Priming at startup: remember what's already there, don't capture it.
+      if (prime) return
 
-      if (isImage) this.captureImage(formats)
-      else this.captureText(text, formats)
+      if (snap.image) this.captureImageBuffer(snap.image, snap.formats)
+      else await this.captureText(snap.text, snap.formats)
     } catch (err) {
-      // Never let a capture hiccup kill the loop.
       console.error('[capture] tick failed:', err)
+    } finally {
+      this.reading = false
     }
   }
 
-  private captureText(text: string, formats: string[]): void {
+  private async captureText(text: string, formats: string[]): Promise<void> {
     const settings = getSettings()
     const { verdict, reason } = runFilters({ text, formats, ignoreApps: settings.ignoreApps })
     if (verdict === 'skip') return
 
     const kind = classifyText(text)
-    const html = formats.includes('text/html') ? clipboard.readHTML() : undefined
+    const html = formats.includes('text/html') ? await readHtml() : undefined
     const { id, created } = upsertClip({
       kind,
       content: text,
@@ -172,12 +172,10 @@ export class CaptureService {
     this.events.onItem(id, created)
   }
 
-  private captureImage(formats: string[]): void {
-    const settings = getSettings()
-    const { verdict } = runFilters({ formats, ignoreApps: settings.ignoreApps })
+  private captureImageBuffer(png: Buffer, formats: string[]): void {
+    const { verdict } = runFilters({ formats, ignoreApps: getSettings().ignoreApps })
     if (verdict === 'skip') return
-
-    const img = clipboard.readImage()
+    const img = nativeImage.createFromBuffer(png)
     if (img.isEmpty()) return
     const result = ingestNativeImage(img)
     if (!result) return

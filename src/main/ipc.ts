@@ -213,18 +213,6 @@ export function registerIpc(
     if (win && !win.isDestroyed()) win.hide()
     else hidePalette()
   })
-  // Manual drag: renderer reports absolute target positions; we move the window
-  // directly, never entering the WM's interactive-move/sync handshake.
-  ipcMain.handle('window:drag-begin', (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    const b = win?.getBounds() ?? { x: 0, y: 0 }
-    return { x: b.x, y: b.y }
-  })
-  ipcMain.handle('window:drag-move', (e, pos: { x: number; y: number }) => {
-    const win = BrowserWindow.fromWebContents(e.sender)
-    if (win && !win.isDestroyed()) win.setPosition(Math.round(pos.x), Math.round(pos.y))
-  })
-
   ipcMain.handle('window:open-settings', () => {
     hidePalette() // the palette is always-on-top; don't let it cover what we open
     openSettingsWindow()
