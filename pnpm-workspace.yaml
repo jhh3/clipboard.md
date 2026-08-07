@@ -1,16 +1,21 @@
 packages:
   - '.'
 
-allowBuilds:
-  electron: true
-  better-sqlite3: true
-  esbuild: true
-  electron-winstaller: true
-  sharp: true
-  onnxruntime-node: true
-  protobufjs: true
-  '@anthropic-ai/claude-agent-sdk': true
-  tesseract.js: true
+# pnpm 10 spells this `onlyBuiltDependencies` (a list). It was written as
+# `allowBuilds:` (a map), which pnpm silently ignores — every one of these had its
+# install script skipped, and only `electron-builder install-app-deps` in postinstall
+# was saving better-sqlite3. See `packageManager` in package.json: pnpm 9 ignores this
+# whole file's `overrides`/settings, so the pin is what makes any of it load.
+onlyBuiltDependencies:
+  - electron
+  - better-sqlite3
+  - esbuild
+  - electron-winstaller
+  - sharp
+  - onnxruntime-node
+  - protobufjs
+  - '@anthropic-ai/claude-agent-sdk'
+  - tesseract.js
 
 overrides:
   # usocket (dbus-next's optional native socket lib) calls util.isError, removed in

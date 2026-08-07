@@ -7,6 +7,7 @@
   "type": "commonjs",
   "license": "MIT",
   "author": "John <john@nullframe.ai>",
+  "packageManager": "pnpm@10.18.0",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
