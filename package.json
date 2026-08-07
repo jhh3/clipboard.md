@@ -16,7 +16,8 @@
     "test": "vitest run",
     "build:helper": "bash src/native/mac/build.sh",
     "build:linux": "electron-vite build && electron-builder --linux",
-    "build:mac": "pnpm build:helper && electron-vite build && electron-builder --mac"
+    "build:mac": "pnpm build:helper && electron-vite build && electron-builder --mac",
+    "build:mac:signed": "pnpm build:helper && electron-vite build && electron-builder --mac -c.mac.identity=\"$CLIPMD_SIGN_IDENTITY\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

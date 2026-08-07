@@ -87,7 +87,19 @@ mac:
     # executable — asar would strip that, and it is a binary, not app code.
     - from: resources/mac/clipmd-helper
       to: clipmd-helper
-  # Signing/notarization configured on the Mac side (see MACOS-VALIDATION.md).
+  # Unsigned by default so anyone can build without a certificate.
+  #
+  # The cost is real during development: an unsigned bundle keeps only the linker's
+  # ad-hoc signature (Identifier=Electron, no stable Designated Requirement), and TCC
+  # keys Accessibility on the code identity. Every rebuild therefore invalidates the
+  # grant — System Settings still shows the toggle ON while the app sees "not
+  # granted", which looks exactly like a bug in the app.
+  #
+  # To make the grant stick, build signed with any real identity (an Apple
+  # Development cert is enough — this is not about distribution):
+  #   security find-identity -v -p codesigning
+  #   CLIPMD_SIGN_IDENTITY="Apple Development: …" pnpm build:mac:signed
+  # Notarized direct distribution additionally needs a Developer ID Application cert.
   identity: null
 
 npmRebuild: true
