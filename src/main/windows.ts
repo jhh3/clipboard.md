@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, shell } from 'electron'
+import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
 
@@ -122,7 +122,12 @@ let scratchWin: BrowserWindow | null = null
  * no-op and getBounds reports nothing useful, so all our placement logic must sit
  * out. Mutter places and lets you drag these windows like any other app's.
  */
-const WAYLAND = process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland'
+const WAYLAND =
+  process.platform === 'linux' &&
+  process.env.XDG_SESSION_TYPE === 'wayland' &&
+  // Only true when we are a NATIVE Wayland client. Under Xwayland (which we force
+  // on GNOME/KDE so we can place the HUD) positioning works normally.
+  app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
 
 function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   // On Wayland: size only — the compositor decides where windows go, and any x/y
@@ -245,12 +250,11 @@ export function showDictationHud(): void {
       resizable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
-      // Focusable so the HUD receives the KEY-UP that ends push-to-talk. The global
-      // hotkey only ever reports key-down (GNOME custom keybindings and Electron's
-      // globalShortcut both), so hold-to-talk is only observable once some window
-      // of ours has the keyboard. Focus returns to the target app when we hide, so
-      // the paste still lands where the user was typing.
-      focusable: true,
+      // Never take focus. Key-up now comes from evdev (see ptt.ts), so the HUD has
+      // no reason to hold the keyboard — and when it did, the Ctrl+V we injected
+      // after transcribing landed in the HUD instead of the app being dictated
+      // into, which is why it reported "Pasted" while nothing was pasted.
+      focusable: false,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -274,8 +278,7 @@ export function showDictationHud(): void {
     // Bottom-centre, above where a dock/dash usually sits (honoured off Wayland).
     y: Math.round(area.y + area.height - H - 120)
   })
-  win.show()
-  win.focus()
+  win.showInactive() // must not steal focus from the app being dictated into
   // On the first invocation the renderer hasn't subscribed yet — a send here would
   // be dropped and the first hotkey press would silently do nothing.
   if (win.webContents.isLoading()) {
