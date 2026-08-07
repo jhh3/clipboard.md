@@ -60,16 +60,18 @@ export function getPalette(): BrowserWindow | null {
 
 export function showPalette(collection?: string): void {
   const win = createPaletteWindow()
-  // Always the primary display. Cursor-based placement is unreliable here: under
-  // Xwayland getCursorScreenPoint() returns a stale point whenever the pointer is
-  // over a Wayland-native surface, which lands the palette on the wrong monitor.
-  const { x, y, width, height } = screen.getPrimaryDisplay().workArea
-  win.setBounds({
-    width: PALETTE_W,
-    height: PALETTE_H,
-    x: Math.round(x + (width - PALETTE_W) / 2),
-    y: Math.round(y + (height - PALETTE_H) / 3)
-  })
+  // On Wayland the compositor positions us (it centres popups sensibly). On X11,
+  // centre on the primary display — cursor-based placement is unreliable there
+  // because getCursorScreenPoint() goes stale over Wayland-native surfaces.
+  if (!WAYLAND) {
+    const { x, y, width, height } = screen.getPrimaryDisplay().workArea
+    win.setBounds({
+      width: PALETTE_W,
+      height: PALETTE_H,
+      x: Math.round(x + (width - PALETTE_W) / 2),
+      y: Math.round(y + (height - PALETTE_H) / 3)
+    })
+  }
   // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
@@ -108,25 +110,32 @@ export function sendToPalette(channel: string, payload: unknown): void {
 let settingsWin: BrowserWindow | null = null
 let scratchWin: BrowserWindow | null = null
 
+/**
+ * Under native Wayland the compositor owns window placement: setBounds x/y is a
+ * no-op and getBounds reports nothing useful, so all our placement logic must sit
+ * out. Mutter places and lets you drag these windows like any other app's.
+ */
+const WAYLAND = process.platform === 'linux' && process.env.XDG_SESSION_TYPE === 'wayland'
+
 function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
-  // Never trust getCursorScreenPoint() here: under Xwayland it goes stale while the
-  // pointer is over native-Wayland surfaces, which silently targets the wrong
-  // monitor (observed: windows landing on the far-left display). Use the saved
-  // position if we have one, else center on the PRIMARY display, always clamped
-  // into that display's work area so the titlebar can't land off-screen.
-  const saved = getSettings().windowBounds?.[hash]
-  const primary = screen.getPrimaryDisplay().workArea
-  let bounds: { x: number; y: number; width: number; height: number }
-  if (saved && screen.getAllDisplays().some((d) => isInside(saved, d.workArea))) {
-    bounds = saved
-  } else {
-    const width = Math.min(w, primary.width - 80)
-    const height = Math.min(h, primary.height - 80)
-    bounds = {
-      width,
-      height,
-      x: Math.round(primary.x + (primary.width - width) / 2),
-      y: Math.round(primary.y + (primary.height - height) / 2)
+  // On Wayland: size only — the compositor decides where windows go, and any x/y
+  // we pass is either ignored or actively wrong. On X11/macOS: restore the saved
+  // position, else centre on the primary display.
+  let bounds: { x?: number; y?: number; width: number; height: number } = { width: w, height: h }
+  if (!WAYLAND) {
+    const saved = getSettings().windowBounds?.[hash]
+    const primary = screen.getPrimaryDisplay().workArea
+    if (saved && screen.getAllDisplays().some((d) => isInside(saved, d.workArea))) {
+      bounds = saved
+    } else {
+      const width = Math.min(w, primary.width - 80)
+      const height = Math.min(h, primary.height - 80)
+      bounds = {
+        width,
+        height,
+        x: Math.round(primary.x + (primary.width - width) / 2),
+        y: Math.round(primary.y + (primary.height - height) / 2)
+      }
     }
   }
   const win = new BrowserWindow({
@@ -153,8 +162,8 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   }
   win.once('ready-to-show', () => {
     win.show()
-    // Re-assert after map: some WMs place the window themselves on first show.
-    win.setBounds(bounds)
+    // Re-assert after map on X11 only; on Wayland this would fight the compositor.
+    if (!WAYLAND && bounds.x !== undefined) win.setBounds(bounds as Electron.Rectangle)
   })
 
   // Persist geometry AFTER the gesture settles. 'moved'/'resized' fire continuously
@@ -162,6 +171,7 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   // main process and the WM marks the app "Not Responding" mid-drag.
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   const remember = (): void => {
+    if (WAYLAND) return // nothing meaningful to persist; the compositor decides
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       persistTimer = null
@@ -261,6 +271,7 @@ export function hideDictationHud(): void {
  * predictable. Once they've moved it, we only intervene if it ends up off-screen.
  */
 function ensureOnScreen(win: BrowserWindow, hash: string, w: number, h: number): void {
+  if (WAYLAND) return // compositor-managed; our coordinates mean nothing here
   const userPlaced = !!getSettings().windowBounds?.[hash]
   const b = win.getBounds()
   const onScreen = screen.getAllDisplays().some((d) => isInside(b, d.workArea))

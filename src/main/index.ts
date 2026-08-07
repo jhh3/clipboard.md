@@ -33,7 +33,12 @@ import { portalScreenshot } from './portal'
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('ozone-platform', 'x11')
+  // Let Electron use its native Wayland backend (default since 38.2; we're on 43).
+  // We previously forced Xwayland to get focusless clipboard access — obsolete now
+  // that every clipboard read/write happens out-of-process (capture/clipboardIO),
+  // and forcing it is what gave us blurry HiDPI, wrong-monitor placement and the
+  // janky drag behaviour that native Wayland windows simply don't have.
+  app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
   // The GPU process sandbox cannot open Mesa's dri_gbm.so on this Ubuntu/NVIDIA
   // setup (the file is world-readable — it's the sandbox, not permissions), which
   // crash-loops the GPU process and can leave the transparent window unpainted.
