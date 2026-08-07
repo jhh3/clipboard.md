@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, on } from '../lib/ipc'
-import { blobToB64, preferredAudioMime } from '../lib/audio'
+import { blobToB64, configuredMicDeviceId, openMicStream, preferredAudioMime } from '../lib/audio'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
@@ -101,8 +101,12 @@ export default function Scratchpad() {
   const startRecording = useCallback(async () => {
     if (recRef.current || transcribing) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Re-read the configured mic per session so a change in Settings applies
+      // without restarting. The stream is closed on stop, so there is nothing
+      // stale to invalidate here.
+      const { stream, fellBack } = await openMicStream(await configuredMicDeviceId())
       streamRef.current = stream
+      if (fellBack) addToast('Chosen mic unavailable — using the system default', 'info')
       const mime = preferredAudioMime()
       const rec = new MediaRecorder(stream, { mimeType: mime })
       chunksRef.current = []

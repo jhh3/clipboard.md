@@ -162,6 +162,93 @@ function ProviderSelect({
   )
 }
 
+/** Sentinel value for the "saved but not connected" placeholder option. */
+const MIC_MISSING = '__mic-missing__'
+
+/**
+ * Microphone picker for dictation.
+ *
+ * Device *labels* are only exposed once mic permission has been granted at
+ * least once, so before a first dictation the list is real but anonymous — we
+ * still show it, numbered, with a note explaining why.
+ */
+function MicSelect({
+  deviceId,
+  deviceLabel,
+  onChange
+}: {
+  deviceId?: string
+  deviceLabel?: string
+  /** Empty id = system default (clears both saved fields). */
+  onChange: (deviceId: string, deviceLabel: string) => void
+}) {
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([])
+  const [enumerated, setEnumerated] = useState(false)
+
+  useEffect(() => {
+    const md = navigator.mediaDevices
+    if (!md?.enumerateDevices) {
+      setEnumerated(true)
+      return
+    }
+    let alive = true
+    const refresh = () => {
+      md.enumerateDevices()
+        .then((list) => {
+          if (!alive) return
+          setMics(list.filter((d) => d.kind === 'audioinput'))
+          setEnumerated(true)
+        })
+        .catch(() => {
+          if (alive) setEnumerated(true)
+        })
+    }
+    refresh()
+    // Keeps the list honest while Settings is open (mic plugged/unplugged).
+    md.addEventListener('devicechange', refresh)
+    return () => {
+      alive = false
+      md.removeEventListener('devicechange', refresh)
+    }
+  }, [])
+
+  const saved = deviceId ?? ''
+  const missing = saved !== '' && enumerated && !mics.some((d) => d.deviceId === saved)
+  const anonymous = mics.length > 0 && mics.every((d) => !d.label)
+
+  return (
+    <div className="mic-select">
+      <select
+        className="set-input"
+        value={missing ? MIC_MISSING : saved}
+        onChange={(e) => {
+          const id = e.target.value
+          if (id === MIC_MISSING) return
+          onChange(id, mics.find((d) => d.deviceId === id)?.label ?? '')
+        }}
+      >
+        <option value="">System default</option>
+        {mics.map((d, i) => (
+          <option key={d.deviceId || i} value={d.deviceId}>
+            {d.label || `Microphone ${i + 1}`}
+          </option>
+        ))}
+        {missing && (
+          <option value={MIC_MISSING} disabled>
+            {`${deviceLabel ?? 'Saved device'} (not connected)`}
+          </option>
+        )}
+      </select>
+      {missing && <div className="set-note warn">Falling back to the system default</div>}
+      {anonymous && !missing && (
+        <div className="set-note">
+          Grant microphone access once (start a dictation) to see device names
+        </div>
+      )}
+    </div>
+  )
+}
+
 function VoiceSample({
   value,
   onCommit,
@@ -605,6 +692,24 @@ export default function Settings() {
                   <option value="openai">OpenAI</option>
                   <option value="local">Local (Parakeet, offline)</option>
                 </select>
+              </Row>
+              <Row
+                label="Microphone"
+                sub="Input device for dictation and the scratchpad mic."
+              >
+                <MicSelect
+                  deviceId={s.dictation.deviceId}
+                  deviceLabel={s.dictation.deviceLabel}
+                  onChange={(deviceId, deviceLabel) =>
+                    patch({
+                      dictation: {
+                        ...s.dictation,
+                        deviceId: deviceId || undefined,
+                        deviceLabel: deviceId ? deviceLabel || undefined : undefined
+                      }
+                    })
+                  }
+                />
               </Row>
               <Row
                 label="Auto-paste dictation"

@@ -53,20 +53,16 @@ export function getPalette(): BrowserWindow | null {
 
 export function showPalette(collection?: string): void {
   const win = createPaletteWindow()
-  // Center on the display the cursor is on. Under Xwayland the cursor point can be
-  // stale when the pointer sits over a native-Wayland surface — display centering
-  // degrades gracefully to the primary display in that case.
-  try {
-    const cursor = screen.getCursorScreenPoint()
-    const display = screen.getDisplayNearestPoint(cursor)
-    const { x, y, width, height } = display.workArea
-    win.setPosition(
-      Math.round(x + (width - PALETTE_W) / 2),
-      Math.round(y + (height - PALETTE_H) / 3)
-    )
-  } catch {
-    win.center()
-  }
+  // Always the primary display. Cursor-based placement is unreliable here: under
+  // Xwayland getCursorScreenPoint() returns a stale point whenever the pointer is
+  // over a Wayland-native surface, which lands the palette on the wrong monitor.
+  const { x, y, width, height } = screen.getPrimaryDisplay().workArea
+  win.setBounds({
+    width: PALETTE_W,
+    height: PALETTE_H,
+    x: Math.round(x + (width - PALETTE_W) / 2),
+    y: Math.round(y + (height - PALETTE_H) / 3)
+  })
   // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
@@ -120,8 +116,12 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
     ...bounds,
     show: false,
     autoHideMenuBar: true,
-    // Normal, decorated, movable window — no dialog/tiling tricks.
-    frame: true,
+    // Frameless + our own titlebar. Rationale: with WM decorations, dragging goes
+    // through the WM's interactive-move path, which on mutter uses
+    // _NET_WM_SYNC_REQUEST — if the client doesn't acknowledge frames fast enough
+    // the WM declares the app "Not Responding" about a second into the drag
+    // (reproduced consistently). We move the window ourselves instead.
+    frame: false,
     movable: true,
     resizable: true,
     webPreferences: {
@@ -154,6 +154,11 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
       updateSettings({ windowBounds: { ...getSettings().windowBounds, [hash]: win.getBounds() } })
     }, 800)
   }
+  // 'moved'/'resized' are documented macOS/Windows-only; 'move'/'resize' are what
+  // actually fire on Linux. Both are wired, and the debounce keeps the frequent
+  // ones cheap (a write per event is what blocked the main process before).
+  win.on('move', remember)
+  win.on('resize', remember)
   win.on('moved', remember)
   win.on('resized', remember)
   win.on('closed', () => {
@@ -235,8 +240,29 @@ export function hideDictationHud(): void {
   getDictationWindow()?.hide()
 }
 
+/**
+ * Placement on re-show. If the user has never moved this window themselves (no saved
+ * bounds), we own its position and always center it on the primary display — that's
+ * predictable. Once they've moved it, we only intervene if it ends up off-screen.
+ */
+function ensureOnScreen(win: BrowserWindow, hash: string, w: number, h: number): void {
+  const userPlaced = !!getSettings().windowBounds?.[hash]
+  const b = win.getBounds()
+  const onScreen = screen.getAllDisplays().some((d) => isInside(b, d.workArea))
+  if (userPlaced && onScreen) return
+  const area = screen.getPrimaryDisplay().workArea
+  win.setBounds({
+    width: Math.min(w, area.width - 80),
+    height: Math.min(h, area.height - 80),
+    x: Math.round(area.x + (area.width - Math.min(w, area.width - 80)) / 2),
+    y: Math.round(area.y + (area.height - Math.min(h, area.height - 80)) / 2)
+  })
+  console.log(`[win] ${hash} was off-screen; recentered`)
+}
+
 export function openSettingsWindow(): void {
   if (settingsWin && !settingsWin.isDestroyed()) {
+    ensureOnScreen(settingsWin, 'settings', 820, 640)
     settingsWin.show()
     settingsWin.focus()
     return
@@ -246,6 +272,7 @@ export function openSettingsWindow(): void {
 
 export function openScratchpadWindow(itemId?: number): void {
   if (scratchWin && !scratchWin.isDestroyed()) {
+    ensureOnScreen(scratchWin, 'scratchpad', 720, 560)
     scratchWin.show()
     scratchWin.focus()
     scratchWin.webContents.send('scratchpad:shown', { itemId })

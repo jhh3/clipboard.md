@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, on } from '../lib/ipc'
-import { blobToB64, preferredAudioMime } from '../lib/audio'
+import { blobToB64, configuredMicDeviceId, openMicStream, preferredAudioMime } from '../lib/audio'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
 
@@ -15,7 +15,8 @@ const METER_BINS = 24
 
 type Phase =
   | { kind: 'idle' }
-  | { kind: 'recording' }
+  /** `fellBack`: the configured mic was gone, so this is the system default. */
+  | { kind: 'recording'; fellBack: boolean }
   | { kind: 'transcribing' }
   | { kind: 'done'; text: string; pasted: boolean }
   | { kind: 'error'; message: string; note?: string }
@@ -48,6 +49,10 @@ export default function DictationHud() {
   const streamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
+  /** The configured deviceId the cached stream was opened for ('' = default). */
+  const streamDeviceRef = useRef('')
+  /** The cached stream is a fallback: retry the real device next session. */
+  const streamFellBackRef = useRef(false)
 
   const recRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -77,23 +82,44 @@ export default function DictationHud() {
 
   // ── microphone ────────────────────────────────────────────────────────────
 
-  /** The shared stream, requesting (and re-wiring the analyser) only when needed. */
-  const acquireStream = useCallback(async (): Promise<MediaStream> => {
+  /**
+   * The shared stream, requesting (and re-wiring the analyser) only when needed.
+   *
+   * The cache is keyed on the configured deviceId, so picking a different mic in
+   * Settings takes effect on the next dictation without an app restart. A stream
+   * that fell back to the default is never reused either — that way a mic that
+   * gets plugged back in is picked up again.
+   */
+  const acquireStream = useCallback(async (): Promise<{
+    stream: MediaStream
+    fellBack: boolean
+  }> => {
+    const wanted = await configuredMicDeviceId()
     const existing = streamRef.current
-    if (existing && existing.getAudioTracks().some((t) => t.readyState === 'live')) return existing
+    const live = existing?.getAudioTracks().some((t) => t.readyState === 'live') ?? false
+    if (existing && live && streamDeviceRef.current === wanted && !streamFellBackRef.current) {
+      return { stream: existing, fellBack: false }
+    }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    streamRef.current = stream
+    // Release the previous mic first — otherwise the old device stays hot
+    // (recording indicator on) after a device switch.
+    existing?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+
+    const opened = await openMicStream(wanted)
+    streamRef.current = opened.stream
+    streamDeviceRef.current = wanted
+    streamFellBackRef.current = opened.fellBack
 
     void audioCtxRef.current?.close().catch(() => {})
     const ctx = new AudioContext()
     const analyser = ctx.createAnalyser()
     analyser.fftSize = 256
     analyser.smoothingTimeConstant = 0.7
-    ctx.createMediaStreamSource(stream).connect(analyser)
+    ctx.createMediaStreamSource(opened.stream).connect(analyser)
     audioCtxRef.current = ctx
     analyserRef.current = analyser
-    return stream
+    return { stream: opened.stream, fellBack: opened.fellBack }
   }, [])
 
   // ── transcription (runs from MediaRecorder.onstop) ────────────────────────
@@ -143,7 +169,7 @@ export default function DictationHud() {
     if (recRef.current) return
     window.clearTimeout(timerRef.current)
     try {
-      const stream = await acquireStream()
+      const { stream, fellBack } = await acquireStream()
       const mime = preferredAudioMime()
       const rec = new MediaRecorder(stream, { mimeType: mime })
       chunksRef.current = []
@@ -154,7 +180,7 @@ export default function DictationHud() {
       rec.start(250)
       recRef.current = rec
       setElapsed(0)
-      setPhase({ kind: 'recording' })
+      setPhase({ kind: 'recording', fellBack })
     } catch {
       setPhase({
         kind: 'error',
@@ -271,7 +297,14 @@ export default function DictationHud() {
             ))}
           </div>
           <div className="hud-hint">
-            <kbd>⌃⌥D</kbd> again to stop · <kbd>Esc</kbd> cancel
+            {phase.fellBack ? (
+              // Not an error: recording is running, just on a different mic.
+              <span className="hud-note">Chosen mic unavailable — using the system default</span>
+            ) : (
+              <>
+                <kbd>⌃⌥D</kbd> again to stop · <kbd>Esc</kbd> cancel
+              </>
+            )}
           </div>
         </>
       )}

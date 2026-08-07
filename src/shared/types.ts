@@ -258,6 +258,9 @@ export interface IpcInvokeMap {
   /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
   'scratch:save': (payload: { text: string; itemId?: number }) => number
   'window:hide': () => void
+  /** Manual window drag (bypasses the WM interactive-move + sync handshake). */
+  'window:drag-begin': () => { x: number; y: number }
+  'window:drag-move': (payload: { x: number; y: number }) => void
   /** Dictation HUD tells main it finished (transcript delivered or aborted). */
   'dictation:done': () => void
   'window:open-settings': () => void

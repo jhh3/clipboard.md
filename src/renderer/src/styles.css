@@ -1110,7 +1110,14 @@ textarea {
   padding: 0 6px 0 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
-  -webkit-app-region: drag;
+  /* Dragging is handled manually in DragStrip.tsx — `-webkit-app-region: drag`
+     routes through the WM's interactive-move, which is what froze the window. */
+  cursor: grab;
+  user-select: none;
+}
+
+.drag-strip:active {
+  cursor: grabbing;
 }
 
 .drag-strip-title {
@@ -1130,12 +1137,12 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  -webkit-app-region: no-drag;
+  cursor: default;
 }
 
 .drag-strip-close {
   flex: none;
-  -webkit-app-region: no-drag;
+  cursor: pointer;
   width: 24px;
   height: 24px;
   display: flex;
@@ -1398,6 +1405,30 @@ textarea {
 .set-unit {
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* Select plus its explanatory line, stacked inside the right-hand control slot. */
+.mic-select {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.mic-select .set-input {
+  max-width: 220px;
+}
+
+.set-note {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-faint);
+  text-align: right;
+  max-width: 240px;
+}
+
+.set-note.warn {
+  color: var(--danger);
 }
 
 .set-block {
@@ -2137,4 +2168,11 @@ body.route-dictation #root {
 .hud-hint kbd {
   font-size: 9.5px;
   padding: 1px 4px 0;
+}
+
+/* Fell back to the default mic: informational, not an error — recording is fine. */
+.hud-note {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
