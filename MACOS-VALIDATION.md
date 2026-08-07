@@ -1,106 +1,143 @@
-# macOS Validation & Build-out — Agent Handoff Document
+# macOS Build-out & Validation — Agent Handoff
 
-*Audience: a coding agent running on a Mac with this repo checked out. Linux development
-happens elsewhere; this doc is the authoritative list of what macOS needs built, validated,
-or fixed. Keep it updated — check items off with notes, add discovered issues.*
+**Audience:** a coding agent working on a Mac with this repo checked out.
+**Status:** the Linux (Ubuntu 26.04 / GNOME 50 Wayland) side is working end-to-end.
+macOS code paths exist but have **never run on real hardware**. Your job is to make
+them real, fix what's broken, and report back.
 
-## Context
-
-clipboard.md is an Electron clipboard manager (see `DESIGN.md`). All platform-specific code
-is behind adapters; the macOS adapters are written blind on Linux and need real-hardware
-validation. The macOS strategy is "solved territory" (Maccy/Kerlig patterns) — nothing here
-is research, it's verification and one small native helper.
-
-## 1. Build & run
-
-- [ ] `pnpm install` succeeds on macOS (arm64): better-sqlite3 rebuild via
-      `electron-builder install-app-deps`, sqlite-vec prebuilt `.dylib` loads.
-- [ ] `pnpm dev` launches; palette renders.
-- [ ] `pnpm test` — all green.
-
-## 2. Capture (src/main/capture/darwin.ts)
-
-- [ ] Polling adapter detects text and image copies within ~500ms.
-- [ ] Image capture: PNG/TIFF flavors convert correctly; thumbnails generated.
-- [ ] Password-manager conventions honored: copy from a password manager that sets
-      `org.nspasteboard.ConcealedType` → item must be skipped or stored masked
-      (check `filters.ts` receives the flavor list).
-- [ ] Source app captured via `NSWorkspace.frontmostApplication` (may need small addition
-      to the Swift helper — see §4).
-
-## 3. Hotkeys & palette
-
-- [ ] Electron `globalShortcut` registers default summon hotkey (Cmd+Shift+V) and fires
-      when other apps are focused.
-- [ ] Palette shows at cursor position (`screen.getCursorScreenPoint()` + `setPosition`).
-- [ ] Palette window type: verify it takes keyboard focus without activating the app's
-      dock presence (`app.dock.hide()` + panel-style window; compare Maccy feel).
-
-## 4. Swift helper (needs to be BUILT on the Mac — src/native/mac/)
-
-A single small Swift CLI (`clipmd-helper`) with subcommands, spawned by the main process:
-
-- `paste` — post CGEvent Cmd+V to the frontmost app. Requires Accessibility
-  (`AXIsProcessTrustedWithOptions` with prompt). This is the Maccy pattern
-  (github.com/p0deje/Maccy discussion #980).
-- `frontmost` — print frontmost app bundle id + name (for source-app tracking).
-- `selected-text` — the SelectedTextKit chain: AX `kAXSelectedTextAttribute` →
-  menu-bar Copy action → simulated Cmd+C with pasteboard backup/restore + muted alert.
-- `changecount` (optional) — print NSPasteboard changeCount for cheaper polling.
-
-Validation:
-- [ ] Helper compiles (swiftc, no Xcode project needed; universal binary optional for now).
-- [ ] Accessibility permission prompt attributes to the right responsible process
-      (in dev it may attribute to Electron/terminal — note behavior; in packaged+signed
-      builds it must attribute to clipboard.md.app).
-- [ ] `item:paste` end-to-end: pick item in palette → lands in previously-focused app.
-- [ ] `selected-text` works in: native app (Notes), browser (Safari/Chrome), Electron app
-      (VS Code), terminal. Record which fall back to Cmd+C simulation.
-- [ ] Secure Input: with a password field focused, paste/selected-text degrade gracefully
-      (no hang, clear error).
-
-## 5. Paste-back focus dance
-
-- [ ] After palette hides (`app.hide()`), focus returns to the previous app before the
-      CGEvent fires (add small delay if needed; record the reliable delay).
-
-## 5.5 New since first draft (all landed on Linux — validate on macOS)
-
-- [ ] **ModelPort**: Agent SDK + Codex SDK subscription lanes work on the Mac's logins
-      (`~/.claude/.credentials.json`, `~/.codex/auth.json`); OpenAI/Gemini via env keys.
-- [ ] **Enrichment**: background auto-title/tags/class; image OCR+describe via vision.
-- [ ] **Embeddings**: utilityProcess worker (onnxruntime-node arm64) downloads
-      bge-small on first run; hybrid search returns.
-- [ ] **Hotkeys**: ⌘⇧V palette, ⌘⇧R rewrite, ⌘⇧S screenshot (`screencapture -i` needed
-      on macOS — portal path is Linux-only, adapt `capture:screenshot`), ⌘⇧E scratchpad.
-- [ ] **Selection rewrite**: macOS needs the Swift helper's selected-text chain
-      (AX → Cmd+C fallback) instead of PRIMARY; `rewrite` action in hotkeys.ts.
-- [ ] **Scratchpad dictation**: mic permission prompt (NSMicrophoneUsageDescription is
-      in electron-builder.yml), MediaRecorder → OpenAI transcription.
-- [ ] **Image auto-redact**: tesseract.js + sharp on arm64.
-- [ ] **Packaging**: `pnpm build:mac` produces a dmg; asarUnpack list covers native deps.
-
-## 6. Later milestones (skip until Linux side ships them)
-
-- [ ] Apple Vision OCR via `@cherrystudio/mac-system-ocr` in a child process (offline OCR
-      path; memory-growth caveat — must run in utilityProcess, not main).
-- [ ] Packaging: electron-builder dmg, hardened runtime, entitlements for Accessibility,
-      signing + notarization (needs Developer ID).
-- [ ] sherpa-onnx CoreML build for transcription.
-
-## Known risks to watch
-
-- Electron ABI vs better-sqlite3: if `pnpm dev` crashes on module version mismatch, run
-  `node_modules/.bin/electron-rebuild -f -w better-sqlite3`.
-- MAS is off the table (CGEvent flows violate Guideline 2.4.5) — distribution is direct
-  download; don't burn time on sandbox entitlements.
-- If `globalShortcut` needs media-key style combos, those require Accessibility trust.
-
-## Report format
-
-Append a dated section below with: environment (macOS version, chip, Electron version),
-checklist results, fixes committed (with SHAs), and anything that needs Linux-side changes.
+Read `DESIGN.md` first — especially §2 "Platform ground truth" and its
+**"Hard-won rules (do not regress these)"**. Those rules were paid for painfully on
+Linux; several have direct macOS analogues.
 
 ---
 
-*No validation runs recorded yet.*
+## 0. Orientation
+
+- Electron 43 + TypeScript + React 19, `electron-vite`. `pnpm install && pnpm dev`.
+- One SQLite file (better-sqlite3 + FTS5 + sqlite-vec) at `app.getPath('userData')/data`.
+- Platform-specific code is deliberately isolated:
+  - `src/main/capture/` — clipboard watching + read/write helpers
+  - `src/main/paste.ts` — paste delivery (injection vs copy+notify)
+  - `src/main/hotkeys.ts` — global shortcuts
+  - `src/main/windows.ts` — window creation/placement
+  - `src/main/transcribe.ts` — dictation (local Parakeet + cloud fallback)
+- Everything else (store, enrichment, ModelPort, renderer) is platform-neutral and
+  should need no changes.
+
+### The macOS-shaped holes (known, expected)
+
+| Area | Current state on macOS | What's needed |
+|---|---|---|
+| Paste injection | `paste.ts` shells out to `<resourcesPath>/clipmd-helper paste` — **this binary does not exist yet** | Build the Swift helper (§2) |
+| Selected-text capture (rewrite hotkey) | Falls back to `clipboard.readText()`, i.e. the wrong text | AX-based `selected-text` in the helper |
+| Screenshot | `capture:screenshot` calls the **XDG portal — Linux-only** | Branch to `screencapture -i` |
+| Clipboard read/write | Native Electron path (correct for macOS — no X11 hazards) | Verify only |
+| Window placement | Placement logic runs (not gated off like Wayland) | Verify multi-display behaviour |
+
+---
+
+## 1. Build & baseline
+
+- [ ] `pnpm install` on arm64: `better-sqlite3` rebuilds, `sqlite-vec` `.dylib` loads,
+      `onnxruntime-node` and `sharp` resolve arm64 binaries.
+- [ ] `pnpm test` green (store-layer tests are platform-neutral).
+- [ ] `pnpm typecheck` clean.
+- [ ] `pnpm dev` launches; palette appears; capture a few text clips and confirm they
+      show up in the palette list.
+- If Electron/better-sqlite3 ABI mismatch: `node_modules/.bin/electron-rebuild -f -w better-sqlite3`.
+
+## 2. The Swift helper (the main build task)
+
+Create `src/native/mac/clipmd-helper.swift` → a single universal binary that the main
+process spawns. `paste.ts` already expects `paste`; the rest are new subcommands.
+
+- `paste` — activate the previous app, post CGEvent ⌘V. Requires Accessibility
+  (`AXIsProcessTrustedWithOptions`). This is the Maccy pattern (Maccy #980 / #161).
+- `frontmost` — print frontmost app bundle id + localized name → source-app tracking.
+- `selected-text` — the SelectedTextKit chain: AX `kAXSelectedTextAttribute` →
+  menu-bar Copy → simulated ⌘C with pasteboard backup/restore and the alert sound
+  muted. Print the selection to stdout.
+- `changecount` (optional) — print `NSPasteboard.general.changeCount` so the capture
+  poll is cheap.
+
+Wire-up checklist:
+- [ ] Helper builds (`swiftc`, universal via `-target arm64-apple-macos12 -target x86_64-...`).
+- [ ] Bundled into `resourcesPath` by electron-builder (`extraResources`) and marked executable.
+- [ ] `item:paste` end-to-end: pick an item, it lands in the previously focused app.
+- [ ] Accessibility prompt appears once and attributes to **clipboard.md.app** in a
+      signed build (in `pnpm dev` it may attribute to Electron/terminal — note behaviour).
+- [ ] `selected-text` verified in: Notes (native), Safari, Chrome, VS Code (Electron),
+      Terminal. Record which fall back to the ⌘C path.
+- [ ] Secure Input (password field focused): both paste and selected-text degrade
+      gracefully — no hang, clear error, no repeated prompts.
+- [ ] `hotkeys.ts` `rewrite` action: replace the Linux PRIMARY read with the helper's
+      `selected-text` on darwin.
+
+## 3. Hotkeys & windows
+
+Electron `globalShortcut` works on macOS (unlike GNOME). Registered in `hotkeys.ts`:
+⌘⇧V palette · ⌘⇧R rewrite · ⌘⇧S screenshot · ⌘⇧E scratchpad · ⌘⇧D dictate.
+
+- [ ] All five fire while other apps are focused.
+- [ ] Palette shows at the cursor's display and takes keyboard focus.
+- [ ] `app.dock.hide()` / panel behaviour: the palette shouldn't add a Dock icon or
+      steal app activation. Compare against Maccy's feel.
+- [ ] Aux windows (settings/scratchpad) open on a sensible display, are draggable, and
+      remember position. **Note:** the Wayland guard (`WAYLAND` const in `windows.ts`)
+      is false on macOS, so the placement/persistence code path is live here — this is
+      the path that was never exercised on Linux. Watch multi-display + Spaces.
+- [ ] After a paste, focus returns to the target app before the CGEvent fires; record
+      the delay that is reliable (Linux uses 150ms).
+
+## 4. Screenshot (needs a macOS branch)
+
+`ipc.ts → capture:screenshot` currently calls `portalScreenshot()` (Linux-only).
+- [ ] Branch on darwin to `screencapture -i -c` (interactive → clipboard) or
+      `screencapture -i <tmpfile>` then `capture.ingestImageFile(path)` — the latter
+      matches the Linux flow and avoids a clipboard round trip.
+- [ ] Screen Recording permission prompt handled with a clear explainer.
+
+## 5. Dictation & transcription
+
+- [ ] Mic permission: `NSMicrophoneUsageDescription` is already in `electron-builder.yml`;
+      confirm the prompt appears and the HUD records.
+- [ ] Cloud transcription (`gpt-4o-mini-transcribe`) works.
+- [ ] Local transcription: `transcribe.ts` downloads Parakeet TDT (~490MB) and runs it
+      through `sherpa-onnx-node`. Verify the **arm64 binary** resolves
+      (`sherpa-onnx-darwin-arm64`) and that `ffmpeg` is available — it is **assumed on
+      PATH** and macOS does not ship it. Either bundle a static ffmpeg or decode webm
+      via AVFoundation in the helper. **This is a real gap, not a nit.**
+- [ ] Verified working on Linux: webm → ffmpeg → sherpa → text in ~1.1s.
+
+## 6. AI providers
+
+Should be platform-neutral, but confirm:
+- [ ] Claude Agent SDK picks up `~/.claude/.credentials.json`; Codex SDK picks up
+      `~/.codex/auth.json`; both also accept API keys.
+- [ ] Image enrichment (vision) produces OCR text + tags for a screenshot clip.
+- [ ] Local embeddings: the `utilityProcess` worker loads `bge-small` via
+      onnxruntime-node arm64, and semantic search returns hits.
+
+## 7. Packaging
+
+- [ ] `pnpm build:mac` produces a dmg.
+- [ ] `asarUnpack` covers all native deps (better-sqlite3, sqlite-vec, sharp, @img,
+      onnxruntime-node, tesseract.js, the Agent SDK) — plus the Swift helper via
+      `extraResources`.
+- [ ] Hardened runtime + entitlements for Accessibility/microphone; signing and
+      notarization need a Developer ID.
+- [ ] **MAS is off the table** — CGEvent-based paste violates Guideline 2.4.5.
+      Distribution is direct download; don't spend time on sandbox entitlements.
+- [ ] Autostart: Linux writes `~/.config/autostart/*.desktop` (`src/main/autostart.ts`).
+      Add the macOS equivalent (`app.setLoginItemSettings({ openAtLogin: true })`).
+
+## 8. Report back
+
+Append a dated section below with: macOS version + chip, Electron version, checklist
+results, commits (SHAs), anything that needed changes on the shared/Linux side, and
+anything you could not verify. If you change shared code, re-run `pnpm test` and
+`pnpm typecheck` and say so.
+
+---
+
+*No macOS validation runs recorded yet.*

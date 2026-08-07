@@ -39,24 +39,36 @@ never a subscription of its own.
 | Fact | Status |
 |---|---|
 | GNOME 50.1 advertises `ext_data_control_manager_v1` / `zwlr_data_control_manager_v1` | **NO — verified absent** via wayland-info. Research claiming mutter ≥49.2 ships it did not hold on real hardware. `wl-paste --watch` hangs. Do not build on data-control. |
-| Xwayland clipboard bridge (background X client read/write, no focus) | **YES — verified** (xclip round-trip on `DISPLAY=:0` with mutter's Xwayland auth). Mutter syncs CLIPBOARD + PRIMARY to Xwayland regardless of focus. |
-| X11 XFixes selection-change events under the bridge | Mechanically implied (bridge takes X selection ownership on each change → `XFixesSetSelectionOwnerNotify` fires). **Verify in app skeleton first.** |
-| Electron `globalShortcut` on GNOME 50 | Dead in both ozone modes (mutter ≥49 killed Xwayland grabs; portal path blocked by electron#51875). Use GNOME custom keybinding → CLI trigger → `second-instance`. |
-| Keystroke injection (paste-back) on GNOME Wayland | No clean default. `wtype`/virtual-keyboard: unimplemented in mutter. `ydotool`: needs uinput setup (opt-in tier 2). **XDG RemoteDesktop portal** via D-Bus (`NotifyKeyboardKeycode`, `persist_mode=2`): sanctioned, one permission dialog (opt-in tier 1). Default: copy + "press Ctrl+V" toast — the industry norm on GNOME. |
+| Xwayland clipboard bridge (background X client read/write, no focus) | **YES — verified** (xclip round-trip on `DISPLAY=:0` with mutter's Xwayland auth). Mutter syncs CLIPBOARD + PRIMARY to Xwayland regardless of focus, and this works **from a helper process even when Electron itself is a Wayland client**. |
+| X11 XFixes selection-change events | **YES — verified live.** `SelectSelectionInput(root, CLIPBOARD, SetSelectionOwner)` on an independent X connection fires on every change. This is our capture trigger; polling is disabled on Linux. |
+| Electron `globalShortcut` on GNOME 50 | Dead (mutter ≥49 killed Xwayland grabs; portal path blocked by electron#51875). Use GNOME custom keybindings → `<binary> --<action>` → `second-instance`. |
+| Keystroke injection (paste-back) on GNOME Wayland | **XDG RemoteDesktop portal works** (`NotifyKeyboardKeycode`, `persist_mode=2` + restore token). One permission dialog, once. Fallback: copy + notification. `wtype` unusable (mutter lacks virtual-keyboard); `ydotool` needs uinput setup. |
+| **Electron ozone platform** | **Run NATIVE WAYLAND (`ozone-platform-hint=auto`). Do not force x11.** Forcing Xwayland caused wrong-monitor placement, unmovable/janky windows and blurry HiDPI. Electron is Wayland-native by default since 38.2. Under Wayland the compositor owns geometry — `setPosition`/`getCursorScreenPoint` are meaningless, so all placement logic must sit out. |
+| **X clipboard ownership** | **Our UI process must NEVER own the X CLIPBOARD selection.** Measured in Xvfb: with Electron as owner and its main thread busy 6s, another app's paste request blocked **5511ms**; with a detached `xclip` owner, **105ms**. On a real desktop the blocked requester is mutter — on its single compositor thread — so the ENTIRE session freezes (observed 15–20s). All writes go through a detached `xclip -i` owner. |
+| **Clipboard reads** | Must be off the UI thread. Electron's `clipboard.*` are synchronous X selection transfers; measured 107ms for plain text through mutter's bridge, and mutter#1065 documents hangs. All Linux reads are `xclip` child processes with a 1.5s timeout. |
+| GPU compositing | **Fine.** Reports `enabled` once a window exists — an earlier "GPU is disabled" reading was an artifact of probing before any window was created (Chromium starts the GPU process lazily). |
 | macOS (all of the above) | Solved territory: NSPasteboard `changeCount` poll @500ms, `globalShortcut` works, CGEvent Cmd+V via small Swift helper + one-time Accessibility permission (the Maccy pattern). |
-| Available AI auth | `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY` in env; `claude` CLI 2.1.223 subscription-authed; `codex` CLI 0.146.0 subscription-authed. |
+| Available AI auth | `OPENAI_API_KEY`, `GEMINI_API_KEY` in env (Groq deliberately unused); `claude` + `codex` CLIs subscription-authed, consumed via their SDKs. |
+
+### Hard-won rules (do not regress these)
+1. **Never own the X clipboard from the UI process.** It can freeze the user's whole desktop.
+2. **Never read the clipboard synchronously on the UI thread.** Same blast radius, smaller fuse.
+3. **Never fight the Wayland compositor over window geometry.** No positioning, no saved bounds, no "recenter" logic on Wayland.
+4. **Never gate showing a window on `ready-to-show`** — a hidden window has no Wayland surface, so it may never paint and the event may never fire. Use `did-finish-load` + a timer backstop.
+5. **Measure before theorising.** Three wrong root causes were asserted here (sync settings writes, GPU, WM sync protocol) before an isolated Xvfb reproduction found the real one. `Xvfb :99` is the right tool; never experiment on the user's live session.
 
 ## 3. Architecture
 
-Electron app. On Linux, **force Xwayland** (`app.commandLine.appendSwitch('ozone-platform', 'x11')`):
-it restores window positioning, focusless clipboard/PRIMARY access via the bridge, at the
-cost of fractional-scaling crispness. Revisit if/when GNOME exposes data-control publicly.
+Electron app running **native Wayland** on Linux (`ozone-platform-hint=auto`) — like every
+other well-behaved Electron app on Ubuntu. Clipboard access does not depend on Electron's
+backend at all: an independent X connection (Xwayland) watches for changes and helper
+processes do every read and write. See §2 for why each of those choices is load-bearing.
 
 ```
 ┌────────────────────────── Electron main ──────────────────────────┐
 │  CaptureService (per-platform adapter)                            │
-│    linux-x11bridge: XFixes event watcher (fallback: 500ms poll)   │
-│    darwin: changeCount poller (native addon or objc bridge)       │
+│    linux: XFixes event watcher (no polling) + xclip read helpers  │
+│    darwin: changeCount poller (NSPasteboard has no push API)      │
 │  → filter chain: ignore-list, ConcealedType/x-kde-hint,           │
 │    secret heuristics (AWS keys, JWTs, private keys), dedupe       │
 │  → Store: better-sqlite3 (one file: items + FTS5 + sqlite-vec)    │

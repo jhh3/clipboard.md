@@ -70,13 +70,43 @@ pnpm build:linux  # AppImage + deb
 pnpm build:mac    # dmg (run on macOS; see MACOS-VALIDATION.md)
 ```
 
+## Keyboard shortcuts (Linux defaults)
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Alt+V` | Clipboard palette |
+| `Ctrl+Alt+R` | Rewrite the current selection |
+| `Ctrl+Alt+S` | Screenshot into history |
+| `Ctrl+Alt+E` | Scratchpad |
+| `Ctrl+Alt+D` | Dictate (press again to stop) |
+
+On macOS these are `⌘⇧V / R / S / E / D`. Linux shortcuts are registered as GNOME
+custom keybindings on first run (Electron's own global shortcuts don't work on GNOME
+Wayland), so they're editable in Settings → Keyboard. The app installs a login
+autostart entry so the shortcuts talk to an already-running instance.
+
+In the palette: `↵` paste · `⇧↵` paste as plain text · `⌃↵` copy · `⌃1–9` quick-paste ·
+`Tab` Action Mode · `⌃E` scratchpad · `⌃⇧S` screenshot · `Esc` dismiss.
+
 ## Platform notes (honest edition)
 
-- **Linux/GNOME Wayland**: capture works through mutter's Xwayland clipboard bridge
-  (verified — GNOME does not expose data-control to normal clients as of 50.1).
-  Global hotkeys are GNOME custom keybindings (written automatically on first run).
-  Auto-paste uses the XDG RemoteDesktop portal — one permission dialog, once.
-  Screen capture uses the Screenshot portal.
-- **macOS**: pasteboard polling + CGEvent paste via a small Swift helper (one-time
-  Accessibility grant). See `MACOS-VALIDATION.md` for the build-out checklist.
-- Architecture ground truth and decision history: `DESIGN.md`.
+- **Linux/GNOME Wayland**: runs as a native Wayland app. Clipboard capture is
+  event-driven via XFixes on an independent X connection, and every read/write happens
+  in a helper process — the app never owns the X clipboard itself, because doing so can
+  freeze the whole GNOME session when the compositor blocks waiting on it. Global
+  hotkeys are GNOME custom keybindings. Auto-paste uses the XDG RemoteDesktop portal
+  (one permission dialog, once); screen capture uses the Screenshot portal.
+  Requires `xclip` (and `ffmpeg` for local dictation).
+- **macOS**: written but **not yet validated on hardware** — pasteboard polling plus a
+  small Swift helper (CGEvent paste, AX selected-text) that still needs building. See
+  `MACOS-VALIDATION.md`.
+- Architecture, measured platform ground truth, and the decision history (including the
+  wrong turns and why they were wrong): `DESIGN.md`.
+
+## Requirements
+
+- Node 22+, pnpm
+- Linux: `xclip`; `ffmpeg` for local transcription; GNOME 48+ recommended
+- AI: any of a Claude subscription (`claude` login), Codex subscription (`codex` login),
+  `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Fast models are the default
+  (Haiku / GPT-5.6 Luna / Gemini Flash-Lite) and are configurable per feature.
