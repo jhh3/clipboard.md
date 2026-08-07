@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
+import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
 import { openDb } from './store/db'
@@ -168,6 +169,9 @@ if (!gotLock) {
     }
     runRetention()
     setInterval(runRetention, 24 * 60 * 60 * 1000)
+
+    // Stay resident so the hotkeys are instant instead of cold-starting Electron.
+    if (!isAutostartEnabled()) setAutostart(true)
 
     routeArgsOnLaunch()
   })

@@ -3,6 +3,7 @@ import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
 
 let palette: BrowserWindow | null = null
+let lastPaletteShow = 0
 
 // Content is 880x560; the extra 80px is transparent margin so the CSS drop
 // shadow fades out fully instead of clipping hard at the window edge.
@@ -37,7 +38,13 @@ export function createPaletteWindow(): BrowserWindow {
   // Summon must land on whatever workspace the user is on right now.
   palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
-  palette.on('blur', () => hidePalette())
+  // Hide-on-blur, but never within the first moments of a show: on a cold start
+  // (and on some WM focus hand-offs) the window blurs before it is ever really
+  // focused, which would hide the palette the instant the hotkey summoned it.
+  palette.on('blur', () => {
+    if (Date.now() - lastPaletteShow < 500) return
+    hidePalette()
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     palette.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -67,9 +74,19 @@ export function showPalette(collection?: string): void {
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  win.show()
-  win.focus()
-  win.webContents.send('palette:shown', { collection })
+  lastPaletteShow = Date.now()
+
+  const reveal = (): void => {
+    lastPaletteShow = Date.now()
+    win.show()
+    win.focus()
+    win.moveTop()
+    win.webContents.send('palette:shown', { collection })
+  }
+  // Cold start: the renderer may still be loading, and showing an empty window
+  // that then blurs is how the hotkey ends up looking like it did nothing.
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal)
+  else reveal()
 }
 
 export function hidePalette(): void {
