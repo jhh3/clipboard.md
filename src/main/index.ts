@@ -28,6 +28,7 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { portalScreenshot } from './portal'
 import { hardenApp, applyPermissionPolicy } from './security'
+import { initLogging, closeLogging } from './log'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
@@ -125,6 +126,8 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
+    const logFile = initLogging()
+    console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()
     openDb(join(app.getPath('userData'), 'data'))
 
@@ -209,6 +212,7 @@ if (!gotLock) {
     teardownHotkeys()
     flushSettings() // don't lose a debounced write on exit
     closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL
+    closeLogging()
   })
 
   // Tray-less background app: closing windows must not quit.
