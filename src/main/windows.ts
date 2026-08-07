@@ -160,11 +160,21 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'), { hash })
   }
-  win.once('ready-to-show', () => {
+  // Showing must not depend on 'ready-to-show': a hidden window has no Wayland
+  // surface to paint into, so that event can never arrive and the window silently
+  // never appears. 'did-finish-load' only needs the document, and a timer backstops
+  // even that.
+  let shown = false
+  const revealOnce = (): void => {
+    if (shown || win.isDestroyed()) return
+    shown = true
     win.show()
-    // Re-assert after map on X11 only; on Wayland this would fight the compositor.
+    win.focus()
     if (!WAYLAND && bounds.x !== undefined) win.setBounds(bounds as Electron.Rectangle)
-  })
+  }
+  win.once('ready-to-show', revealOnce)
+  win.webContents.once('did-finish-load', revealOnce)
+  setTimeout(revealOnce, 1500)
 
   // Persist geometry AFTER the gesture settles. 'moved'/'resized' fire continuously
   // while dragging on Linux; writing settings synchronously on each one blocks the
