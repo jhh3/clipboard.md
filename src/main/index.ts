@@ -30,7 +30,8 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
-import { unreadCount } from './agents'
+import { unreadCount, prewarmAssistant } from './agents'
+import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
 import { sweep } from './agentLifecycle'
 import { ensurePlugin } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
@@ -401,6 +402,13 @@ if (!gotLock) {
     void ensurePlugin()
     void sweep()
     setInterval(() => void sweep(), 5 * 60_000)
+
+    // The assistant: memory file + consolidation schedule, and a pre-warmed
+    // session so the palette's first ask answers in seconds, not a cold start.
+    // Delayed so startup (capture, embeddings, plugin install) wins the CPU first.
+    ensureMemoryFile()
+    startMemorySchedule()
+    setTimeout(() => void prewarmAssistant(), 8000)
 
     void createTray()
 

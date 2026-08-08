@@ -43,6 +43,7 @@ import {
   launchWithClip,
   restartAssistant
 } from './agents'
+import { readMemory, writeMemory, consolidateMemory, generateIdentity } from './assistantMemory'
 import {
   listNotes,
   getNote,
@@ -126,6 +127,16 @@ export function registerIpc(
     return key
   })
   handle('agents:restart-assistant', () => restartAssistant())
+  handle('assistant:memory-get', () => readMemory())
+  handle('assistant:memory-set', (_e, text: string) => writeMemory(text))
+  handle('assistant:consolidate', () => consolidateMemory(true))
+  handle('assistant:generate-identity', async () => {
+    try {
+      return { ok: true, text: await generateIdentity(getSettings().assistant.identity) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   // ── notes ────────────────────────────────────────────────────────────────
   handle('notes:list', (_e, opts: { q?: string } = {}) => listNotes(opts))

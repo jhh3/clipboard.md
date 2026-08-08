@@ -278,7 +278,11 @@ export interface AppSettings {
     identity: string
     /** Absolute paths to markdown/text files appended to the identity. */
     identityFiles: string[]
+    /** Start the assistant session at app launch so the first ask is instant. */
+    prewarm: boolean
   }
+  /** Adapt pastes to the destination app (plain text into terminals, fenced code into chat). */
+  smartPaste: boolean
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
   /** Spawn recipes for agent sessions. */
@@ -316,6 +320,13 @@ export interface IpcInvokeMap {
   'agents:launch-with-clip': (opts: { profile: string; itemId: number }) => string
   /** End the assistant session so the next ask relaunches it with fresh identity. */
   'agents:restart-assistant': () => void
+  /** The assistant's long-term memory file (markdown). */
+  'assistant:memory-get': () => string
+  'assistant:memory-set': (text: string) => void
+  /** Distill recent conversations/notes into the memory file now. */
+  'assistant:consolidate': () => { ok: boolean; changed: boolean; error?: string }
+  /** Draft an identity from what the app already knows (memory, notes, usage). */
+  'assistant:generate-identity': () => { ok: boolean; text?: string; error?: string }
   'notes:list': (opts: { q?: string }) => NoteSummary[]
   'notes:get': (id: number) => Note | null
   'notes:create': (input?: { title?: string; content?: string }) => number
@@ -410,7 +421,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
   dictation: { autoPaste: true, keepAudio: true },
   voiceSamples: [],
-  assistant: { identity: '', identityFiles: [] },
+  assistant: { identity: '', identityFiles: [], prewarm: true },
+  smartPaste: true,
   savedActions: [],
   smartCollections: [],
   agentProfiles: [

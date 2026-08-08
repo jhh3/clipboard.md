@@ -27,7 +27,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { createServer } from 'http'
-import { writeFileSync, chmodSync, mkdirSync } from 'fs'
+import { appendFileSync, writeFileSync, chmodSync, mkdirSync, statSync } from 'fs'
 import { dirname } from 'path'
 import { randomBytes } from 'crypto'
 import Database from 'better-sqlite3'
@@ -35,6 +35,8 @@ import { ftsQuery } from '@shared/fts'
 
 const SESSION_KEY = process.env.CLIPMD_SESSION_KEY ?? 'unknown'
 const DB_PATH = process.env.CLIPMD_DB
+/** The assistant's long-term memory file; the `remember` tool appends to it. */
+const MEMORY_FILE = process.env.CLIPMD_MEMORY_FILE
 /** Where to publish {port, pid, token} so the app can reach this bridge. */
 const DISCOVERY_FILE = process.env.CLIPMD_BRIDGE_FILE
 const TOKEN = process.env.CLIPMD_BRIDGE_TOKEN ?? randomBytes(16).toString('hex')
@@ -105,7 +107,8 @@ const mcp = new Server(
       '',
       'You can also read their clipboard history: search_clipboard (keyword search),',
       'recent_clips (what they copied lately), get_clip (full content by id). When a',
-      'message refers to "this" or something they copied, look there first.',
+      'message refers to "this" or something they copied, look there first. Use',
+      'remember to record durable facts about the operator for future sessions.',
       '',
       'Messages FROM the operator arrive between turns as',
       '<channel source="clipboard.md" kind="..."> tags — clipboard contents they sent',
@@ -197,6 +200,16 @@ const TOOLS = [
       type: 'object',
       properties: { id: { type: 'number', description: 'Clip id from search/recent results.' } },
       required: ['id']
+    }
+  },
+  {
+    name: 'remember',
+    description:
+      'Record a durable fact about the operator in your long-term memory. Save ONLY what is durable and likely to change future behavior: identity, projects, tools, preferences, decisions. Never short-lived states, trivia, pasted content, secrets, or sensitive attributes (health, politics, religion, precise location) unless explicitly asked. One concise third-person sentence per call. If asked to forget something, call this with "Forget: <what>".',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'The fact, one sentence, third person.' } },
+      required: ['text']
     }
   }
 ] as const
@@ -304,6 +317,37 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   const clip = clipboardTool(name, args)
   if (clip) return clip
+
+  if (name === 'remember') {
+    if (!MEMORY_FILE) return toolError('Memory is unavailable in this session.')
+    if (!text) return toolError('text is required')
+    try {
+      // Bounded: memory is injected into a system prompt, so it must stay small.
+      // Past the cap, consolidation (app-side) has to make room first.
+      const size = (() => {
+        try {
+          return statSync(MEMORY_FILE).size
+        } catch {
+          return 0
+        }
+      })()
+      // Threshold = the app's MEMORY_CAP (16KB, memoryOps.ts) plus append headroom.
+      // Larger would let the file outgrow what the system prompt injects — and the
+      // injected view truncates the TAIL, which is exactly where appends land.
+      if (size > 18_432) {
+        return toolError('Memory file is full; it will be consolidated soon — try again later.')
+      }
+      // Appends land in the "Recent (unconsolidated)" tail section (kept LAST in
+      // the file exactly so a blind append is correct); the app's consolidation
+      // pass folds them into their proper sections later. Dated like every fact.
+      const today = new Date().toISOString().slice(0, 10)
+      appendFileSync(MEMORY_FILE, `- ${today}: ${text.replace(/\n+/g, ' ').slice(0, 500)}\n`)
+      return { content: [{ type: 'text', text: 'Remembered.' }] }
+    } catch (err) {
+      log(`remember failed: ${String(err)}`)
+      return toolError('Could not write to memory.')
+    }
+  }
 
   if (name === 'save_note') {
     const title = (args.title ?? '').trim() || 'Agent note'
