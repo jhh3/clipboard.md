@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import { rmSync } from 'fs'
 import type { ClipItem, ClipKind, SearchQuery, SearchResult } from '@shared/types'
+import { ftsQuery } from '@shared/fts'
 import { getDb, hasVec, secureDeleteNow, EMBEDDING_DIM } from './db'
 
 interface ItemRow {
@@ -234,16 +235,6 @@ export function storeEmbedding(id: number, vector: Float32Array): void {
   db.prepare('UPDATE items SET embedded_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
-/** Escape user input for an FTS5 MATCH: quote each token, keep prefix matching on the last. */
-function ftsQuery(q: string): string {
-  const tokens = q
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((t) => `"${t.replace(/"/g, '""')}"`)
-  if (tokens.length === 0) return ''
-  tokens[tokens.length - 1] += '*'
-  return tokens.join(' ')
-}
 
 function filterClauses(q: SearchQuery): { where: string; params: Record<string, unknown> } {
   const clauses: string[] = []

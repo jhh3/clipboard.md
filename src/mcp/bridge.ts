@@ -31,6 +31,7 @@ import { writeFileSync, chmodSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { randomBytes } from 'crypto'
 import Database from 'better-sqlite3'
+import { ftsQuery } from '@shared/fts'
 
 const SESSION_KEY = process.env.CLIPMD_SESSION_KEY ?? 'unknown'
 const DB_PATH = process.env.CLIPMD_DB
@@ -102,6 +103,10 @@ const mcp = new Server(
       '  post_failure   you cannot continue, with the reason',
       '  save_note      persist something durable (a plan, findings) into their notes',
       '',
+      'You can also read their clipboard history: search_clipboard (keyword search),',
+      'recent_clips (what they copied lately), get_clip (full content by id). When a',
+      'message refers to "this" or something they copied, look there first.',
+      '',
       'Messages FROM the operator arrive between turns as',
       '<channel source="clipboard.md" kind="..."> tags — clipboard contents they sent',
       'you, notes, or answers to your questions. Re-read your task when one arrives.'
@@ -162,15 +167,143 @@ const TOOLS = [
       },
       required: ['title', 'text']
     }
+  },
+  {
+    name: 'search_clipboard',
+    description:
+      'Keyword-search the operator’s clipboard history (content, titles, tags, OCR text). Returns matches with ids; use get_clip for full content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search terms.' },
+        limit: { type: 'number', description: 'Max results (default 10, max 25).' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'recent_clips',
+    description:
+      'The operator’s most recently copied items, newest first. Start here when they refer to "this" or something they just copied.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Max results (default 10, max 25).' } }
+    }
+  },
+  {
+    name: 'get_clip',
+    description: 'Full content of one clipboard item by id.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Clip id from search/recent results.' } },
+      required: ['id']
+    }
   }
 ] as const
+
+// ── clipboard reads ─────────────────────────────────────────────────────────
+
+interface ClipRow {
+  id: number
+  kind: string
+  content: string
+  auto_title: string | null
+  ocr_text: string | null
+  description: string | null
+  created_at: number
+}
+
+
+/**
+ * One clip as text an agent can use. Truncated: these land in a model's context,
+ * and a 2MB clip would evict everything else the session was doing.
+ */
+function clipToText(r: ClipRow, full = false): string {
+  const cap = full ? 32_768 : 800
+  const head = `#${r.id} [${r.kind}] ${r.auto_title ?? ''} (${new Date(r.created_at).toISOString()})`
+  let body: string
+  if (r.kind === 'image') {
+    body = [`image file: ${r.content}`, r.description, r.ocr_text && `text in image: ${r.ocr_text}`]
+      .filter(Boolean)
+      .join('\n')
+  } else {
+    body = r.content
+  }
+  const clipped = body.length > cap ? body.slice(0, cap) + `\n…[truncated, ${body.length} chars total]` : body
+  return `${head}\n${clipped}`
+}
+
+// Secret-flagged clips are excluded at the SQL layer, unconditionally: this side of
+// the bridge feeds a model, and credentials must never cross it.
+const CLIP_COLS = 'id, kind, content, auto_title, ocr_text, description, created_at'
+
+function toolError(text: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  return { content: [{ type: 'text', text }], isError: true }
+}
+
+function clipboardTool(
+  name: string,
+  args: { query?: string; limit?: number; id?: number }
+): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | null {
+  if (name !== 'search_clipboard' && name !== 'recent_clips' && name !== 'get_clip') return null
+  const handle = getDb()
+  if (!handle) return toolError('Clipboard history is unavailable (no database).')
+  const limit = Math.max(1, Math.min(25, Math.round(args.limit ?? 10)))
+  try {
+    if (name === 'get_clip') {
+      if (typeof args.id !== 'number' || !Number.isFinite(args.id)) {
+        return toolError('id must be a number (from search_clipboard or recent_clips results)')
+      }
+      const row = handle
+        .prepare(`SELECT ${CLIP_COLS} FROM items WHERE id = ? AND secret = 0`)
+        .get(args.id) as ClipRow | undefined
+      return row
+        ? { content: [{ type: 'text', text: clipToText(row, true) }] }
+        : toolError(`No clip with id ${args.id}.`)
+    }
+    let rows: ClipRow[]
+    if (name === 'search_clipboard') {
+      const match = ftsQuery(args.query ?? '')
+      if (!match) return toolError('query is required')
+      rows = handle
+        .prepare(
+          `SELECT ${CLIP_COLS.replace(/(\w+)/g, 'items.$1')} FROM items_fts
+           JOIN items ON items.id = items_fts.rowid
+           WHERE items_fts MATCH ? AND items.secret = 0
+           ORDER BY bm25(items_fts) LIMIT ?`
+        )
+        .all(match, limit) as ClipRow[]
+    } else {
+      rows = handle
+        .prepare(
+          `SELECT ${CLIP_COLS} FROM items WHERE secret = 0
+           ORDER BY last_copied_at DESC LIMIT ?`
+        )
+        .all(limit) as ClipRow[]
+    }
+    if (rows.length === 0) return { content: [{ type: 'text', text: 'No matching clips.' }] }
+    return { content: [{ type: 'text', text: rows.map((r) => clipToText(r)).join('\n\n') }] }
+  } catch (err) {
+    log(`clipboard tool ${name} failed: ${String(err)}`)
+    return toolError('Clipboard lookup failed.')
+  }
+}
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as unknown as [] }))
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name
-  const args = (req.params.arguments ?? {}) as { text?: string; title?: string }
+  const args = (req.params.arguments ?? {}) as {
+    text?: string
+    title?: string
+    query?: string
+    limit?: number
+    id?: number
+  }
   const text = (args.text ?? '').trim()
+
+  const clip = clipboardTool(name, args)
+  if (clip) return clip
 
   if (name === 'save_note') {
     const title = (args.title ?? '').trim() || 'Agent note'
