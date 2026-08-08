@@ -64,6 +64,20 @@ export default function Agents(): React.JSX.Element {
     bottom.current?.scrollIntoView({ block: 'end' })
   }, [thread.length])
 
+  // Poll while the window is open.
+  //
+  // `reachable` flips when the bridge publishes its discovery file a second or two
+  // after launch, and the sweep changes status behind our back. Without this the
+  // list keeps whatever snapshot it had at launch — which showed a perfectly
+  // healthy session as "bridge starting…" forever, with the reply box disabled.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.hidden) return
+      void invoke('agents:sessions', false).then(setSessions).catch(() => {})
+    }, 2000)
+    return () => clearInterval(t)
+  }, [])
+
   const launch = useCallback(
     async (profileName: string) => {
       setLaunching(true)

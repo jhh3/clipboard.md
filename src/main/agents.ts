@@ -137,7 +137,17 @@ const GENERIC_PROMPT = [
   'Press enter to continue'
 ]
 /** claude is in the live chat UI once its input footer is drawn. */
-const CHAT_READY = ['? for shortcuts', 'Bypassing Permissions', '│ >']
+// Taken from a real session's footer, not guessed. The previous values
+// ('? for shortcuts', 'Bypassing Permissions') never matched anything, so the wait
+// always ran the full timeout and then logged a false "never reached chat-ready"
+// about a session that was fine.
+const CHAT_READY = [
+  'bypass permissions on',
+  'shift+tab to cycle',
+  'for shortcuts',
+  '⏵⏵',
+  'Try "'
+]
 
 /**
  * Wait for claude to reach its chat UI, dismissing startup menus on the way.
