@@ -7,12 +7,55 @@ import {
   markOwnedByUs,
   waitForClipboard
 } from './capture/clipboardIO'
-import type { PasteOutcome } from '@shared/types'
+import type { ClipItem, PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { portalPaste } from './portal'
-import { macPaste } from './mac/helper'
+import { macFrontmost, macPaste } from './mac/helper'
+
+/**
+ * Destination-aware paste (macOS): the palette is a non-activating panel, so the
+ * frontmost app at paste time IS the paste target — we can look at it before
+ * touching the clipboard and adapt the payload.
+ *
+ * Two rules, both boring on purpose:
+ *  - terminals get plain text (rich-text paste into a terminal is never wanted)
+ *  - chat apps get code clips fenced, so they arrive as code blocks
+ */
+const TERMINAL_BUNDLES = new Set([
+  'com.apple.Terminal',
+  'com.googlecode.iterm2',
+  'dev.warp.Warp-Stable',
+  'net.kovidgoyal.kitty',
+  'org.alacritty',
+  'com.github.wez.wezterm',
+  'com.mitchellh.ghostty'
+])
+const CHAT_BUNDLES = new Set(['com.tinyspeck.slackmacgap', 'com.hnc.Discord'])
+
+interface PasteShaping {
+  plain: boolean
+  /** Replacement text content (e.g. fenced code), when the destination wants one. */
+  text?: string
+}
+
+function shapeForDestination(
+  item: ClipItem,
+  plain: boolean,
+  dest: { bundleId: string } | null
+): PasteShaping {
+  if (!dest || !getSettings().smartPaste) return { plain }
+  if (TERMINAL_BUNDLES.has(dest.bundleId)) return { plain: true }
+  if (CHAT_BUNDLES.has(dest.bundleId) && item.kind === 'code' && !plain) {
+    // Already fenced? Leave it alone.
+    if (!item.content.trimStart().startsWith('```')) {
+      const lang = item.language ?? ''
+      return { plain: true, text: `\`\`\`${lang}\n${item.content}\n\`\`\`` }
+    }
+  }
+  return { plain }
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -44,21 +87,31 @@ export class PasteService {
    * busy, every paste request in the session stalled behind it (measured: 5511ms
    * with Electron as owner vs 105ms with a dedicated owner process).
    */
-  private async setClipboard(itemId: number, plain: boolean): Promise<boolean> {
+  private async setClipboard(itemId: number, plain: boolean, forPaste = false): Promise<boolean> {
     const item = getItem(itemId)
     if (!item) return false
+    // Only shape when a paste follows: a plain copy (⌘↵) must put the item on the
+    // clipboard verbatim — the user may be heading anywhere with it. Gated on the
+    // setting BEFORE the helper call: with the toggle off (or the helper broken),
+    // the hottest path in the app must not pay a helper round-trip.
+    const dest =
+      forPaste && process.platform === 'darwin' && getSettings().smartPaste !== false
+        ? await macFrontmost()
+        : null
+    const shaped = shapeForDestination(item, plain, dest)
+    const text = shaped.text ?? item.content
     markOwnedByUs()
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
       await writeClipboardImage(readFileSync(item.content))
-    } else if (item.html && !plain) {
+    } else if (item.html && !shaped.plain) {
       this.capture.markSelfWrite(item.content)
       await writeClipboardHtml(item.html, item.content)
     } else {
-      this.capture.markSelfWrite(item.content)
-      await writeClipboardText(item.content)
+      this.capture.markSelfWrite(text)
+      await writeClipboardText(text)
       // Don't inject a paste until the selection really holds this text.
-      if (!(await waitForClipboard(item.content))) {
+      if (!(await waitForClipboard(text))) {
         console.error('[paste] clipboard did not take ownership in time')
         return false
       }
@@ -78,7 +131,7 @@ export class PasteService {
   }
 
   async pasteItem(itemId: number, plain: boolean): Promise<PasteOutcome> {
-    if (!(await this.setClipboard(itemId, plain))) {
+    if (!(await this.setClipboard(itemId, plain, true))) {
       return { method: 'copied', message: 'Item no longer exists' }
     }
     return this.deliver()
