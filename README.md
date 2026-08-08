@@ -10,8 +10,15 @@ subscription of its own, nothing leaves your machine except the AI calls you con
 ## What it does
 
 - **History palette** (`Ctrl+Alt+V` / `⌘⇧V`) — instant keyboard-first search over
-  everything you've copied: full-text + semantic ("that error from Tuesday"). Enter
-  pastes straight into the app you came from.
+  everything you've copied: full-text + semantic ("that error from Tuesday"). `↓` then
+  Enter pastes straight into the app you came from.
+- **A personal assistant behind the palette** — the palette opens on an *ask* row:
+  type a question and hit Enter, and it goes to a persistent Claude session that can
+  read your clipboard history and notes (identity configurable in Settings →
+  Assistant). Replies land in the agent inbox. Arrow down for classic history.
+- **Agent sessions** — `⌘J` sends any clip into a running Claude Code session, or
+  starts a new one per profile with the clip as its opening prompt. Two-way: agents
+  report progress, ask questions, and save notes back into the app.
 - **Transform before paste** — `Tab` on any item opens Action Mode: type a free-form AI
   prompt ("as CSV", "translate to German", "make it polite") or hit a single-key saved
   action (fix typos, plain text, JSON pretty…). Preview, then paste the result.
@@ -78,15 +85,19 @@ pnpm build:mac    # dmg (run on macOS; see MACOS-VALIDATION.md)
 | `Ctrl+Alt+R` | Rewrite the current selection |
 | `Ctrl+Alt+S` | Screenshot into history |
 | `Ctrl+Alt+E` | Scratchpad |
-| `Ctrl+Alt+D` | Dictate (press again to stop) |
+| `Ctrl+Alt+Space` | Dictate (hold to talk) |
+| `Ctrl+Alt+N` | Notes |
+| `Ctrl+Alt+A` | Agent inbox |
 
 On macOS these are `⌘⇧V / R / S / E / D`. Linux shortcuts are registered as GNOME
 custom keybindings on first run (Electron's own global shortcuts don't work on GNOME
 Wayland), so they're editable in Settings → Keyboard. The app installs a login
 autostart entry so the shortcuts talk to an already-running instance.
 
-In the palette: `↵` paste · `⇧↵` paste as plain text · `⌃↵` copy · `⌃1–9` quick-paste ·
-`Tab` Action Mode · `⌃E` scratchpad · `⌃⇧S` screenshot · `Esc` dismiss.
+In the palette: `↵` ask the assistant (or paste, once an item is selected) · `⇧↵`
+paste as plain text · `⌃↵` copy · `⌃1–9` quick-paste · `Tab`/`⌃K` Action Mode ·
+`⌃J` send to agent · `⌃N` note from clip · `⌃E` scratchpad · `⌃⇧S` screenshot ·
+`⌃/` shortcut overlay · `Esc` dismiss. (macOS: same keys with `⌘`.)
 
 ## Platform notes (honest edition)
 

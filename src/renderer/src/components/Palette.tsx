@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentSession,
   ClipItem,
   SavedAction,
   SessionInfo,
@@ -10,6 +11,7 @@ import type {
 import { invoke, on } from '../lib/ipc'
 import { fuzzyFilter } from '../lib/fuzzy'
 import { sessionLabel } from '../lib/time'
+import { MOD } from '../lib/keys'
 import { useSearch } from '../hooks/useSearch'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
@@ -19,6 +21,8 @@ import FilterChips, { type Chip } from './FilterChips'
 import ItemList from './ItemList'
 import PreviewPane, { type TransformView } from './PreviewPane'
 import ActionBar from './ActionBar'
+import AgentPicker, { targetLabel, type AgentTarget } from './AgentPicker'
+import HelpOverlay from './HelpOverlay'
 import Toasts from './Toasts'
 import { CameraIcon, GearIcon, PencilIcon, SparkIcon } from './icons'
 
@@ -36,6 +40,7 @@ type TransformOutput = { output: string; outputKind: 'text' | 'image' }
 type Mode =
   | { name: 'normal' }
   | { name: 'action'; item: ClipItem }
+  | { name: 'agent'; item: ClipItem }
   | { name: 'result'; item: ClipItem; req: TransformRequest; out: TransformOutput; label: string }
 
 /**
@@ -56,12 +61,21 @@ export default function Palette() {
   const [activeChipId, setActiveChipId] = useState('all')
   const [collections, setCollections] = useState<SmartCollection[]>([])
   const [sessions, setSessions] = useState<SessionInfo[]>([])
-  const [sel, setSel] = useState(0)
+  /**
+   * -1 is the "ask assistant" row, and the default: with the input focused, Enter
+   * asks the assistant. Arrowing down moves into clipboard history, where every
+   * key behaves exactly as it always has.
+   */
+  const [sel, setSel] = useState(-1)
   const [mode, setMode] = useState<Mode>({ name: 'normal' })
   const [rewrite, setRewrite] = useState<RewriteState | null>(null)
   const [actions, setActions] = useState<SavedAction[]>([])
   const [actionInput, setActionInput] = useState('')
   const [actionHighlight, setActionHighlight] = useState(0)
+  const [agentTargets, setAgentTargets] = useState<AgentTarget[]>([])
+  const [agentInput, setAgentInput] = useState('')
+  const [agentHighlight, setAgentHighlight] = useState(0)
+  const [showHelp, setShowHelp] = useState(false)
   const [running, setRunning] = useState(false)
   const [shownTick, setShownTick] = useState(0)
   const { toasts, addToast } = useToasts()
@@ -69,6 +83,7 @@ export default function Palette() {
 
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const actionInputRef = useRef<HTMLInputElement | null>(null)
+  const agentInputRef = useRef<HTMLInputElement | null>(null)
   /** Synchronous double-submit guard: `running` state lags a render behind. */
   const runningRef = useRef(false)
 
@@ -114,13 +129,14 @@ export default function Palette() {
     return { visible: [...pinned, ...rest], pinnedCount: pinned.length }
   }, [items])
 
-  const selectedItem: ClipItem | null = visible[sel] ?? null
+  const selectedItem: ClipItem | null = sel >= 0 ? (visible[sel] ?? null) : null
   const previewItem = mode.name === 'normal' ? selectedItem : mode.item
 
-  // Reset selection when the query/filter changes; clamp when results shrink.
-  useEffect(() => setSel(0), [query, activeChipId])
+  // Typing recomposes the ask/search — selection returns to the ask row. Arrowing
+  // back into the (re-filtered) list is one keystroke.
+  useEffect(() => setSel(-1), [query, activeChipId])
   useEffect(() => {
-    setSel((s) => (visible.length === 0 ? 0 : Math.min(s, visible.length - 1)))
+    setSel((s) => (s < 0 ? s : visible.length === 0 ? -1 : Math.min(s, visible.length - 1)))
   }, [visible.length])
 
   // ── collections + sessions ────────────────────────────────────────────────
@@ -150,9 +166,12 @@ export default function Palette() {
     const offShown = on('palette:shown', (p) => {
       setMode({ name: 'normal' })
       setQuery('')
-      setSel(0)
+      setSel(-1)
       setActionInput('')
       setActionHighlight(0)
+      setAgentInput('')
+      setAgentHighlight(0)
+      setShowHelp(false)
       if (p.mode === 'rewrite' && p.rewriteText) {
         // Rewrite mini-flow: materialize the selection as a clip so transforms
         // (which need an itemId) can run against it.
@@ -191,6 +210,8 @@ export default function Palette() {
       searchInputRef.current?.focus()
     } else if (mode.name === 'action') {
       actionInputRef.current?.focus()
+    } else if (mode.name === 'agent') {
+      agentInputRef.current?.focus()
     } else {
       ;(document.activeElement as HTMLElement | null)?.blur()
     }
@@ -253,23 +274,153 @@ export default function Palette() {
     []
   )
 
-  // ── action mode ───────────────────────────────────────────────────────────
-  const enterActionMode = useCallback(async () => {
-    const item = visible[sel]
+  // From the ask row, Tab/⌘J/⌘N act on the first item — the nearest thing on screen.
+  const actionTarget = useCallback(
+    (): ClipItem | null => (sel >= 0 ? (visible[sel] ?? null) : (visible[0] ?? null)),
+    [visible, sel]
+  )
+
+  // ── ask the assistant ─────────────────────────────────────────────────────
+  const askAssistant = useCallback(async () => {
+    const text = query.trim()
+    if (!text || runningRef.current) return
+    runningRef.current = true
+    setRunning(true)
+    try {
+      await invoke('agents:ask', text)
+      setQuery('')
+      addToast('Asked your assistant — the reply lands in the inbox', 'success')
+      hideSoon()
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : 'Could not reach the assistant', 'error')
+    } finally {
+      runningRef.current = false
+      setRunning(false)
+    }
+  }, [query, addToast, hideSoon])
+
+  // ── send to agent ─────────────────────────────────────────────────────────
+  // `explicit` pins the clip (the action panel passes its mode.item): the visible
+  // list can shift under an open panel when a background capture lands, and
+  // re-deriving from sel would then act on the wrong clip.
+  const enterAgentMode = useCallback(async (explicit?: ClipItem) => {
+    const item = explicit ?? actionTarget()
     if (!item) return
+    if (item.secret) {
+      addToast('Secret clips are never sent to agents', 'error')
+      return
+    }
+    if (!explicit && sel < 0) setSel(0)
+    try {
+      const [sessions, profiles] = await Promise.all([
+        invoke('agents:sessions', false),
+        invoke('agents:profiles')
+      ])
+      // Reachable-and-active first, dormant after (they wake on send), newest first.
+      const rank = (s: AgentSession): number => (s.status === 'dormant' ? 1 : s.reachable ? 0 : 2)
+      const ordered = [...sessions].sort(
+        (a, b) => rank(a) - rank(b) || b.lastSeenAt - a.lastSeenAt
+      )
+      setAgentTargets([
+        ...ordered.map((session) => ({ type: 'session', session }) as AgentTarget),
+        ...profiles.map((profile) => ({ type: 'new', profile }) as AgentTarget)
+      ])
+    } catch {
+      setAgentTargets([])
+    }
+    setAgentInput('')
+    setAgentHighlight(0)
+    setMode({ name: 'agent', item })
+  }, [actionTarget, sel, addToast])
+
+  const filteredTargets = useMemo(
+    () => fuzzyFilter(agentTargets, agentInput, targetLabel),
+    [agentTargets, agentInput]
+  )
+
+  useEffect(() => {
+    setAgentHighlight((h) =>
+      filteredTargets.length === 0 ? 0 : Math.min(h, filteredTargets.length - 1)
+    )
+  }, [filteredTargets.length])
+
+  const pickAgentTarget = useCallback(
+    async (item: ClipItem, target: AgentTarget) => {
+      if (runningRef.current) return
+      runningRef.current = true
+      setRunning(true)
+      try {
+        if (target.type === 'session') {
+          const ok = await invoke('agents:send-clip', target.session.key, item.id)
+          if (!ok) {
+            addToast('Could not reach that session — it may have exited', 'error')
+            return
+          }
+          addToast(`Sent to ${targetLabel(target)} — replies land in the inbox`, 'success')
+        } else {
+          await invoke('agents:launch-with-clip', { profile: target.profile.name, itemId: item.id })
+          addToast(`Started a ${target.profile.name} session with the clip`, 'success')
+        }
+        setMode({ name: 'normal' })
+        hideSoon()
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : 'Send failed', 'error')
+      } finally {
+        runningRef.current = false
+        setRunning(false)
+      }
+    },
+    [addToast, hideSoon]
+  )
+
+  // ── new note from clip ────────────────────────────────────────────────────
+  const noteFromClip = useCallback(async (explicit?: ClipItem) => {
+    const item = explicit ?? actionTarget()
+    // A secret or binary clip makes a blank note rather than nothing: ⌘N always
+    // gives you a note.
+    const textual = item && !item.secret && item.kind !== 'image' && item.kind !== 'files'
+    try {
+      // List rows carry previews; the note wants the clip's FULL text.
+      const full = textual ? await invoke('item:get', item.id) : null
+      const id = await invoke('notes:create', full ? { content: full.content } : {})
+      await invoke('window:open-notes', id)
+    } catch {
+      addToast('Could not create the note', 'error')
+    }
+  }, [actionTarget, addToast])
+
+  // ── action mode ───────────────────────────────────────────────────────────
+  /**
+   * Navigation pseudo-actions, appended to the action list so everything a direct
+   * shortcut does is also findable by typing in the panel (the Raycast rule that
+   * makes shortcuts learnable). Intercepted by id in runSavedAction — they change
+   * mode instead of running a transform.
+   */
+  const PSEUDO_ACTIONS: SavedAction[] = useMemo(
+    () => [
+      { id: 'x-send-agent', title: 'Send to agent…', key: 'a', type: 'builtin', appliesTo: ['text', 'image'] },
+      { id: 'x-new-note', title: 'New note from clip', key: 'n', type: 'builtin', appliesTo: ['text', 'image'] }
+    ],
+    []
+  )
+
+  const enterActionMode = useCallback(async () => {
+    const item = actionTarget()
+    if (!item) return
+    if (sel < 0) setSel(0)
     try {
       // Keep the 'actions:list' order verbatim (never alphabetize): the
       // interesting AI actions come first by design.
       const list = await invoke('actions:list', item.kind === 'image' ? 'image' : 'text')
-      setActions(list)
+      setActions([...list, ...PSEUDO_ACTIONS])
     } catch {
-      setActions([])
+      setActions(PSEUDO_ACTIONS)
     }
     setActionInput('')
     // Empty input → the first action is preselected.
     setActionHighlight(0)
     setMode({ name: 'action', item })
-  }, [visible, sel])
+  }, [actionTarget, sel, PSEUDO_ACTIONS])
 
   const filteredActions = useMemo(
     () => fuzzyFilter(actions, actionInput, (a) => a.title),
@@ -315,9 +466,17 @@ export default function Palette() {
 
   const runSavedAction = useCallback(
     (item: ClipItem, action: SavedAction) => {
+      if (action.id === 'x-send-agent') {
+        void enterAgentMode(item)
+        return
+      }
+      if (action.id === 'x-new-note') {
+        void noteFromClip(item)
+        return
+      }
       void runTransform(item, { itemId: item.id, actionId: action.id }, action.title)
     },
-    [runTransform]
+    [runTransform, enterAgentMode, noteFromClip]
   )
 
   const runActionEnter = useCallback(
@@ -488,6 +647,21 @@ export default function Palette() {
       return
     }
 
+    // Shortcut cheat sheet: toggle from any mode except the rewrite mini-flow,
+    // whose early-return render has nowhere to show it.
+    if (mod && e.key === '/' && !rewrite) {
+      e.preventDefault()
+      setShowHelp((h) => !h)
+      return
+    }
+    if (showHelp) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowHelp(false)
+      }
+      return
+    }
+
     if (rewrite) {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -546,6 +720,27 @@ export default function Palette() {
       return
     }
 
+    if (mode.name === 'agent') {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMode({ name: 'normal' })
+        return
+      }
+      if (running) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        const t = filteredTargets[agentHighlight] ?? filteredTargets[0]
+        if (t) void pickAgentTarget(mode.item, t)
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setAgentHighlight((h) => Math.min(h + 1, Math.max(0, filteredTargets.length - 1)))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setAgentHighlight((h) => Math.max(h - 1, 0))
+      }
+      return
+    }
+
     if (mode.name === 'action') {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -574,23 +769,43 @@ export default function Palette() {
     }
 
     // ── normal mode ──
-    if (e.key === 'Tab') {
+    // Tab and ⌘K both open the action panel (⌘K for the Raycast/Linear reflex).
+    if (e.key === 'Tab' || (mod && e.key.toLowerCase() === 'k')) {
       e.preventDefault()
       void enterActionMode()
       return
     }
+    if (mod && e.key.toLowerCase() === 'j') {
+      e.preventDefault()
+      void enterAgentMode()
+      return
+    }
+    if (mod && e.key.toLowerCase() === 'n') {
+      e.preventDefault()
+      void noteFromClip()
+      return
+    }
     if (e.key === 'ArrowDown' && !mod) {
       e.preventDefault()
-      setSel((s) => Math.min(s + 1, Math.max(0, visible.length - 1)))
+      setSel((s) => Math.min(s + 1, Math.max(-1, visible.length - 1)))
       return
     }
     if (e.key === 'ArrowUp' && !mod) {
       e.preventDefault()
-      setSel((s) => Math.max(s - 1, 0))
+      // Above the first item sits the ask row.
+      setSel((s) => Math.max(s - 1, -1))
       return
     }
     if (e.key === 'Enter') {
       e.preventDefault()
+      if (sel < 0) {
+        // The ask row: Enter hands the typed text to the personal assistant.
+        // With nothing typed there is nothing to ask — fall back to pasting the
+        // most recent clip, which is what a bare "summon, Enter" always did.
+        if (query.trim()) void askAssistant()
+        else if (visible[0]) void pasteItem(visible[0], e.shiftKey)
+        return
+      }
       if (!selectedItem) return
       if (mod) void copyItem(selectedItem)
       else void pasteItem(selectedItem, e.shiftKey)
@@ -652,15 +867,24 @@ export default function Palette() {
 
   const footerHints: Array<[string, string]> =
     mode.name === 'normal'
-      ? [
-          ['↵', 'paste'],
-          ['⇧↵', 'plain'],
-          ['⌃↵', 'copy'],
-          ['Tab', 'actions'],
-          ['⌃1-9', 'quick'],
-          ['⌃P', 'pin'],
-          ['⌃⌫', 'delete']
-        ]
+      ? sel < 0
+        ? [
+            ['↵', query.trim() ? 'ask assistant' : 'paste latest'],
+            ['↓', 'history'],
+            ['Tab', 'actions'],
+            [`${MOD}1-9`, 'quick paste'],
+            [`${MOD}/`, 'shortcuts']
+          ]
+        : [
+            ['↵', 'paste'],
+            ['⇧↵', 'plain'],
+            [`${MOD}↵`, 'copy'],
+            ['Tab', 'actions'],
+            [`${MOD}J`, 'agent'],
+            [`${MOD}N`, 'note'],
+            [`${MOD}P`, 'pin'],
+            [`${MOD}⌫`, 'delete']
+          ]
       : mode.name === 'action'
         ? [
             ['↵', 'run'],
@@ -668,12 +892,18 @@ export default function Palette() {
             ['key', 'instant action'],
             ['esc', 'back']
           ]
-        : [
-            ['↵', 'paste result'],
-            ['⇧↵', 'paste plain'],
-            ['⌃↵', 'copy result'],
-            ['esc', 'back']
-          ]
+        : mode.name === 'agent'
+          ? [
+              ['↵', 'send'],
+              ['↑↓', 'choose'],
+              ['esc', 'back']
+            ]
+          : [
+              ['↵', 'paste result'],
+              ['⇧↵', 'paste plain'],
+              [`${MOD}↵`, 'copy result'],
+              ['esc', 'back']
+            ]
 
   // ── rewrite mini-flow render ──────────────────────────────────────────────
   if (rewrite) {
@@ -817,6 +1047,24 @@ export default function Palette() {
       )}
       <div className="main-area">
         <div className="list-pane">
+          <button
+            className={'ask-row' + (sel < 0 && mode.name === 'normal' ? ' selected' : '')}
+            onClick={() => {
+              if (query.trim()) void askAssistant()
+              else searchInputRef.current?.focus()
+            }}
+            tabIndex={-1}
+          >
+            <SparkIcon className="ask-spark" size={14} />
+            {query.trim() ? (
+              <span className="ask-text">
+                Ask assistant: <em>“{query.trim()}”</em>
+              </span>
+            ) : (
+              <span className="ask-text dim">Ask your assistant — type, then ↵</span>
+            )}
+            <kbd>↵</kbd>
+          </button>
           <ItemList
             items={visible}
             pinnedCount={pinnedCount}
@@ -829,6 +1077,21 @@ export default function Palette() {
           />
         </div>
         <div className="right-pane">
+          {mode.name === 'agent' && (
+            <AgentPicker
+              input={agentInput}
+              onInput={(v) => {
+                setAgentInput(v)
+                setAgentHighlight(0)
+              }}
+              targets={filteredTargets}
+              highlight={agentHighlight}
+              onHighlight={setAgentHighlight}
+              onPick={(t) => void pickAgentTarget(mode.item, t)}
+              sending={running}
+              inputRef={agentInputRef}
+            />
+          )}
           {mode.name === 'action' && (
             <ActionBar
               input={actionInput}
@@ -873,6 +1136,7 @@ export default function Palette() {
           <span>{total.toLocaleString()} items</span>
         </div>
       </div>
+      {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
       <Toasts toasts={toasts} />
     </div>
   )

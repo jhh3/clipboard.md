@@ -2602,3 +2602,81 @@ body.route-dictation #root {
 
 /* Dormant: asleep to reclaim memory, but resumable — distinct from dead. */
 .agents-dot.dormant { background: var(--accent); opacity: 0.55; }
+
+/* ── ask row: the assistant entry sitting above clipboard history ─────────── */
+/* A button so it's clickable, styled as the list's zeroth row. Selected state
+   mirrors item rows, so ↑/↓ reads as one continuous list. */
+.ask-row {
+  display: flex; gap: 8px; align-items: center; width: calc(100% - 12px);
+  margin: 6px 6px 0; padding: 8px 10px;
+  font: inherit; font-size: 13px; color: var(--text); text-align: left;
+  background: none; border: 1px dashed var(--border-strong); border-radius: 8px; cursor: pointer;
+}
+.ask-row:hover { background: var(--sel-bg-hover); }
+.ask-row.selected {
+  background: var(--accent-dim); border-style: solid; border-color: var(--accent-glow);
+}
+.ask-row .ask-spark { color: var(--accent-bright); flex: none; }
+.ask-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-text em { font-style: normal; color: var(--accent-bright); }
+.ask-text.dim { color: var(--text-faint); }
+.ask-row kbd { flex: none; }
+
+/* ── agent picker (send clip to a session) ────────────────────────────────── */
+.agent-picker {
+  display: flex; flex-direction: column; min-height: 0; max-height: 55%;
+  border-bottom: 1px solid var(--border);
+}
+.agent-picker-head {
+  display: flex; gap: 7px; align-items: center; padding: 10px 12px 6px;
+  font-size: 12px; font-weight: 600;
+}
+.agent-picker-busy { margin-left: auto; font-size: 11px; color: var(--text-faint); }
+.agent-picker-input {
+  margin: 0 12px 6px; padding: 6px 9px; font: inherit; font-size: 13px; color: var(--text);
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: 7px; outline: none;
+}
+.agent-picker-input:focus { border-color: var(--accent); }
+.agent-picker-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0 6px 6px; list-style: none; }
+.agent-target {
+  display: flex; gap: 7px; align-items: center; padding: 7px 8px;
+  border-radius: 6px; cursor: pointer;
+}
+.agent-target:hover { background: var(--sel-bg-hover); }
+.agent-target.selected { background: var(--sel-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.agent-target-title { flex: none; font-size: 13px; white-space: nowrap; }
+.agent-target-meta {
+  flex: 1; overflow: hidden; font-size: 11px; color: var(--text-faint);
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-target.new .agent-target-title { color: var(--accent-bright); }
+.agent-target-plus { color: var(--accent-bright); flex: none; }
+.agent-target-empty { padding: 10px; font-size: 12px; color: var(--text-faint); }
+.agent-picker-hint { margin: 0; padding: 6px 12px 10px; font-size: 11px; color: var(--text-faint); }
+
+/* ── shortcut help overlay (⌘/) ───────────────────────────────────────────── */
+.help-overlay {
+  position: absolute; inset: 0; z-index: 40; display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.45); border-radius: inherit;
+}
+.help-card {
+  width: min(720px, calc(100% - 48px)); max-height: calc(100% - 48px); overflow-y: auto;
+  padding: 16px 20px; background: var(--bg-raised);
+  border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+}
+.help-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; font-size: 13px; font-weight: 700;
+}
+.help-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.help-group h4 {
+  margin: 0 0 6px; font-size: 11px; font-weight: 700; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.help-row { display: flex; gap: 10px; align-items: baseline; padding: 2px 0; font-size: 12px; }
+.help-row kbd { flex: none; min-width: 46px; text-align: center; }
+.help-row span { color: var(--text-dim); }
+
+/* Assistant identity wants room — it is a prompt, not a one-liner. */
+.identity-textarea { min-height: 140px; width: 100%; }

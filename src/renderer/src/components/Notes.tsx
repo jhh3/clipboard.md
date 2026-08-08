@@ -177,7 +177,8 @@ export default function Notes(): React.JSX.Element {
       } else if (mod && e.key.toLowerCase() === 'd') {
         e.preventDefault()
         void openDaily()
-      } else if (mod && e.key.toLowerCase() === 'f') {
+      } else if (mod && (e.key.toLowerCase() === 'f' || e.key.toLowerCase() === 'o')) {
+        // ⌘F filters; ⌘O is the Obsidian quick-switcher reflex — same thing here.
         e.preventDefault()
         document.querySelector<HTMLInputElement>('.notes-search input')?.focus()
       } else if (e.key === 'Escape') {

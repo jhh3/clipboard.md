@@ -19,7 +19,7 @@ export default function SearchBar({ value, onChange, inputRef, actions }: Props)
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Search your clipboard…"
+        placeholder="Ask your assistant, or search your clipboard…"
         spellCheck={false}
         autoComplete="off"
         autoCorrect="off"

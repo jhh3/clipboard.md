@@ -159,8 +159,16 @@ is to supercharge interactions with every other application, not to be a history
 
 ### The palette (global hotkey)
 - Search field auto-focused; typing filters instantly (FTS + fuzzy; later semantic).
+- **Prompt-first (2026-08-08, John's call):** selection opens on an "ask assistant" row
+  above the history; `Enter` on typed text asks the personal-assistant agent session
+  (reply lands in the inbox). `↓` moves into history, where everything behaves exactly
+  as before. This inverts Raycast's Tab-to-AI: ask is the default, search-paste is one
+  arrow away (`⌘1..9` still quick-pastes directly).
 - `↑↓` navigate · `Enter` paste · `Shift+Enter` paste as plain text · `Ctrl+Enter` copy
   only · `Ctrl+1..9` paste nth item · `Esc` dismiss.
+- `⌘J` (or the `Send to agent…` action row) sends the selected clip into an existing
+  or new agent session · `⌘N` makes a note from the clip · `Tab`/`⌘K` action panel ·
+  `⌘/` shortcut overlay.
 - List + rich preview pane (selectable text, enrichment shown: auto-title, tags, OCR
   text, source app icon).
 - Type/collection filters one keystroke away (`Ctrl+F` cycle or click chips):
