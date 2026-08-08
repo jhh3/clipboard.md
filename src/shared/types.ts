@@ -393,8 +393,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   savedActions: [],
   smartCollections: [],
   agentProfiles: [
+    // cwd '' means the home directory.
     { name: 'personal', cwd: '', tmux: true },
-    { name: 'studio', cwd: '', tmux: true }
+    { name: 'studio', cwd: '/Users/jhh3/Documents/work-code/2025/nullframe-studio', tmux: true }
   ],
   hotkeyHint: 'Ctrl+Alt+V',
   theme: 'system',
