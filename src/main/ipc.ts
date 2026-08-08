@@ -19,7 +19,15 @@ import { saveRecording, transcribeFile } from './transcribe'
 import { detectSecret } from './capture/filters'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
-import { hidePalette, sendToPalette, broadcast, openSettingsWindow, openScratchpadWindow } from './windows'
+import {
+  hidePalette,
+  sendToPalette,
+  broadcast,
+  openSettingsWindow,
+  openScratchpadWindow,
+  openNotesWindow,
+  openAgentsWindow
+} from './windows'
 import {
   profiles,
   listSessions,
@@ -29,7 +37,11 @@ import {
   inbox,
   markRead,
   unreadCount,
-  endSession
+  endSession,
+  askAssistant,
+  sendClip,
+  launchWithClip,
+  restartAssistant
 } from './agents'
 import {
   listNotes,
@@ -102,6 +114,18 @@ export function registerIpc(
     await endSession(key)
     broadcast('agents:changed', { unread: unreadCount() })
   })
+  handle('agents:ask', async (_e, text: string) => {
+    const res = await askAssistant(text)
+    broadcast('agents:changed', { unread: unreadCount() })
+    return res
+  })
+  handle('agents:send-clip', (_e, key: string, itemId: number) => sendClip(key, itemId))
+  handle('agents:launch-with-clip', async (_e, opts: { profile: string; itemId: number }) => {
+    const key = await launchWithClip(opts.profile, opts.itemId)
+    broadcast('agents:changed', { unread: unreadCount() })
+    return key
+  })
+  handle('agents:restart-assistant', () => restartAssistant())
 
   // ── notes ────────────────────────────────────────────────────────────────
   handle('notes:list', (_e, opts: { q?: string } = {}) => listNotes(opts))
@@ -355,6 +379,14 @@ export function registerIpc(
   handle('window:open-scratchpad', (_e, itemId?: number) => {
     hidePalette()
     openScratchpadWindow(itemId)
+  })
+  handle('window:open-notes', (_e, noteId?: number) => {
+    hidePalette()
+    openNotesWindow(noteId)
+  })
+  handle('window:open-agents', () => {
+    hidePalette()
+    openAgentsWindow()
   })
   handle('app:version', () => app.getVersion())
 }

@@ -30,6 +30,7 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
+import { unreadCount } from './agents'
 import { sweep } from './agentLifecycle'
 import { ensurePlugin } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
@@ -402,6 +403,23 @@ if (!gotLock) {
     setInterval(() => void sweep(), 5 * 60_000)
 
     void createTray()
+
+    // Agents write to the inbox from OUTSIDE this process (the bridge and the Stop
+    // hook insert into SQLite directly), so no IPC event fires when a reply lands.
+    // Poll the unread count and surface changes: the tray badge is the only signal
+    // a blocked agent has, and without this it stayed stale until a settings change.
+    let lastUnread = -1
+    setInterval(() => {
+      try {
+        const n = unreadCount()
+        if (n === lastUnread) return
+        lastUnread = n
+        buildTrayMenu()
+        broadcast('agents:changed', { unread: n })
+      } catch {
+        /* db closing during quit */
+      }
+    }, 10_000)
 
     routeArgsOnLaunch()
   })

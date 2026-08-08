@@ -5,10 +5,11 @@ import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { getDb } from './store/db'
+import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { resumable } from './agentLifecycle'
 import { CHANNEL_REF, hookEnv } from './agentPlugin'
-import type { AgentProfile, AgentSession, AgentMessage } from '@shared/types'
+import type { AgentProfile, AgentSession, AgentMessage, ClipItem } from '@shared/types'
 
 const execFileP = promisify(execFile)
 
@@ -55,7 +56,7 @@ export function profile(name: string): AgentProfile | undefined {
  * real binary and flags instead. Bypass mode is deliberate and per-profile: these are
  * sessions the user explicitly launched to do work unattended.
  */
-function claudeArgs(p: AgentProfile, key: string, prompt?: string): string[] {
+function claudeArgs(p: AgentProfile, key: string, prompt?: string, systemPrompt?: string): string[] {
   // --dangerously-load-development-channels is the load-bearing flag. Registering the
   // bridge with --mcp-config instead gives working TOOLS and a channel that is
   // silently ignored — verified against a live session, which took no notice of a
@@ -66,7 +67,8 @@ function claudeArgs(p: AgentProfile, key: string, prompt?: string): string[] {
   // No --model: profiles inherit whatever the CLI default is, deliberately, so they
   // don't drift as defaults change.
   for (const dir of p.addDirs ?? []) args.push('--add-dir', dir)
-  if (p.appendSystemPrompt) args.push('--append-system-prompt', p.appendSystemPrompt)
+  const append = [p.appendSystemPrompt, systemPrompt].filter(Boolean).join('\n\n')
+  if (append) args.push('--append-system-prompt', append)
   if (prompt) args.push(prompt)
   return args
 }
@@ -184,11 +186,37 @@ async function run(cmd: string, args: string[], timeout = 15_000): Promise<strin
   }
 }
 
+/**
+ * Detached spawn that REJECTS when the process can't start. A bare spawn() emits
+ * 'error' asynchronously; unhandled, that's an uncaughtException — and this app
+ * responds to those with app.exit(1). Since the palette's Enter key now reaches
+ * this path, "claude not on PATH" must be a toast, not the whole app dying.
+ */
+function spawnDetached(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv }
+): Promise<ReturnType<typeof spawn>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { ...opts, detached: true, stdio: 'ignore' })
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.removeListener('error', reject)
+      // Late errors can still fire (e.g. kill failures); swallow them logged.
+      child.on('error', (err) => console.error(`[agents] ${cmd} error:`, err))
+      child.unref()
+      resolve(child)
+    })
+  })
+}
+
 export interface LaunchOptions {
   profile: string
   /** Opening prompt — a clip, a note, or free text. */
   prompt?: string
   title?: string
+  /** Extra system prompt appended after the profile's own (assistant identity). */
+  systemPrompt?: string
 }
 
 /**
@@ -213,23 +241,36 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
      VALUES (?, ?, ?, ?, 'starting', ?, ?)`
   ).run(key, p.name, cwd, opts.title ?? null, Date.now(), Date.now())
 
-  const args = claudeArgs(p, key, opts.prompt)
+  const args = claudeArgs(p, key, opts.prompt, opts.systemPrompt)
   const useTmux = p.tmux !== false && (await tmuxAvailable())
 
-  if (useTmux) {
-    // -d so launching never steals the user's terminal; they attach when they want.
-    const env = sessionEnv(key)
-    const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
-    await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, 'claude', ...args])
-  } else {
-    const child = spawn('claude', args, {
-      cwd,
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, ...sessionEnv(key) }
-    })
-    child.unref()
-    db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
+  // An opening prompt goes to claude on its command line, not through the bridge —
+  // record it ourselves or the thread starts with the agent answering nothing.
+  if (opts.prompt) {
+    db.prepare(
+      `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+       VALUES (?, 'inbound', 'message', ?, ?, ?)`
+    ).run(key, opts.prompt, JSON.stringify({ via: 'opening-prompt' }), Date.now())
+  }
+
+  try {
+    if (useTmux) {
+      // -d so launching never steals the user's terminal; they attach when they want.
+      const env = sessionEnv(key)
+      const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, 'claude', ...args])
+    } else {
+      const child = await spawnDetached('claude', args, {
+        cwd,
+        env: { ...process.env, ...sessionEnv(key) }
+      })
+      db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
+    }
+  } catch (err) {
+    // Bury the row NOW. Leaving it 'starting' made it look live to liveAssistant(),
+    // which then funnelled every subsequent ask into a session with no process.
+    db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(Date.now(), key)
+    throw err
   }
 
   db.prepare("UPDATE agent_sessions SET status = 'running' WHERE key = ?").run(key)
@@ -306,25 +347,25 @@ export async function reviveSession(key: string): Promise<boolean> {
   const sessionId = resumable(key)
   if (!sessionId) return false
   const db = getDb()
-  const row = db.prepare('SELECT profile, cwd FROM agent_sessions WHERE key = ?').get(key) as
-    | { profile: string; cwd: string }
+  const row = db.prepare('SELECT profile, cwd, title FROM agent_sessions WHERE key = ?').get(key) as
+    | { profile: string; cwd: string; title: string | null }
     | undefined
   const p = row ? profile(row.profile) : undefined
   if (!row || !p) return false
 
   try {
-    const args = ['--resume', sessionId, ...claudeArgs(p, key)]
+    // The assistant's identity is not part of the persisted conversation — reapply it
+    // on every revive or the woken session forgets who it is.
+    const sys = row.title === ASSISTANT_TITLE ? assistantSystemPrompt() : undefined
+    const args = ['--resume', sessionId, ...claudeArgs(p, key, undefined, sys)]
     if (p.tmux !== false && (await tmuxAvailable())) {
       const envFlags = Object.entries(sessionEnv(key)).flatMap(([k, v]) => ['-e', `${k}=${v}`])
       await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, ...envFlags, 'claude', ...args])
     } else {
-      const child = spawn('claude', args, {
+      const child = await spawnDetached('claude', args, {
         cwd: row.cwd,
-        detached: true,
-        stdio: 'ignore',
         env: { ...process.env, ...sessionEnv(key) }
       })
-      child.unref()
       db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
     }
     db.prepare("UPDATE agent_sessions SET status = 'running', last_seen_at = ? WHERE key = ?").run(
@@ -339,6 +380,192 @@ export async function reviveSession(key: string): Promise<boolean> {
     console.error(`[agents] could not revive ${key}:`, err)
     return false
   }
+}
+
+// ── the personal assistant ──────────────────────────────────────────────────
+
+/**
+ * The assistant is a SINGLETON personal session, marked by this title. One, because
+ * "ask my assistant" must have exactly one answerer — a new session per question
+ * would mean a stranger with no memory every time.
+ */
+export const ASSISTANT_TITLE = 'Assistant'
+
+/**
+ * Identity + role preamble injected via --append-system-prompt.
+ *
+ * Read fresh on every (re)launch rather than cached: the whole point of putting
+ * identity in Settings is that editing it changes the assistant.
+ */
+export function assistantSystemPrompt(): string {
+  const a = getSettings().assistant
+  const parts = [
+    [
+      "You are the user's personal assistant, running inside clipboard.md (their",
+      'clipboard manager). Questions arrive as <channel> messages. Answer in plain',
+      'text — replies are mirrored to an inbox panel, so keep them short and direct.',
+      'The clipmd tools give you their clipboard history (search_clipboard,',
+      'recent_clips, get_clip) and their notes (save_note); when a question refers to',
+      '"this" or something they copied, look at recent clips first.'
+    ].join('\n')
+  ]
+  if (a.identity.trim()) parts.push(a.identity.trim())
+  for (const file of a.identityFiles) {
+    try {
+      // Cap per file: a runaway path (a log, a database) must not eat the prompt.
+      const text = readFileSync(file, 'utf8').slice(0, 32_768).trim()
+      if (text) parts.push(`--- ${file} ---\n${text}`)
+    } catch (err) {
+      console.error(`[agents] could not read identity file ${file}:`, err)
+    }
+  }
+  return parts.join('\n\n')
+}
+
+function liveAssistant(): string | null {
+  // 'starting' counts only while a launch could plausibly still be in flight; an
+  // old 'starting' row is a corpse from a failed spawn, and adopting it would
+  // swallow every ask until the sweep buries it.
+  const row = getDb()
+    .prepare(
+      `SELECT key FROM agent_sessions
+       WHERE title = ? AND (
+         status IN ('running', 'dormant')
+         OR (status = 'starting' AND created_at > ?)
+       )
+       ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(ASSISTANT_TITLE, Date.now() - 3 * 60_000) as { key: string } | undefined
+  return row?.key ?? null
+}
+
+/** The profile the assistant runs under: 'personal' by convention, else the first. */
+function assistantProfile(): AgentProfile | undefined {
+  return profile('personal') ?? profiles()[0]
+}
+
+/**
+ * Ask the personal assistant, starting it if needed. Returns the session key
+ * immediately; delivery happens in the background because a cold session takes
+ * many seconds to reach chat, and the palette must not hang on that.
+ */
+/** In-flight launch, so two rapid asks share one assistant instead of spawning two. */
+let assistantLaunch: Promise<string> | null = null
+
+export async function askAssistant(text: string): Promise<{ key: string }> {
+  if (assistantLaunch) {
+    // A launch is already under way — join it and deliver once the bridge is up.
+    const key = await assistantLaunch
+    void deliverWithRetry(key, text, 'message')
+    return { key }
+  }
+  const existing = liveAssistant()
+  if (!existing) {
+    const p = assistantProfile()
+    if (!p) throw new Error('no agent profiles configured')
+    // A fresh session takes the question as its opening CLI prompt — no bridge
+    // wait, and the question cannot be lost in the startup window.
+    assistantLaunch = launchSession({
+      profile: p.name,
+      title: ASSISTANT_TITLE,
+      prompt: text,
+      systemPrompt: assistantSystemPrompt()
+    })
+    try {
+      return { key: await assistantLaunch }
+    } finally {
+      assistantLaunch = null
+    }
+  }
+  void deliverWithRetry(existing, text, 'message')
+  return { key: existing }
+}
+
+/**
+ * Deliver into a session that may still be starting. sendToSession already revives
+ * dormant sessions; this covers the other gap — a 'starting' session whose bridge
+ * hasn't published its port yet.
+ */
+async function deliverWithRetry(key: string, text: string, kind: string): Promise<void> {
+  const deadline = Date.now() + 90_000
+  let reason = 'the session never became reachable'
+  while (Date.now() < deadline) {
+    if (await sendToSession(key, text, kind)) return
+    // The session may have died rather than still be starting — stop retrying into a grave.
+    const row = getDb().prepare('SELECT status FROM agent_sessions WHERE key = ?').get(key) as
+      | { status: string }
+      | undefined
+    if (!row || row.status === 'exited') {
+      reason = 'the session exited'
+      break
+    }
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  // The user saw an optimistic "sent" — a silent drop here would be a lie. Put the
+  // failure where replies land, so the inbox (and the unread badge) surfaces it.
+  console.error(`[agents] could not deliver to ${key}: ${reason}`)
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+         VALUES (?, 'outbound', 'failure', ?, ?, ?)`
+      )
+      .run(
+        key,
+        `Your message was NOT delivered (${reason}):\n\n${text}`,
+        JSON.stringify({ via: 'delivery-failure' }),
+        Date.now()
+      )
+  } catch (err) {
+    console.error('[agents] could not record the delivery failure:', err)
+  }
+}
+
+/** End the assistant so the next ask relaunches it with fresh identity/settings. */
+export async function restartAssistant(): Promise<void> {
+  const key = liveAssistant()
+  if (key) await endSession(key)
+}
+
+// ── sending clips ───────────────────────────────────────────────────────────
+
+/**
+ * A clip formatted for an agent. Text goes verbatim; an image can't cross a text
+ * channel, so it goes as its path (agents can read files) plus whatever enrichment
+ * already extracted from it.
+ */
+function clipBody(item: ClipItem): string {
+  if (item.kind === 'image') {
+    const parts = [`[image clip — file at ${item.content}]`]
+    if (item.description) parts.push(`description: ${item.description}`)
+    if (item.ocrText) parts.push(`text in image:\n${item.ocrText}`)
+    return parts.join('\n')
+  }
+  return item.content
+}
+
+export async function sendClip(key: string, itemId: number): Promise<boolean> {
+  const item = getItem(itemId)
+  if (!item) return false
+  if (item.secret) throw new Error('secret clips are never sent to agents')
+  // Reachable now → send now, so a dead bridge is reported honestly. Not reachable
+  // (dormant, or still starting) → deliver in the background: a cold
+  // `claude --resume` takes well over the seconds a UI can hang, and failing the
+  // send AFTER waking the session left it running without the clip.
+  if (discovery(key)) return sendToSession(key, clipBody(item), 'clip')
+  const row = getDb().prepare('SELECT status FROM agent_sessions WHERE key = ?').get(key) as
+    | { status: string }
+    | undefined
+  if (!row || row.status === 'exited') return false
+  void deliverWithRetry(key, clipBody(item), 'clip')
+  return true
+}
+
+export async function launchWithClip(profileName: string, itemId: number): Promise<string> {
+  const item = getItem(itemId)
+  if (!item) throw new Error('clip not found')
+  if (item.secret) throw new Error('secret clips are never sent to agents')
+  return launchSession({ profile: profileName, prompt: clipBody(item) })
 }
 
 // ── state ───────────────────────────────────────────────────────────────────

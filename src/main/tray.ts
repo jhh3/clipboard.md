@@ -64,10 +64,14 @@ export function buildTrayMenu(): void {
   } catch {
     /* database not open yet during early startup */
   }
+  // Accelerator labels teach the hotkeys, but only macOS gets ⌘⇧ combos — on
+  // Linux the real bindings are GNOME-level ⌃⌥ ones the Menu API can't render.
+  const acc = (mac: string): { accelerator?: string } =>
+    process.platform === 'darwin' ? { accelerator: mac } : {}
   const menu = Menu.buildFromTemplate([
-    { label: 'Open clipboard palette', accelerator: 'Cmd+Shift+V', click: () => showPalette() },
+    { label: 'Open clipboard palette', ...acc('Cmd+Shift+V'), click: () => showPalette() },
     { type: 'separator' },
-    { label: 'Notes…', click: () => openNotesWindow() },
+    { label: 'Notes…', ...acc('Cmd+Shift+N'), click: () => openNotesWindow() },
     {
       label: "Today's note",
       click: () => {
@@ -77,6 +81,7 @@ export function buildTrayMenu(): void {
     },
     {
       label: unread > 0 ? `Agent inbox (${unread})` : 'Agent inbox',
+      ...acc('Cmd+Shift+A'),
       click: () => openAgentsWindow()
     },
     { type: 'separator' },
@@ -91,7 +96,7 @@ export function buildTrayMenu(): void {
         buildTrayMenu()
       }
     },
-    { label: 'Settings…', accelerator: 'Cmd+,', click: () => openSettingsWindow() },
+    { label: 'Settings…', ...acc('Cmd+,'), click: () => openSettingsWindow() },
     { type: 'separator' },
     { label: 'Quit clipboard.md', role: 'quit' }
   ])

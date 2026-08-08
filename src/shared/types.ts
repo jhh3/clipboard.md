@@ -270,6 +270,15 @@ export interface AppSettings {
     deviceLabel?: string
   }
   voiceSamples: string[]
+  /**
+   * The primary personal-assistant session: identity text and files injected into its
+   * system prompt at launch. Editing these takes effect on the next (re)start.
+   */
+  assistant: {
+    identity: string
+    /** Absolute paths to markdown/text files appended to the identity. */
+    identityFiles: string[]
+  }
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
   /** Spawn recipes for agent sessions. */
@@ -298,6 +307,15 @@ export interface IpcInvokeMap {
   'agents:inbox': () => AgentMessage[]
   'agents:mark-read': (key?: string) => void
   'agents:end': (key: string) => void
+  /** Ask the personal assistant. Ensures the singleton session exists; delivery is
+   *  retried in the background, so this returns as soon as the session is known. */
+  'agents:ask': (text: string) => { key: string }
+  /** Send a clip's content into a running session (formats text/image consistently). */
+  'agents:send-clip': (key: string, itemId: number) => boolean
+  /** Start a new session whose opening prompt is the clip's content. */
+  'agents:launch-with-clip': (opts: { profile: string; itemId: number }) => string
+  /** End the assistant session so the next ask relaunches it with fresh identity. */
+  'agents:restart-assistant': () => void
   'notes:list': (opts: { q?: string }) => NoteSummary[]
   'notes:get': (id: number) => Note | null
   'notes:create': (input?: { title?: string; content?: string }) => number
@@ -352,6 +370,8 @@ export interface IpcInvokeMap {
   'dictation:done': () => void
   'window:open-settings': () => void
   'window:open-scratchpad': (itemId?: number) => void
+  'window:open-notes': (noteId?: number) => void
+  'window:open-agents': () => void
   'app:version': () => string
 }
 
@@ -390,6 +410,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
   dictation: { autoPaste: true, keepAudio: true },
   voiceSamples: [],
+  assistant: { identity: '', identityFiles: [] },
   savedActions: [],
   smartCollections: [],
   agentProfiles: [

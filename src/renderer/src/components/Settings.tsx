@@ -32,6 +32,7 @@ const SECTIONS = [
   ['general', 'General'],
   ['providers', 'AI Providers'],
   ['intelligence', 'Intelligence'],
+  ['assistant', 'Assistant'],
   ['privacy', 'Privacy'],
   ['voice', 'Voice'],
   ['actions', 'Actions']
@@ -276,6 +277,27 @@ function MicSelect({
   )
 }
 
+/** Identity textarea: draft-then-commit like every other text control here. */
+function IdentityEditor({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  const [draft, setDraft] = useSyncedDraft(value, ref)
+  return (
+    <textarea
+      ref={ref}
+      className="set-textarea identity-textarea"
+      value={draft}
+      placeholder={
+        'Who you are and how the assistant should help.\n' +
+        'e.g. "I\'m John, a software engineer. Prefer terse answers. My projects live in ~/Documents/code."'
+      }
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft !== value) onCommit(draft)
+      }}
+    />
+  )
+}
+
 function VoiceSample({
   value,
   onCommit,
@@ -423,6 +445,20 @@ export default function Settings() {
   const theme = useTheme(settings?.theme)
   const flashTimer = useRef(0)
   const actionsInit = useRef(false)
+  const [newIdentityFile, setNewIdentityFile] = useState('')
+  const [restarting, setRestarting] = useState(false)
+
+  const restartAssistant = useCallback(async () => {
+    setRestarting(true)
+    try {
+      await invoke('agents:restart-assistant')
+      addToast('Assistant will relaunch with the new identity on your next ask', 'success')
+    } catch {
+      addToast('Could not restart the assistant', 'error')
+    } finally {
+      setRestarting(false)
+    }
+  }, [addToast])
 
   useEffect(() => {
     invoke('settings:get')
@@ -795,6 +831,100 @@ export default function Settings() {
                   checked={s.dictation.keepAudio}
                   onChange={(v) => patch({ dictation: { ...s.dictation, keepAudio: v } })}
                 />
+              </Row>
+            </>
+          )}
+
+          {section === 'assistant' && (
+            <>
+              <h2 className="set-section-title">Assistant</h2>
+              <p className="set-section-sub">
+                The personal assistant behind the palette&apos;s ask box (hit ↵ on what you type).
+                It runs as a Claude session with access to your clipboard history and notes.
+                Identity below is injected into its system prompt when it starts.
+              </p>
+              <div className="set-block">
+                <div className="set-label">Identity</div>
+                <div className="set-sub">Who you are, preferences, standing context.</div>
+                <IdentityEditor
+                  value={s.assistant.identity}
+                  onCommit={(v) => patch({ assistant: { ...s.assistant, identity: v } })}
+                />
+              </div>
+              <div className="set-block">
+                <div className="set-label">Identity files</div>
+                <div className="set-sub">
+                  Absolute paths to markdown/text files appended to the identity — a personal
+                  README, a projects list. Read fresh at each launch.
+                </div>
+                <div className="list-editor">
+                  {s.assistant.identityFiles.map((file, i) => (
+                    <div key={`${file}:${i}`} className="list-item-row">
+                      <span className="list-item-text mono" title={file}>
+                        {truncateMiddle(file)}
+                      </span>
+                      <button
+                        className="icon-btn"
+                        title="Remove"
+                        onClick={() =>
+                          patch({
+                            assistant: {
+                              ...s.assistant,
+                              identityFiles: s.assistant.identityFiles.filter((_, j) => j !== i)
+                            }
+                          })
+                        }
+                      >
+                        <TrashIcon size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="list-add-row">
+                    <input
+                      className="set-input"
+                      value={newIdentityFile}
+                      placeholder="/absolute/path/to/identity.md"
+                      spellCheck={false}
+                      onChange={(e) => setNewIdentityFile(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return
+                        const path = newIdentityFile.trim()
+                        if (!path || s.assistant.identityFiles.includes(path)) return
+                        patch({
+                          assistant: {
+                            ...s.assistant,
+                            identityFiles: [...s.assistant.identityFiles, path]
+                          }
+                        })
+                        setNewIdentityFile('')
+                      }}
+                    />
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const path = newIdentityFile.trim()
+                        if (!path || s.assistant.identityFiles.includes(path)) return
+                        patch({
+                          assistant: {
+                            ...s.assistant,
+                            identityFiles: [...s.assistant.identityFiles, path]
+                          }
+                        })
+                        setNewIdentityFile('')
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <Row
+                label="Apply identity changes"
+                sub="Ends the current assistant session; the next ask starts a fresh one with the identity above. The conversation so far stays in the inbox."
+              >
+                <button className="btn" disabled={restarting} onClick={() => void restartAssistant()}>
+                  {restarting ? 'Restarting…' : 'Restart assistant'}
+                </button>
               </Row>
             </>
           )}
