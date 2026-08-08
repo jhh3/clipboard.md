@@ -435,13 +435,7 @@ func cmdChangeCount() {
 func cmdWatch(intervalMs: Int) {
   let interval = TimeInterval(max(50, intervalMs)) / 1000.0
 
-  // stdin is never written to; its EOF is purely a parent-died signal.
-  let watchdog = Thread {
-    while true {
-      if FileHandle.standardInput.availableData.isEmpty { exit(0) }
-    }
-  }
-  watchdog.start()
+  watchStdinForParentExit()
 
   var last = NSPasteboard.general.changeCount
   output("\(last)\n")  // baseline, so the caller can prime without a second call
@@ -453,6 +447,105 @@ func cmdWatch(intervalMs: Int) {
     }
     Thread.sleep(forTimeInterval: interval)
   }
+}
+
+/// Push-to-talk: report when a chord is held down and when it is released.
+///
+/// Electron's globalShortcut only ever fires on key-DOWN, so hold-to-talk needs a
+/// separate source of key-up. Linux reads evdev; this is the macOS equivalent.
+///
+/// A listen-only CGEventTap rather than NSEvent.addGlobalMonitorForEvents, because
+/// Cocoa does not deliver keyUp to a global monitor while Command is held — with a
+/// ⌘-based chord the release would simply never arrive and recording would never stop.
+/// The tap is passive: it observes and never modifies or swallows events, so the same
+/// keystroke still reaches Electron's shortcut and the focused app.
+///
+/// Releasing the modifier counts as a release too. Users let go of ⌘ and the letter
+/// together, and whichever the OS reports first should end the hold.
+func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags) {
+  guard isTrusted(prompt: false) else {
+    fail("accessibility permission not granted", code: 3)
+  }
+
+  final class State {
+    var down = false
+    let keyCode: CGKeyCode
+    let modifiers: CGEventFlags
+    init(keyCode: CGKeyCode, modifiers: CGEventFlags) {
+      self.keyCode = keyCode
+      self.modifiers = modifiers
+    }
+    func press() {
+      guard !down else { return }  // key repeat, not a second press
+      down = true
+      output("down\n")
+    }
+    func release() {
+      guard down else { return }
+      down = false
+      output("up\n")
+    }
+  }
+  let state = State(keyCode: keyCode, modifiers: modifiers)
+
+  let callback: CGEventTapCallBack = { _, type, event, refcon in
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let state = Unmanaged<State>.fromOpaque(refcon).takeUnretainedValue()
+    let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+    let flags = event.flags
+
+    switch type {
+    case .keyDown:
+      if code == state.keyCode, flags.contains(state.modifiers) { state.press() }
+    case .keyUp:
+      if code == state.keyCode { state.release() }
+    case .flagsChanged:
+      if !flags.contains(state.modifiers) { state.release() }
+    case .tapDisabledByTimeout, .tapDisabledByUserInput:
+      // The system disables a slow tap; ours does nothing but compare integers, so
+      // this is recoverable — re-enable rather than going silently deaf.
+      if let tap = globalTap { CGEvent.tapEnable(tap: tap, enable: true) }
+    default:
+      break
+    }
+    return Unmanaged.passUnretained(event)  // never modify or swallow
+  }
+
+  let mask =
+    (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+    | (1 << CGEventType.flagsChanged.rawValue)
+
+  guard let tap = CGEvent.tapCreate(
+    tap: .cgSessionEventTap,
+    place: .headInsertEventTap,
+    options: .listenOnly,
+    eventsOfInterest: CGEventMask(mask),
+    callback: callback,
+    userInfo: Unmanaged.passUnretained(state).toOpaque())
+  else {
+    fail("could not create an event tap (Accessibility permission?)", code: 3)
+  }
+  globalTap = tap
+
+  let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+  CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+  CGEvent.tapEnable(tap: tap, enable: true)
+
+  watchStdinForParentExit()
+  CFRunLoopRun()
+}
+
+/// Held so the tap can be re-enabled from the C callback after a system timeout.
+var globalTap: CFMachPort?
+
+/// Exit when stdin closes, so a long-lived subcommand cannot outlive its parent.
+func watchStdinForParentExit() {
+  let watchdog = Thread {
+    while true {
+      if FileHandle.standardInput.availableData.isEmpty { exit(0) }
+    }
+  }
+  watchdog.start()
 }
 
 func cmdTrust(prompt: Bool) {
@@ -492,6 +585,11 @@ case "changecount":
 case "watch":
   let index = rest.firstIndex(of: "--interval-ms").map { $0 + 1 }
   cmdWatch(intervalMs: index.flatMap { $0 < rest.count ? Int(rest[$0]) : nil } ?? 300)
+case "ptt":
+  // Defaults match the dictation shortcut, ⌘⇧D (0x02 is the 'D' key).
+  let keyIndex = rest.firstIndex(of: "--keycode").map { $0 + 1 }
+  let keyCode = CGKeyCode(keyIndex.flatMap { $0 < rest.count ? UInt16(rest[$0]) : nil } ?? 0x02)
+  cmdPtt(keyCode: keyCode, modifiers: [.maskCommand, .maskShift])
 case "trust":
   cmdTrust(prompt: rest.contains("--prompt"))
 case "decode-audio":

@@ -9,6 +9,7 @@ import { Readable } from 'stream'
 import { getSettings } from './settings'
 import { openaiTranscribe } from './modelport/openaiCompat'
 import { macDecodeAudio } from './mac/helper'
+import { audioExtension } from './audioFormat'
 
 const execFileP = promisify(execFile)
 
@@ -80,13 +81,7 @@ export async function ensureLocalModel(): Promise<boolean> {
  * and an mp4 written as `.wav` fails to open. mp4 is what darwin records now.
  */
 export function saveRecording(audio: Buffer, mime: string): string {
-  const ext = mime.includes('webm')
-    ? 'webm'
-    : mime.includes('ogg')
-      ? 'ogg'
-      : mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')
-        ? 'm4a'
-        : 'wav'
+  const ext = audioExtension(mime)
   const sha = createHash('sha256').update(audio).digest('hex').slice(0, 16)
   const file = join(audioDir(), `${Date.now()}-${sha}.${ext}`)
   writeFileSync(file, audio)

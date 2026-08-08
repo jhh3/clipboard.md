@@ -320,17 +320,19 @@ if (!gotLock) {
     // Hotkeys talk to us over D-Bus so a held key doesn't cold-start Electron.
     if (process.platform === 'linux') {
       await startDbusService((action) => routeArgs([`--${action}`], actions))
-      // Real hold-to-talk from evdev key up/down. GNOME hotkeys can't express a
-      // release, so this is the only way to get honest push-to-talk here.
-      pttActive = startPushToTalk({
-        onPress: () => beginDictation(),
-        onRelease: () => {
-          // A quick tap latches recording on; a genuine hold ends on release.
-          if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
-          endDictation()
-        }
-      })
     }
+    // Real hold-to-talk from key up/down: evdev on Linux, a listen-only event tap via
+    // the helper on macOS. Neither platform's global-hotkey API can express a release
+    // — GNOME keybindings and Electron's globalShortcut both only ever fire on
+    // key-down — so this is the only way to get honest push-to-talk on either.
+    pttActive = startPushToTalk({
+      onPress: () => beginDictation(),
+      onRelease: () => {
+        // A quick tap latches recording on; a genuine hold ends on release.
+        if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
+        endDictation()
+      }
+    })
 
     createPaletteWindow()
     capture.start()

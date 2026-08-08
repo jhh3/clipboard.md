@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
+import { audioExtension, baseMime } from '../audioFormat'
 
 /**
  * One client for every OpenAI-compatible API. OpenAI and Gemini expose the same
@@ -94,8 +95,10 @@ export async function openaiTranscribe(audio: Buffer, mime: string): Promise<str
   const key = process.env.OPENAI_API_KEY
   if (!key) throw new Error('OPENAI_API_KEY not set')
   const form = new FormData()
-  const ext = mime.includes('webm') ? 'webm' : mime.includes('ogg') ? 'ogg' : 'wav'
-  form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${ext}`)
+  // The API identifies the container by FILE EXTENSION, so this must match the actual
+  // bytes — sending mp4 as `audio.wav` is a 400, not a guess it recovers from.
+  const ext = audioExtension(mime)
+  form.append('file', new Blob([new Uint8Array(audio)], { type: baseMime(mime) }), `audio.${ext}`)
   form.append('model', 'gpt-4o-mini-transcribe')
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',

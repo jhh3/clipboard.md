@@ -1,4 +1,6 @@
 import { createReadStream, readFileSync, type ReadStream } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
+import { helperPath } from './mac/helper'
 
 /**
  * Real push-to-talk, from evdev key events.
@@ -71,6 +73,7 @@ function keyboardDevices(): string[] {
  */
 export function startPushToTalk(handlers: PttHandlers): boolean {
   stopPushToTalk()
+  if (process.platform === 'darwin') return startMacPushToTalk(handlers)
   const devices = keyboardDevices()
   for (const path of devices) {
     try {
@@ -115,13 +118,67 @@ function onChunk(chunk: Buffer, handlers: PttHandlers): void {
   }
 }
 
+/**
+ * macOS hold-to-talk, via the helper's listen-only event tap.
+ *
+ * There is no evdev here, and Electron's globalShortcut only ever fires on key-DOWN,
+ * so without a second source of key-up the dictation hotkey can only be a toggle. The
+ * helper watches for ⌘⇧D with a passive CGEventTap and writes "down"/"up".
+ *
+ * NSEvent's global monitor would have been simpler and does not work: Cocoa withholds
+ * keyUp from it while Command is held, so the release for a ⌘-chord never arrives and
+ * recording would never stop.
+ *
+ * Requires Accessibility. Returns false without it, and the caller falls back to the
+ * toggle rather than losing dictation entirely.
+ */
+function startMacPushToTalk(handlers: PttHandlers): boolean {
+  const path = helperPath()
+  if (!path) return false
+  try {
+    const child = spawn(path, ['ptt'], { stdio: ['pipe', 'pipe', 'ignore'] })
+    macChild = child
+    child.stdout.setEncoding('utf8')
+    let buffered = ''
+    child.stdout.on('data', (chunk: string) => {
+      buffered += chunk
+      const lines = buffered.split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.trim() === 'down') handlers.onPress()
+        else if (line.trim() === 'up') handlers.onRelease()
+      }
+    })
+    child.on('error', () => {
+      macChild = null
+    })
+    child.on('exit', (code) => {
+      macChild = null
+      // Exit 3 is "no Accessibility permission" — expected before the user grants it,
+      // and not worth an error every launch.
+      if (code !== 0 && code !== 3) console.error(`[ptt] helper ptt exited (${code})`)
+    })
+    console.log('[ptt] hold-to-talk active (macOS event tap)')
+    return true
+  } catch (err) {
+    console.error('[ptt] could not start the macOS event tap:', err)
+    return false
+  }
+}
+
+let macChild: ChildProcess | null = null
+
 export function stopPushToTalk(): void {
   for (const s of streams) s.destroy()
   streams = []
   held = { ctrl: false, alt: false, space: false }
   chordActive = false
+  if (macChild) {
+    macChild.kill()
+    macChild = null
+  }
 }
 
 export function isPushToTalkActive(): boolean {
-  return streams.length > 0
+  return streams.length > 0 || macChild !== null
 }
