@@ -1,6 +1,7 @@
 import { Menu, Tray, nativeImage } from 'electron'
 import { getSettings, updateSettings } from './settings'
-import { openNotesWindow, openSettingsWindow, showPalette } from './windows'
+import { unreadCount } from './agents'
+import { openAgentsWindow, openNotesWindow, openSettingsWindow, showPalette } from './windows'
 
 /**
  * Menu bar / tray entry point.
@@ -45,6 +46,14 @@ function trayIcon(): Electron.NativeImage {
 export function buildTrayMenu(): void {
   if (!tray) return
   const settings = getSettings()
+  // Unread agent messages are the one thing worth surfacing on the icon itself:
+  // an agent blocked on a question is waiting on the user without any other signal.
+  let unread = 0
+  try {
+    unread = unreadCount()
+  } catch {
+    /* database not open yet during early startup */
+  }
   const menu = Menu.buildFromTemplate([
     { label: 'Open clipboard palette', accelerator: 'Cmd+Shift+V', click: () => showPalette() },
     { type: 'separator' },
@@ -55,6 +64,10 @@ export function buildTrayMenu(): void {
         // Resolved lazily so the daily note is created on demand, not at launch.
         void import('./store/notes').then(({ dailyNote }) => openNotesWindow(dailyNote()))
       }
+    },
+    {
+      label: unread > 0 ? `Agent inbox (${unread})` : 'Agent inbox',
+      click: () => openAgentsWindow()
     },
     { type: 'separator' },
     {
@@ -73,7 +86,17 @@ export function buildTrayMenu(): void {
     { label: 'Quit clipboard.md', role: 'quit' }
   ])
   tray.setContextMenu(menu)
-  tray.setToolTip(settings.captureEnabled ? 'clipboard.md' : 'clipboard.md — capture paused')
+  tray.setToolTip(
+    [
+      'clipboard.md',
+      settings.captureEnabled ? null : 'capture paused',
+      unread > 0 ? `${unread} unread from agents` : null
+    ]
+      .filter(Boolean)
+      .join(' — ')
+  )
+  // macOS shows this next to the icon; it is how a blocked agent gets noticed.
+  tray.setTitle(unread > 0 ? String(unread) : '')
 }
 
 export function createTray(): void {

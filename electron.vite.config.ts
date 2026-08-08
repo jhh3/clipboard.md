@@ -28,7 +28,9 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts'),
           asrWorker: resolve(__dirname, 'src/main/asr/worker.ts'),
-          mcp: resolve(__dirname, 'src/mcp/server.ts')
+          mcp: resolve(__dirname, 'src/mcp/server.ts'),
+          // Per-session two-way channel, spawned by agents.ts as an MCP server.
+          bridge: resolve(__dirname, 'src/mcp/bridge.ts')
         }
       }
     }

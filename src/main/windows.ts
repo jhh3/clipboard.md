@@ -410,6 +410,20 @@ export function openNotesWindow(noteId?: number): void {
   notesWin.webContents.once('did-finish-load', send)
 }
 
+let agentsWin: BrowserWindow | null = null
+
+/** Agent sessions and their inbox. */
+export function openAgentsWindow(): void {
+  if (agentsWin && !agentsWin.isDestroyed()) {
+    ensureOnScreen(agentsWin, 'agents', 980, 700)
+    agentsWin.show()
+    activateApp()
+    agentsWin.focus()
+    return
+  }
+  agentsWin = createAuxWindow('agents', 980, 700)
+}
+
 export function openScratchpadWindow(itemId?: number): void {
   if (scratchWin && !scratchWin.isDestroyed()) {
     ensureOnScreen(scratchWin, 'scratchpad', 720, 560)

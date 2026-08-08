@@ -21,6 +21,17 @@ import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import { hidePalette, sendToPalette, broadcast, openSettingsWindow, openScratchpadWindow } from './windows'
 import {
+  profiles,
+  listSessions,
+  launchSession,
+  sendToSession,
+  messages,
+  inbox,
+  markRead,
+  unreadCount,
+  endSession
+} from './agents'
+import {
   listNotes,
   getNote,
   createNote,
@@ -69,6 +80,28 @@ export function registerIpc(
   rewrite: RewriteState
 ): void {
   handle('dictation:done', () => rewrite.onDictationDone())
+
+  // ── agent sessions ───────────────────────────────────────────────────────
+  handle('agents:profiles', () => profiles())
+  handle('agents:sessions', (_e, includeEnded?: boolean) => listSessions(!!includeEnded))
+  handle('agents:launch', async (_e, opts: { profile: string; prompt?: string; title?: string }) => {
+    const key = await launchSession(opts)
+    broadcast('agents:changed', { unread: unreadCount() })
+    return key
+  })
+  handle('agents:send', (_e, key: string, text: string, kind?: string) =>
+    sendToSession(key, text, kind ?? 'message')
+  )
+  handle('agents:messages', (_e, key: string) => messages(key))
+  handle('agents:inbox', () => inbox())
+  handle('agents:mark-read', (_e, key?: string) => {
+    markRead(key)
+    broadcast('agents:changed', { unread: unreadCount() })
+  })
+  handle('agents:end', async (_e, key: string) => {
+    await endSession(key)
+    broadcast('agents:changed', { unread: unreadCount() })
+  })
 
   // ── notes ────────────────────────────────────────────────────────────────
   handle('notes:list', (_e, opts: { q?: string } = {}) => listNotes(opts))

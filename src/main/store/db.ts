@@ -147,6 +147,53 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_note_links_to ON note_links(to_id);
   CREATE INDEX idx_note_links_title ON note_links(target_title);
   CREATE INDEX IF NOT EXISTS idx_items_title ON items(title);
+  `,
+  // Agent sessions and the inbox they talk back through.
+  //
+  // Only sessions we spawned appear here, and that is the point: a session is ours
+  // precisely because we started it with a bridge MCP attached, which is what makes
+  // two-way messaging possible at all. `claude agents --json` can see every session
+  // on the machine, but we cannot address the ones we did not create.
+  //
+  // Messages live in SQLite rather than in memory so the inbox survives an app
+  // restart — an agent that answered a question while the app was closed must not
+  // lose the answer. It is also how the bridge process (a separate stdio MCP server)
+  // hands work to the app without either having to hold a socket open.
+  `
+  CREATE TABLE agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Our own handle, also the tmux session name and bridge discovery key.
+    key TEXT NOT NULL UNIQUE,
+    profile TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    -- Claude's own session id, learned from 'claude agents --json' once it appears.
+    session_id TEXT,
+    pid INTEGER,
+    title TEXT,
+    -- starting | running | exited
+    status TEXT NOT NULL DEFAULT 'starting',
+    worktree TEXT,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
+  CREATE INDEX idx_agent_sessions_status ON agent_sessions(status);
+
+  CREATE TABLE agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key TEXT NOT NULL,
+    -- inbound = we sent it to the agent; outbound = the agent sent it to us.
+    direction TEXT NOT NULL,
+    -- progress | question | done | failure | note: drives how the inbox renders it.
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    -- JSON blob of whatever the tool passed alongside the text.
+    meta TEXT,
+    created_at INTEGER NOT NULL,
+    read_at INTEGER
+  );
+  CREATE INDEX idx_agent_messages_session ON agent_messages(session_key, created_at);
+  CREATE INDEX idx_agent_messages_unread ON agent_messages(read_at) WHERE read_at IS NULL;
   `
 ]
 

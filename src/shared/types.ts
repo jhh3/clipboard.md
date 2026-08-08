@@ -16,6 +16,48 @@ export interface Note {
   tags: string[]
 }
 
+/**
+ * A spawn recipe for an agent session. Deliberately carries no model: sessions
+ * inherit the CLI default so profiles don't drift as that default changes.
+ */
+export interface AgentProfile {
+  name: string
+  /** Where the session runs. Empty means the home directory. */
+  cwd: string
+  /** Extra directories the agent may touch, passed as --add-dir. */
+  addDirs?: string[]
+  /** Default true — these are sessions launched explicitly to work unattended. */
+  bypassPermissions?: boolean
+  /** Default true when tmux is installed, so the TUI stays attachable. */
+  tmux?: boolean
+  appendSystemPrompt?: string
+}
+
+export interface AgentSession {
+  key: string
+  profile: string
+  cwd: string
+  title: string | null
+  /** dormant = slept to reclaim memory, resumable via `claude --resume`. */
+  status: 'starting' | 'running' | 'dormant' | 'exited'
+  createdAt: number
+  lastSeenAt: number
+  unread: number
+  /** The bridge has published its port, so this session can be spoken to. */
+  reachable: boolean
+}
+
+export interface AgentMessage {
+  id: number
+  sessionKey: string
+  direction: 'inbound' | 'outbound'
+  kind: string
+  body: string
+  meta?: Record<string, unknown>
+  createdAt: number
+  readAt: number | null
+}
+
 /** Notes list row — body replaced by its preview, so the sidebar stays cheap. */
 export interface NoteSummary {
   id: number
@@ -230,6 +272,8 @@ export interface AppSettings {
   voiceSamples: string[]
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
+  /** Spawn recipes for agent sessions. */
+  agentProfiles: AgentProfile[]
   hotkeyHint: string
   theme: 'system' | 'dark' | 'light'
   /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
@@ -246,6 +290,14 @@ export interface PasteOutcome {
 
 /** IPC channel map: renderer -> main (invoke). */
 export interface IpcInvokeMap {
+  'agents:profiles': () => AgentProfile[]
+  'agents:sessions': (includeEnded?: boolean) => AgentSession[]
+  'agents:launch': (opts: { profile: string; prompt?: string; title?: string }) => string
+  'agents:send': (key: string, text: string, kind?: string) => boolean
+  'agents:messages': (key: string) => AgentMessage[]
+  'agents:inbox': () => AgentMessage[]
+  'agents:mark-read': (key?: string) => void
+  'agents:end': (key: string) => void
   'notes:list': (opts: { q?: string }) => NoteSummary[]
   'notes:get': (id: number) => Note | null
   'notes:create': (input?: { title?: string; content?: string }) => number
@@ -310,6 +362,8 @@ export interface IpcEventMap {
   'scratchpad:shown': { itemId?: number }
   /** A note was created, edited or deleted — lists elsewhere should re-read. */
   'notes:changed': { id: number }
+  /** An agent said something, or a session's state changed. */
+  'agents:changed': { unread: number }
   /** Ask the notes window to open a specific note (menu bar, daily note, links). */
   'notes:open': { id?: number }
   'dictation:start': Record<string, never>
@@ -338,6 +392,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voiceSamples: [],
   savedActions: [],
   smartCollections: [],
+  agentProfiles: [
+    { name: 'personal', cwd: '', tmux: true },
+    { name: 'studio', cwd: '', tmux: true }
+  ],
   hotkeyHint: 'Ctrl+Alt+V',
   theme: 'system',
   pasteInjection: 'portal'

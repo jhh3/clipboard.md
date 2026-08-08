@@ -29,6 +29,7 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
+import { sweep } from './agentLifecycle'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
@@ -388,6 +389,13 @@ if (!gotLock) {
     // inside node_modules as a login item on the developer's machine, which then
     // fails at every login once the checkout moves or the dep is reinstalled.
     if (app.isPackaged && !isAutostartEnabled()) setAutostart(true)
+
+    // Sessions outlive the app and die behind its back. The sweep adopts orphans,
+    // buries dead rows, sleeps idle sessions and tears down what is never coming
+    // back — see agentLifecycle.ts. A stale "running" row is worse than none: the
+    // user sends a clip into it and nothing happens, silently.
+    void sweep()
+    setInterval(() => void sweep(), 5 * 60_000)
 
     createTray()
 
