@@ -7,11 +7,12 @@ import type {
   SavedAction
 } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
+import { IS_MAC, GLOBAL_MOD } from '../lib/keys'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
 import Toasts from './Toasts'
-import { PlusIcon, TrashIcon } from './icons'
+import { PlusIcon, SparkIcon, TrashIcon } from './icons'
 
 const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
   { id: 'claude-agent', label: 'Claude (agent)' },
@@ -26,6 +27,75 @@ const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
   codex: '(codex default)',
   openai: 'gpt-5.6-luna',
   gemini: 'gemini-flash-lite-latest'
+}
+
+/**
+ * Known model choices per provider, so picking one is a dropdown instead of
+ * remembering a model id. "Custom…" reveals a text field — the lists will age,
+ * and a stale list must never block a new model id.
+ */
+const MODEL_CHOICES: Record<ProviderId, string[]> = {
+  'claude-agent': ['haiku', 'sonnet', 'opus'],
+  codex: [],
+  openai: ['gpt-5.6-luna', 'gpt-5.6', 'gpt-5.1', 'gpt-5'],
+  gemini: ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-pro-latest']
+}
+
+const CUSTOM = '__custom__'
+
+/** Dropdown of known models with a custom escape hatch. Empty = provider default. */
+function ModelSelect({
+  provider,
+  value,
+  onCommit
+}: {
+  provider: ProviderId
+  value: string
+  onCommit: (v: string) => void
+}) {
+  const choices = MODEL_CHOICES[provider]
+  const isKnown = value === '' || choices.includes(value)
+  const [custom, setCustom] = useState(!isKnown)
+  if (choices.length === 0 || custom || !isKnown) {
+    return (
+      <div className="model-custom">
+        <TextField
+          value={value}
+          placeholder={MODEL_PLACEHOLDERS[provider]}
+          onCommit={onCommit}
+        />
+        {choices.length > 0 && (
+          <button
+            className="linkish"
+            onClick={() => {
+              setCustom(false)
+              if (!choices.includes(value)) onCommit('')
+            }}
+          >
+            list
+          </button>
+        )}
+      </div>
+    )
+  }
+  return (
+    <select
+      className="set-input"
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === CUSTOM) setCustom(true)
+        else onCommit(e.target.value)
+      }}
+    >
+      <option value="">Default ({MODEL_PLACEHOLDERS[provider]})</option>
+      {choices.map((m) => (
+        <option key={m} value={m}>
+          {m}
+        </option>
+      ))}
+      <option value={CUSTOM}>Custom…</option>
+    </select>
+  )
 }
 
 const SECTIONS = [
@@ -447,6 +517,72 @@ export default function Settings() {
   const actionsInit = useRef(false)
   const [newIdentityFile, setNewIdentityFile] = useState('')
   const [restarting, setRestarting] = useState(false)
+  const [memory, setMemory] = useState<string | null>(null)
+  const [consolidating, setConsolidating] = useState(false)
+  const memoryRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    invoke('assistant:memory-get')
+      .then(setMemory)
+      .catch(() => setMemory(''))
+  }, [])
+
+  const flashSaved = useCallback(() => {
+    setSavedFlash(true)
+    window.clearTimeout(flashTimer.current)
+    flashTimer.current = window.setTimeout(() => setSavedFlash(false), 1200)
+  }, [])
+
+  const saveMemory = useCallback(
+    (text: string) => {
+      setMemory(text)
+      invoke('assistant:memory-set', text)
+        .then(flashSaved)
+        .catch(() => addToast('Failed to save memory', 'error'))
+    },
+    [addToast, flashSaved]
+  )
+
+  const consolidateNow = useCallback(async () => {
+    setConsolidating(true)
+    try {
+      const res = await invoke('assistant:consolidate')
+      if (!res.ok) addToast(res.error ?? 'Consolidation failed', 'error')
+      else addToast(res.changed ? 'Memory consolidated' : 'Nothing new to fold in', 'success')
+      setMemory(await invoke('assistant:memory-get'))
+    } catch {
+      addToast('Consolidation failed', 'error')
+    } finally {
+      setConsolidating(false)
+    }
+  }, [addToast])
+
+  const [drafting, setDrafting] = useState(false)
+
+  /** Draft the identity from what the app already knows; lands in settings
+   *  immediately (still fully editable) so the flow is one click, not two. */
+  const draftIdentity = useCallback(async () => {
+    setDrafting(true)
+    try {
+      const res = await invoke('assistant:generate-identity')
+      if (res.ok && res.text) {
+        // Re-read before writing: the draft took seconds and identity is nested,
+        // so patching over a stale snapshot could drop other assistant edits.
+        const cur = await invoke('settings:get')
+        const next = await invoke('settings:set', {
+          assistant: { ...cur.assistant, identity: res.text }
+        })
+        setSettings(next)
+        addToast('Draft written from your notes, memory and usage — edit away', 'success')
+      } else {
+        addToast(res.error ?? 'Could not draft an identity', 'error')
+      }
+    } catch {
+      addToast('Could not draft an identity', 'error')
+    } finally {
+      setDrafting(false)
+    }
+  }, [addToast])
 
   const restartAssistant = useCallback(async () => {
     setRestarting(true)
@@ -481,12 +617,6 @@ export default function Settings() {
       setSavedActions(settings.savedActions)
     }
   }, [settings])
-
-  const flashSaved = useCallback(() => {
-    setSavedFlash(true)
-    window.clearTimeout(flashTimer.current)
-    flashTimer.current = window.setTimeout(() => setSavedFlash(false), 1200)
-  }, [])
 
   /** Optimistic patch: apply locally, persist, then adopt the authoritative result. */
   const patch = useCallback(
@@ -632,6 +762,12 @@ export default function Settings() {
                   onCommit={(n) => patch({ maxItems: n })}
                 />
               </Row>
+              <Row
+                label="Smart paste"
+                sub="Adapt pastes to the destination app: plain text into terminals, code clips fenced into Slack/Discord."
+              >
+                <Toggle checked={s.smartPaste !== false} onChange={(v) => patch({ smartPaste: v })} />
+              </Row>
               <Row label="Theme">
                 <select
                   className="set-input"
@@ -644,10 +780,14 @@ export default function Settings() {
                 </select>
               </Row>
               <Row
-                label="Global hotkey"
-                sub="GNOME keybindings are managed in system Settings → Keyboard → Custom Shortcuts."
+                label="Global hotkeys"
+                sub={
+                  IS_MAC
+                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · D dictate · N notes · A inbox. A combo owned by another app is skipped (see the log).'
+                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
+                }
               >
-                <kbd className="hotkey-kbd">{s.hotkeyHint}</kbd>
+                <kbd className="hotkey-kbd">{IS_MAC ? `${GLOBAL_MOD}V` : s.hotkeyHint}</kbd>
               </Row>
             </>
           )}
@@ -660,25 +800,55 @@ export default function Settings() {
                 calls OpenAI or Gemini directly with OPENAI_API_KEY / GEMINI_API_KEY from your
                 environment.
               </p>
-              <Row label="Enrichment lane" sub="How titles, tags, and OCR are generated.">
+              <Row
+                label="Enrichment lane"
+                sub="Subscription = the claude/codex CLIs already signed in on this machine. API = direct calls with your own keys."
+              >
                 <select
                   className="set-input"
                   value={s.enrichment.lane}
+                  onChange={(e) => {
+                    const lane = e.target.value as ProviderLane
+                    // Keep the provider inside the chosen lane — a subscription
+                    // lane pointed at OpenAI silently does nothing.
+                    const first = lane === 'subscription' ? 'claude-agent' : 'openai'
+                    const stillValid =
+                      lane === 'subscription'
+                        ? ['claude-agent', 'codex'].includes(s.enrichment.provider)
+                        : ['openai', 'gemini'].includes(s.enrichment.provider)
+                    patch({
+                      enrichment: {
+                        ...s.enrichment,
+                        lane,
+                        provider: stillValid ? s.enrichment.provider : (first as ProviderId)
+                      }
+                    })
+                  }}
+                >
+                  <option value="subscription">Subscription (claude / codex CLI)</option>
+                  <option value="api">API key (OpenAI / Gemini)</option>
+                </select>
+              </Row>
+              <Row label="Enrichment provider" sub="Only providers in the chosen lane are offered.">
+                <select
+                  className="set-input"
+                  value={s.enrichment.provider}
                   onChange={(e) =>
                     patch({
-                      enrichment: { ...s.enrichment, lane: e.target.value as ProviderLane }
+                      enrichment: { ...s.enrichment, provider: e.target.value as ProviderId }
                     })
                   }
                 >
-                  <option value="subscription">Subscription</option>
-                  <option value="api">API key</option>
+                  {PROVIDERS.filter((p) =>
+                    s.enrichment.lane === 'subscription'
+                      ? p.id === 'claude-agent' || p.id === 'codex'
+                      : p.id === 'openai' || p.id === 'gemini'
+                  ).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
                 </select>
-              </Row>
-              <Row label="Enrichment provider">
-                <ProviderSelect
-                  value={s.enrichment.provider}
-                  onChange={(p) => patch({ enrichment: { ...s.enrichment, provider: p } })}
-                />
               </Row>
               <Row
                 label="Transforms provider"
@@ -698,9 +868,9 @@ export default function Settings() {
                   {PROVIDERS.map((p) => (
                     <label key={p.id} className="model-row">
                       <span className="model-provider">{p.label}</span>
-                      <TextField
+                      <ModelSelect
+                        provider={p.id}
                         value={s.models[p.id] ?? ''}
-                        placeholder={MODEL_PLACEHOLDERS[p.id]}
                         onCommit={(v) => {
                           const models = { ...s.models }
                           if (v) models[p.id] = v
@@ -845,11 +1015,19 @@ export default function Settings() {
               </p>
               <div className="set-block">
                 <div className="set-label">Identity</div>
-                <div className="set-sub">Who you are, preferences, standing context.</div>
+                <div className="set-sub">
+                  Who you are, preferences, standing context. Don&apos;t want to start from a blank
+                  box? Draft it from what the app already knows.
+                </div>
                 <IdentityEditor
                   value={s.assistant.identity}
                   onCommit={(v) => patch({ assistant: { ...s.assistant, identity: v } })}
                 />
+                <div className="set-inline-actions">
+                  <button className="btn" disabled={drafting} onClick={() => void draftIdentity()}>
+                    <SparkIcon size={12} /> {drafting ? 'Drafting…' : 'Draft with AI'}
+                  </button>
+                </div>
               </div>
               <div className="set-block">
                 <div className="set-label">Identity files</div>
@@ -918,6 +1096,37 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
+              <div className="set-block">
+                <div className="set-label">Long-term memory</div>
+                <div className="set-sub">
+                  What the assistant has learned about you. It adds facts as you talk (the
+                  `remember` tool), and a background pass periodically folds recent conversations
+                  in — merging, deduping, dropping stale entries. Yours to edit or erase.
+                </div>
+                <textarea
+                  ref={memoryRef}
+                  className="set-textarea identity-textarea"
+                  value={memory ?? ''}
+                  placeholder={memory === null ? 'Loading…' : 'Nothing learned yet.'}
+                  disabled={memory === null}
+                  onChange={(e) => setMemory(e.target.value)}
+                  onBlur={(e) => saveMemory(e.target.value)}
+                />
+                <div className="set-inline-actions">
+                  <button className="btn" disabled={consolidating} onClick={() => void consolidateNow()}>
+                    {consolidating ? 'Consolidating…' : 'Consolidate now'}
+                  </button>
+                </div>
+              </div>
+              <Row
+                label="Pre-warm at launch"
+                sub="Start the assistant session when the app starts, so the first ask answers in seconds instead of a cold start."
+              >
+                <Toggle
+                  checked={s.assistant.prewarm !== false}
+                  onChange={(v) => patch({ assistant: { ...s.assistant, prewarm: v } })}
+                />
+              </Row>
               <Row
                 label="Apply identity changes"
                 sub="Ends the current assistant session; the next ask starts a fresh one with the identity above. The conversation so far stays in the inbox."

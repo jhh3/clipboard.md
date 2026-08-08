@@ -14,6 +14,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
     [
       ['↵', 'ask assistant (input) / paste (item selected)'],
       ['↓ ↑', 'move between assistant and history'],
+      [`${MOD}D`, 'voice ask (toggle mic)'],
       ['⇧↵', 'paste as plain text'],
       [`${MOD}↵`, 'copy without pasting'],
       [`${MOD}1–9`, 'quick-paste item 1–9'],

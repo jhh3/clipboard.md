@@ -7,9 +7,11 @@ interface Props {
   inputRef: RefObject<HTMLInputElement | null>
   /** Icon buttons rendered at the right edge (screenshot / scratchpad / settings). */
   actions?: ReactNode
+  /** Overridden in ask mode, where the same input is the follow-up box. */
+  placeholder?: string
 }
 
-export default function SearchBar({ value, onChange, inputRef, actions }: Props) {
+export default function SearchBar({ value, onChange, inputRef, actions, placeholder }: Props) {
   return (
     <div className="search-bar">
       <SearchIcon className="search-icon" size={15} />
@@ -19,7 +21,7 @@ export default function SearchBar({ value, onChange, inputRef, actions }: Props)
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Ask your assistant, or search your clipboard…"
+        placeholder={placeholder ?? 'Ask your assistant, or search your clipboard…'}
         spellCheck={false}
         autoComplete="off"
         autoCorrect="off"

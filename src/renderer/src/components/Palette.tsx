@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentMessage,
   AgentSession,
   ClipItem,
   SavedAction,
@@ -10,7 +11,8 @@ import type {
 } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { sessionLabel } from '../lib/time'
+import { blobToB64, configuredMicDeviceId, openMicStream, preferredAudioMime } from '../lib/audio'
+import { relTime, sessionLabel } from '../lib/time'
 import { MOD } from '../lib/keys'
 import { useSearch } from '../hooks/useSearch'
 import { useKeymap } from '../hooks/useKeymap'
@@ -24,7 +26,7 @@ import ActionBar from './ActionBar'
 import AgentPicker, { targetLabel, type AgentTarget } from './AgentPicker'
 import HelpOverlay from './HelpOverlay'
 import Toasts from './Toasts'
-import { CameraIcon, GearIcon, PencilIcon, SparkIcon } from './icons'
+import { CameraIcon, GearIcon, MicIcon, PencilIcon, SparkIcon } from './icons'
 
 const KIND_CHIPS: Chip[] = [
   { id: 'all', label: 'All' },
@@ -41,6 +43,9 @@ type Mode =
   | { name: 'normal' }
   | { name: 'action'; item: ClipItem }
   | { name: 'agent'; item: ClipItem }
+  /** Conversation with the assistant, in place: the answer arrives HERE, not in a
+   *  window you have to go find. `askedAt` scopes which messages belong to it. */
+  | { name: 'ask'; sessionKey: string; askedAt: number }
   | { name: 'result'; item: ClipItem; req: TransformRequest; out: TransformOutput; label: string }
 
 /**
@@ -75,6 +80,8 @@ export default function Palette() {
   const [agentTargets, setAgentTargets] = useState<AgentTarget[]>([])
   const [agentInput, setAgentInput] = useState('')
   const [agentHighlight, setAgentHighlight] = useState(0)
+  const [askThread, setAskThread] = useState<AgentMessage[]>([])
+  const [micState, setMicState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [showHelp, setShowHelp] = useState(false)
   const [running, setRunning] = useState(false)
   const [shownTick, setShownTick] = useState(0)
@@ -130,7 +137,8 @@ export default function Palette() {
   }, [items])
 
   const selectedItem: ClipItem | null = sel >= 0 ? (visible[sel] ?? null) : null
-  const previewItem = mode.name === 'normal' ? selectedItem : mode.item
+  const previewItem =
+    mode.name === 'normal' || mode.name === 'ask' ? selectedItem : mode.item
 
   // Typing recomposes the ask/search — selection returns to the ask row. Arrowing
   // back into the (re-filtered) list is one keystroke.
@@ -171,6 +179,7 @@ export default function Palette() {
       setActionHighlight(0)
       setAgentInput('')
       setAgentHighlight(0)
+      setAskThread([])
       setShowHelp(false)
       if (p.mode === 'rewrite' && p.rewriteText) {
         // Rewrite mini-flow: materialize the selection as a clip so transforms
@@ -206,7 +215,7 @@ export default function Palette() {
       else actionInputRef.current?.focus()
       return
     }
-    if (mode.name === 'normal') {
+    if (mode.name === 'normal' || mode.name === 'ask') {
       searchInputRef.current?.focus()
     } else if (mode.name === 'action') {
       actionInputRef.current?.focus()
@@ -281,23 +290,229 @@ export default function Palette() {
   )
 
   // ── ask the assistant ─────────────────────────────────────────────────────
-  const askAssistant = useCallback(async () => {
-    const text = query.trim()
-    if (!text || runningRef.current) return
-    runningRef.current = true
-    setRunning(true)
-    try {
-      await invoke('agents:ask', text)
-      setQuery('')
-      addToast('Asked your assistant — the reply lands in the inbox', 'success')
-      hideSoon()
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Could not reach the assistant', 'error')
-    } finally {
-      runningRef.current = false
-      setRunning(false)
+  /** Local optimistic entry — the bridge only records a message once delivered,
+   *  which can lag many seconds; the user's own words must appear instantly. */
+  const localMsg = (sessionKey: string, body: string): AgentMessage => ({
+    id: -Date.now(),
+    sessionKey,
+    direction: 'inbound',
+    kind: 'message',
+    body,
+    createdAt: Date.now(),
+    readAt: null
+  })
+
+  const askAssistant = useCallback(
+    async (textArg?: string) => {
+      const text = (textArg ?? query).trim()
+      if (!text || runningRef.current) return
+      runningRef.current = true
+      setRunning(true)
+      try {
+        if (mode.name === 'ask') {
+          // Follow-up into the same conversation.
+          const ok = await invoke('agents:send', mode.sessionKey, text, 'message')
+          if (!ok) {
+            addToast('Could not reach the assistant — it may be waking up; try again', 'error')
+            return
+          }
+          setAskThread((t) => [...t, localMsg(mode.sessionKey, text)])
+          setQuery('')
+        } else {
+          const res = await invoke('agents:ask', text)
+          setAskThread([localMsg(res.key, text)])
+          setMode({ name: 'ask', sessionKey: res.key, askedAt: Date.now() })
+          setQuery('')
+        }
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : 'Could not reach the assistant', 'error')
+      } finally {
+        runningRef.current = false
+        setRunning(false)
+      }
+    },
+    [query, mode, addToast]
+  )
+
+  // Poll the conversation while ask mode is up. The reply is written to SQLite by
+  // the Stop hook / bridge from OUTSIDE this process, so polling is the honest way
+  // to see it; 1s is imperceptible against a model turn.
+  useEffect(() => {
+    if (mode.name !== 'ask') return
+    const key = mode.sessionKey
+    const since = mode.askedAt - 10_000
+    let cancelled = false
+    const tick = async (): Promise<void> => {
+      // A hidden palette must not consume the conversation: mark-read from an
+      // invisible window would silence the tray badge for a reply nobody saw.
+      if (document.hidden) return
+      try {
+        const msgs = await invoke('agents:messages', key)
+        if (cancelled) return
+        const server = msgs.filter((m) => m.createdAt >= since)
+        setAskThread((local) => {
+          // Server wins; keep only optimistic entries the server hasn't echoed yet.
+          const seen = new Set(server.filter((m) => m.direction === 'inbound').map((m) => m.body))
+          const pending = local.filter((m) => m.id < 0 && !seen.has(m.body))
+          return [...server, ...pending].sort((a, b) => a.createdAt - b.createdAt)
+        })
+        if (server.some((m) => m.direction === 'outbound' && m.readAt === null)) {
+          void invoke('agents:mark-read', key)
+        }
+      } catch {
+        /* window closing */
+      }
     }
-  }, [query, addToast, hideSoon])
+    void tick()
+    const t = setInterval(() => void tick(), 1000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [mode])
+
+  // 'failure' is a delivery report and 'progress' is status chatter — pasting
+  // either as "the answer" would put diagnostics into the user's document.
+  const latestAnswer = useMemo(
+    () =>
+      [...askThread]
+        .reverse()
+        .find(
+          (m) => m.direction === 'outbound' && m.kind !== 'failure' && m.kind !== 'progress'
+        ) ?? null,
+    [askThread]
+  )
+  /** Waiting when the newest message is ours. */
+  const askWaiting =
+    askThread.length > 0 && askThread[askThread.length - 1].direction === 'inbound'
+
+  const askBottomRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    askBottomRef.current?.scrollIntoView({ block: 'end' })
+  }, [askThread.length])
+
+  const pasteAnswer = useCallback(async () => {
+    if (!latestAnswer) return
+    try {
+      handleOutcome(
+        await invoke('transform:paste-output', { output: latestAnswer.body, outputKind: 'text' })
+      )
+    } catch {
+      addToast('Paste failed', 'error')
+    }
+  }, [latestAnswer, handleOutcome, addToast])
+
+  const copyAnswer = useCallback(async () => {
+    if (!latestAnswer) return
+    try {
+      await navigator.clipboard.writeText(latestAnswer.body)
+      addToast('Answer copied', 'success')
+    } catch {
+      addToast('Copy failed', 'error')
+    }
+  }, [latestAnswer, addToast])
+
+  const exitAsk = useCallback(() => {
+    setMode({ name: 'normal' })
+    setAskThread([])
+  }, [])
+
+  // ── voice ask (mic → transcribe → ask) ────────────────────────────────────
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const micStreamRef = useRef<MediaStream | null>(null)
+  const askRef = useRef(askAssistant)
+  askRef.current = askAssistant
+
+  const finishMic = useCallback(async () => {
+    const rec = recRef.current
+    recRef.current = null
+    micStreamRef.current?.getTracks().forEach((t) => t.stop())
+    micStreamRef.current = null
+    const mime = rec?.mimeType || 'audio/webm'
+    const blob = new Blob(chunksRef.current, { type: mime })
+    chunksRef.current = []
+    if (blob.size === 0) {
+      setMicState('idle')
+      return
+    }
+    setMicState('transcribing')
+    try {
+      const res = await invoke('scratch:transcribe', { audioB64: await blobToB64(blob), mime })
+      if (res.ok && res.text?.trim()) {
+        // Straight to the assistant — the question bubble shows what was heard,
+        // and a follow-up corrects any mishearing faster than re-typing would.
+        void askRef.current(res.text.trim())
+      } else {
+        addToast(res.error ?? 'Heard nothing', 'error')
+      }
+    } catch {
+      addToast('Transcription failed', 'error')
+    } finally {
+      setMicState('idle')
+    }
+  }, [addToast])
+
+  const finishMicRef = useRef(finishMic)
+  finishMicRef.current = finishMic
+
+  /** getUserMedia can take seconds (first-ever permission prompt); without this
+   *  guard, a repeated ⌘D opens N streams and only the last ever gets stopped —
+   *  the OS mic indicator then stays lit until the window reloads. */
+  const micOpeningRef = useRef(false)
+
+  const toggleMic = useCallback(async () => {
+    if (micState === 'transcribing' || micOpeningRef.current) return
+    if (recRef.current) {
+      recRef.current.stop()
+      return
+    }
+    micOpeningRef.current = true
+    try {
+      const { stream } = await openMicStream(await configuredMicDeviceId())
+      // The palette may have hidden while the permission prompt was up.
+      if (document.hidden) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      micStreamRef.current = stream
+      const rec = new MediaRecorder(stream, { mimeType: preferredAudioMime() })
+      chunksRef.current = []
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data)
+      }
+      rec.onstop = () => void finishMicRef.current()
+      rec.start(250)
+      recRef.current = rec
+      setMicState('recording')
+    } catch {
+      addToast('Microphone unavailable — check permissions', 'error')
+    } finally {
+      micOpeningRef.current = false
+    }
+  }, [micState, addToast])
+
+  /** Abandon any in-flight recording without transcribing (palette re-shown). */
+  const cancelMic = useCallback(() => {
+    if (recRef.current) {
+      recRef.current.onstop = null
+      recRef.current.stop()
+      recRef.current = null
+    }
+    micStreamRef.current?.getTracks().forEach((t) => t.stop())
+    micStreamRef.current = null
+    chunksRef.current = []
+    setMicState('idle')
+  }, [])
+
+  // A hidden palette must never keep the microphone open.
+  useEffect(() => {
+    const onVis = (): void => {
+      if (document.hidden) cancelMic()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [cancelMic])
 
   // ── send to agent ─────────────────────────────────────────────────────────
   // `explicit` pins the clip (the action panel passes its mode.item): the visible
@@ -720,6 +935,50 @@ export default function Palette() {
       return
     }
 
+    // Mic toggle, wherever asking is possible. `repeat` filtered: holding ⌘D
+    // auto-repeats, and a repeat landing after the recorder starts would stop it.
+    if (
+      mod &&
+      e.key.toLowerCase() === 'd' &&
+      !e.repeat &&
+      (mode.name === 'normal' || mode.name === 'ask') &&
+      !rewrite
+    ) {
+      e.preventDefault()
+      void toggleMic()
+      return
+    }
+
+    if (mode.name === 'ask') {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        exitAsk()
+        return
+      }
+      if (e.key === 'Enter' && mod) {
+        e.preventDefault()
+        void copyAnswer()
+        return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        // Typed text is a follow-up; an empty box pastes the answer.
+        if (query.trim()) void askAssistant()
+        else void pasteAnswer()
+        return
+      }
+      // Everything else (typing, arrows for scroll) belongs to the input/thread.
+      if (
+        !mod &&
+        !e.altKey &&
+        e.key.length === 1 &&
+        document.activeElement !== searchInputRef.current
+      ) {
+        searchInputRef.current?.focus()
+      }
+      return
+    }
+
     if (mode.name === 'agent') {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -885,25 +1144,32 @@ export default function Palette() {
             [`${MOD}P`, 'pin'],
             [`${MOD}⌫`, 'delete']
           ]
-      : mode.name === 'action'
+      : mode.name === 'ask'
         ? [
-            ['↵', 'run'],
-            ['↑↓', 'choose'],
-            ['key', 'instant action'],
+            ['↵', query.trim() ? 'send follow-up' : 'paste answer'],
+            [`${MOD}↵`, 'copy answer'],
+            [`${MOD}D`, micState === 'recording' ? 'stop & send' : 'voice'],
             ['esc', 'back']
           ]
-        : mode.name === 'agent'
+        : mode.name === 'action'
           ? [
-              ['↵', 'send'],
+              ['↵', 'run'],
               ['↑↓', 'choose'],
+              ['key', 'instant action'],
               ['esc', 'back']
             ]
-          : [
-              ['↵', 'paste result'],
-              ['⇧↵', 'paste plain'],
-              [`${MOD}↵`, 'copy result'],
-              ['esc', 'back']
-            ]
+          : mode.name === 'agent'
+            ? [
+                ['↵', 'send'],
+                ['↑↓', 'choose'],
+                ['esc', 'back']
+              ]
+            : [
+                ['↵', 'paste result'],
+                ['⇧↵', 'paste plain'],
+                [`${MOD}↵`, 'copy result'],
+                ['esc', 'back']
+              ]
 
   // ── rewrite mini-flow render ──────────────────────────────────────────────
   if (rewrite) {
@@ -991,11 +1257,34 @@ export default function Palette() {
         value={query}
         onChange={setQuery}
         inputRef={searchInputRef}
+        placeholder={
+          mode.name === 'ask'
+            ? micState === 'recording'
+              ? 'Listening… (⌘D to stop & send)'
+              : 'Follow up… (↵ sends · empty ↵ pastes the answer)'
+            : micState === 'recording'
+              ? 'Listening… (⌘D to stop & ask)'
+              : undefined
+        }
         actions={
           <>
             <button
+              className={'icon-btn mic-btn ' + micState}
+              title={
+                micState === 'recording'
+                  ? 'Stop and ask (⌘D)'
+                  : micState === 'transcribing'
+                    ? 'Transcribing…'
+                    : 'Voice ask (⌘D)'
+              }
+              onClick={() => void toggleMic()}
+              tabIndex={-1}
+            >
+              <MicIcon size={15} />
+            </button>
+            <button
               className="icon-btn"
-              title="Capture screenshot · takes GNOME's picker (Ctrl+Shift+S)"
+              title={`Capture screenshot (${MOD}⇧S)`}
               onClick={() => void captureScreenshot()}
               tabIndex={-1}
             >
@@ -1003,7 +1292,7 @@ export default function Palette() {
             </button>
             <button
               className="icon-btn"
-              title="Open scratchpad (Ctrl+E)"
+              title={`Open scratchpad (${MOD}E)`}
               onClick={openScratchpad}
               tabIndex={-1}
             >
@@ -1015,6 +1304,47 @@ export default function Palette() {
           </>
         }
       />
+      {mode.name === 'ask' ? (
+        <div className="ask-view">
+          <div className="ask-thread">
+            {askThread.map((m) => (
+              <div key={m.id} className={`agents-msg agents-${m.direction} agents-kind-${m.kind}`}>
+                <div className="agents-msg-head">
+                  <span className="agents-msg-kind">
+                    {m.direction === 'inbound' ? 'you' : 'assistant'}
+                  </span>
+                  <span>{relTime(m.createdAt)}</span>
+                </div>
+                <div className="agents-msg-body">{m.body}</div>
+              </div>
+            ))}
+            {askWaiting && (
+              <div className="ask-waiting">
+                <span className="ask-pulse" />
+                thinking…
+              </div>
+            )}
+            {askThread.length === 0 && <div className="ask-waiting">connecting…</div>}
+            <div ref={askBottomRef} />
+          </div>
+          <div className="ask-actions">
+            {latestAnswer && (
+              <>
+                <button className="btn primary" onClick={() => void pasteAnswer()}>
+                  Paste answer <kbd>↵</kbd>
+                </button>
+                <button className="btn" onClick={() => void copyAnswer()}>
+                  Copy <kbd>{MOD}↵</kbd>
+                </button>
+              </>
+            )}
+            <button className="btn" onClick={exitAsk}>
+              Back <kbd>esc</kbd>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
       <FilterChips
         chips={chips}
         activeId={activeChip.id}
@@ -1123,6 +1453,8 @@ export default function Palette() {
           )}
         </div>
       </div>
+        </>
+      )}
       <div className="footer-bar">
         <div className="footer-hints">
           {footerHints.map(([k, label]) => (
