@@ -87,6 +87,10 @@ mac:
     # executable — asar would strip that, and it is a binary, not app code.
     - from: resources/mac/clipmd-helper
       to: clipmd-helper
+    # The bridge plugin scaffold. Copied out to userData at startup, because claude
+    # spawns the bridge by path and a path inside app.asar is a path into a file.
+    - from: resources/plugin
+      to: plugin
   # Unsigned by default so anyone can build without a certificate.
   #
   # The cost is real during development: an unsigned bundle keeps only the linker's

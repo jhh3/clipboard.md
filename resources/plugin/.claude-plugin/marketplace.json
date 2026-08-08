@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "clipboard-md",
+  "description": "Local-directory marketplace for clipboard.md's session bridge. Not for distribution.",
+  "owner": { "name": "clipboard.md" },
+  "plugins": [
+    {
+      "name": "clipmd-bridge",
+      "source": "./plugins/clipmd-bridge",
+      "description": "Channel MCP — two-way comm between an agent session and clipboard.md.",
+      "category": "development"
+    }
+  ]
+}

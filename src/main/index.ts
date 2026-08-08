@@ -31,6 +31,7 @@ import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { sweep } from './agentLifecycle'
+import { ensurePlugin } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
@@ -396,6 +397,7 @@ if (!gotLock) {
     // buries dead rows, sleeps idle sessions and tears down what is never coming
     // back — see agentLifecycle.ts. A stale "running" row is worse than none: the
     // user sends a clip into it and nothing happens, silently.
+    void ensurePlugin()
     void sweep()
     setInterval(() => void sweep(), 5 * 60_000)
 

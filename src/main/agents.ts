@@ -1,12 +1,13 @@
 import { app } from 'electron'
 import { spawn, execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { getDb } from './store/db'
 import { getSettings } from './settings'
 import { resumable } from './agentLifecycle'
+import { CHANNEL_REF } from './agentPlugin'
 import type { AgentProfile, AgentSession, AgentMessage } from '@shared/types'
 
 const execFileP = promisify(execFile)
@@ -33,11 +34,6 @@ function discoveryFile(key: string): string {
   return join(bridgeDir(), `${key}.json`)
 }
 
-/** The bridge is bundled next to the other main-process entry points. */
-function bridgeEntry(): string {
-  return join(__dirname, 'bridge.mjs')
-}
-
 function dbPath(): string {
   return join(app.getPath('userData'), 'data', 'clipboard.db')
 }
@@ -60,36 +56,12 @@ export function profile(name: string): AgentProfile | undefined {
  * sessions the user explicitly launched to do work unattended.
  */
 function claudeArgs(p: AgentProfile, key: string, prompt?: string): string[] {
-  // The config goes to a FILE, not an inline argument. tmux re-parses the command it
-  // is given, and this JSON is full of quotes, braces and spaces — passing it inline
-  // works for the direct-spawn path and mangles it under tmux. `--mcp-config` accepts
-  // a path, so writing it out sidesteps every layer of quoting.
-  const mcpConfig = {
-    mcpServers: {
-      clipmd: {
-        command: process.execPath,
-        args: [bridgeEntry()],
-        env: {
-          // ELECTRON_RUN_AS_NODE: the bridge is plain Node, but the only guaranteed
-          // Node binary we can point at is our own Electron executable.
-          ELECTRON_RUN_AS_NODE: '1',
-          CLIPMD_SESSION_KEY: key,
-          CLIPMD_DB: dbPath(),
-          CLIPMD_BRIDGE_FILE: discoveryFile(key),
-          CLIPMD_BRIDGE_TOKEN: randomBytes(16).toString('hex')
-        }
-      }
-    }
-  }
-
-  const configPath = join(bridgeDir(), `${key}.mcp.json`)
-  mkdirSync(bridgeDir(), { recursive: true })
-  writeFileSync(configPath, JSON.stringify(mcpConfig))
-  // The env block carries the bridge token, which is a capability to inject
-  // instructions into an agent running with permissions bypassed.
-  chmodSync(configPath, 0o600)
-
-  const args = ['--mcp-config', configPath]
+  // --dangerously-load-development-channels is the load-bearing flag. Registering the
+  // bridge with --mcp-config instead gives working TOOLS and a channel that is
+  // silently ignored — verified against a live session, which took no notice of a
+  // notifications/claude/channel either idle or mid-turn. The channel only exists
+  // when the server arrives as a plugin-provided development channel.
+  const args = ['--dangerously-load-development-channels', CHANNEL_REF]
   if (p.bypassPermissions !== false) args.push('--dangerously-skip-permissions')
   // No --model: profiles inherit whatever the CLI default is, deliberately, so they
   // don't drift as defaults change.
@@ -97,6 +69,22 @@ function claudeArgs(p: AgentProfile, key: string, prompt?: string): string[] {
   if (p.appendSystemPrompt) args.push('--append-system-prompt', p.appendSystemPrompt)
   if (prompt) args.push(prompt)
   return args
+}
+
+/**
+ * Per-session values for the bridge.
+ *
+ * These cannot live in the plugin's .mcp.json — one plugin serves every session — so
+ * they go into the tmux session's environment and the MCP server inherits them
+ * through claude. Same approach as mobot.
+ */
+function sessionEnv(key: string): Record<string, string> {
+  return {
+    CLIPMD_SESSION_KEY: key,
+    CLIPMD_DB: dbPath(),
+    CLIPMD_BRIDGE_FILE: discoveryFile(key),
+    CLIPMD_BRIDGE_TOKEN: randomBytes(16).toString('hex')
+  }
 }
 
 async function tmuxAvailable(): Promise<boolean> {
@@ -227,18 +215,16 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
 
   if (useTmux) {
     // -d so launching never steals the user's terminal; they attach when they want.
-    await execFileP('tmux', [
-      'new-session',
-      '-d',
-      '-s',
-      key,
-      '-c',
-      cwd,
-      'claude',
-      ...args
-    ])
+    const env = sessionEnv(key)
+    const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+    await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, 'claude', ...args])
   } else {
-    const child = spawn('claude', args, { cwd, detached: true, stdio: 'ignore' })
+    const child = spawn('claude', args, {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, ...sessionEnv(key) }
+    })
     child.unref()
     db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
   }
@@ -326,9 +312,15 @@ export async function reviveSession(key: string): Promise<boolean> {
   try {
     const args = ['--resume', sessionId, ...claudeArgs(p, key)]
     if (p.tmux !== false && (await tmuxAvailable())) {
-      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, 'claude', ...args])
+      const envFlags = Object.entries(sessionEnv(key)).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, ...envFlags, 'claude', ...args])
     } else {
-      const child = spawn('claude', args, { cwd: row.cwd, detached: true, stdio: 'ignore' })
+      const child = spawn('claude', args, {
+        cwd: row.cwd,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, ...sessionEnv(key) }
+      })
       child.unref()
       db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
     }
