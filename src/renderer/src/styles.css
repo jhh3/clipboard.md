@@ -2203,3 +2203,310 @@ body.route-dictation #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── notes ─────────────────────────────────────────────────────────────────
+   Three panes: list, editor, links. No folder tree — titles, tags and search
+   do the organising, which is the same bet Obsidian and SilverBullet make and
+   the one that fits an app whose enrichment already auto-titles and auto-tags. */
+
+.notes-win {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.notes-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.notes-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px 6px;
+}
+
+.notes-toolbar button {
+  flex: 1;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.notes-toolbar button:hover {
+  border-color: var(--border-strong);
+  background: var(--sel-bg-hover);
+}
+
+.notes-search {
+  padding: 4px 10px 8px;
+}
+
+.notes-search input {
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.notes-search input:focus {
+  border-color: var(--accent);
+}
+
+.notes-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 6px 10px;
+  list-style: none;
+}
+
+.notes-row {
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.notes-row:hover {
+  background: var(--sel-bg-hover);
+}
+
+.notes-row.selected {
+  background: var(--sel-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.notes-row-title {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-row-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.notes-tag {
+  padding: 0 5px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border-radius: 999px;
+}
+
+.notes-empty {
+  padding: 14px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.notes-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.notes-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notes-title {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.notes-title::placeholder {
+  color: var(--text-faint);
+}
+
+.notes-saved {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.notes-saved.busy {
+  color: var(--accent-bright);
+}
+
+.notes-delete {
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.notes-delete:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* The editor owns the remaining height; CodeMirror scrolls inside it. */
+.note-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.note-editor .cm-editor {
+  height: 100%;
+  font-size: 13.5px;
+}
+
+.note-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+.note-editor .cm-scroller {
+  padding: 12px 16px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  line-height: 1.6;
+  overflow-y: auto;
+}
+
+.note-editor .cm-content {
+  caret-color: var(--accent-bright);
+}
+
+.note-editor .cm-cursor {
+  border-left-color: var(--accent-bright);
+}
+
+.note-editor .cm-activeLine {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.note-editor .cm-selectionBackground,
+.note-editor .cm-content ::selection {
+  background: var(--accent-dim) !important;
+}
+
+.note-editor .cm-placeholder {
+  color: var(--text-faint);
+}
+
+/* Markdown tokens. Sizes stay close to body text: this is an editor, not a
+   preview, and headings that balloon make the source hard to scan. */
+.note-editor .cm-h1 { font-size: 1.35em; font-weight: 700; color: var(--text); }
+.note-editor .cm-h2 { font-size: 1.2em; font-weight: 700; color: var(--text); }
+.note-editor .cm-h3 { font-size: 1.08em; font-weight: 600; color: var(--text); }
+.note-editor .cm-strong { font-weight: 700; color: var(--text); }
+.note-editor .cm-em { font-style: italic; }
+.note-editor .cm-strike { text-decoration: line-through; color: var(--text-faint); }
+.note-editor .cm-link { color: var(--accent-bright); }
+.note-editor .cm-url { color: var(--text-dim); }
+.note-editor .cm-code { color: var(--success); background: var(--bg-inset); border-radius: 3px; }
+.note-editor .cm-quote { color: var(--text-dim); font-style: italic; }
+.note-editor .cm-list { color: var(--accent-bright); }
+
+.notes-links {
+  max-height: 34%;
+  overflow-y: auto;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.notes-linkgroup + .notes-linkgroup {
+  margin-top: 10px;
+}
+
+.notes-linkgroup h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.notes-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notes-chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.notes-chip:hover {
+  border-color: var(--accent);
+}
+
+/* A link whose note doesn't exist yet — clicking it creates the note. */
+.notes-chip.unresolved {
+  color: var(--text-dim);
+  border-style: dashed;
+}
+
+.notes-chip-new {
+  font-size: 10px;
+  color: var(--accent-bright);
+}
+
+.notes-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.notes-hint code {
+  padding: 1px 4px;
+  background: var(--bg-raised);
+  border-radius: 3px;
+}
+
+.notes-blank {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-size: 13px;
+  color: var(--text-faint);
+}

@@ -390,6 +390,26 @@ export function openSettingsWindow(): void {
   settingsWin = createAuxWindow('settings', 820, 640)
 }
 
+let notesWin: BrowserWindow | null = null
+
+/**
+ * The notes window. Larger than the other aux windows because it is three panes
+ * (list, editor, links) and is meant to be worked in rather than dismissed.
+ */
+export function openNotesWindow(noteId?: number): void {
+  const send = (): void => notesWin?.webContents.send('notes:open', { id: noteId })
+  if (notesWin && !notesWin.isDestroyed()) {
+    ensureOnScreen(notesWin, 'notes', 1080, 720)
+    notesWin.show()
+    activateApp()
+    notesWin.focus()
+    send()
+    return
+  }
+  notesWin = createAuxWindow('notes', 1080, 720)
+  notesWin.webContents.once('did-finish-load', send)
+}
+
 export function openScratchpadWindow(itemId?: number): void {
   if (scratchWin && !scratchWin.isDestroyed()) {
     ensureOnScreen(scratchWin, 'scratchpad', 720, 560)

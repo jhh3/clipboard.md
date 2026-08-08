@@ -3,14 +3,16 @@ import Palette from './components/Palette'
 import Settings from './components/Settings'
 import Scratchpad from './components/Scratchpad'
 import DictationHud from './components/DictationHud'
+import Notes from './components/Notes'
 
-type Route = 'palette' | 'settings' | 'scratchpad' | 'dictation'
+type Route = 'palette' | 'settings' | 'scratchpad' | 'dictation' | 'notes'
 
 function routeFromHash(): Route {
   const h = window.location.hash
   if (h === '#settings') return 'settings'
   if (h === '#scratchpad') return 'scratchpad'
   if (h === '#dictation') return 'dictation'
+  if (h === '#notes') return 'notes'
   return 'palette'
 }
 
@@ -36,5 +38,6 @@ export default function App() {
   if (route === 'settings') return <Settings />
   if (route === 'scratchpad') return <Scratchpad />
   if (route === 'dictation') return <DictationHud />
+  if (route === 'notes') return <Notes />
   return <Palette />
 }

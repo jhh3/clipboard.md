@@ -19,7 +19,18 @@ import { saveRecording, transcribeFile } from './transcribe'
 import { detectSecret } from './capture/filters'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
-import { hidePalette, sendToPalette, openSettingsWindow, openScratchpadWindow } from './windows'
+import { hidePalette, sendToPalette, broadcast, openSettingsWindow, openScratchpadWindow } from './windows'
+import {
+  listNotes,
+  getNote,
+  createNote,
+  updateNote,
+  backlinks,
+  outgoingLinks,
+  findNoteByTitle,
+  resolveLinksTo,
+  dailyNote
+} from './store/notes'
 import type { PasteService } from './paste'
 import type { CaptureService } from './capture'
 import { providersStatus } from './modelport'
@@ -58,6 +69,48 @@ export function registerIpc(
   rewrite: RewriteState
 ): void {
   handle('dictation:done', () => rewrite.onDictationDone())
+
+  // ── notes ────────────────────────────────────────────────────────────────
+  handle('notes:list', (_e, opts: { q?: string } = {}) => listNotes(opts))
+  handle('notes:get', (_e, id: number) => getNote(id))
+  handle('notes:create', (_e, input?: { title?: string; content?: string }) => {
+    const id = createNote(input ?? {})
+    const note = getNote(id)
+    // A note created after something already linked to it by title must adopt those
+    // edges, or the backlink never appears and the feature looks broken.
+    if (note?.title) resolveLinksTo(id, note.title)
+    broadcast('notes:changed', { id })
+    return id
+  })
+  handle('notes:update', (_e, id: number, patch: { title?: string; content?: string }) => {
+    updateNote(id, patch)
+    const note = getNote(id)
+    if (note?.title) resolveLinksTo(id, note.title)
+    // Notes are edited constantly; only tell other windows, not the editor that
+    // just typed, and let the list re-read on its own schedule.
+    broadcast('notes:changed', { id })
+  })
+  handle('notes:delete', (_e, id: number) => {
+    deleteItem(id)
+    broadcast('notes:changed', { id })
+  })
+  handle('notes:backlinks', (_e, id: number) => backlinks(id))
+  handle('notes:outgoing', (_e, id: number) => outgoingLinks(id))
+  handle('notes:open-by-title', (_e, title: string) => {
+    const existing = findNoteByTitle(title)
+    if (existing !== null) return existing
+    // Following a link to a note that doesn't exist creates it — the wiki behaviour
+    // users expect, and the reason unresolved edges are stored in the first place.
+    const id = createNote({ title, content: `# ${title}\n\n` })
+    resolveLinksTo(id, title)
+    broadcast('notes:changed', { id })
+    return id
+  })
+  handle('notes:daily', () => {
+    const id = dailyNote()
+    broadcast('notes:changed', { id })
+    return id
+  })
   handle('search', async (_e, q: SearchQuery) => {
     if (q.mode === 'hybrid' && q.q.trim()) {
       const qe = await embedQuery(q.q)

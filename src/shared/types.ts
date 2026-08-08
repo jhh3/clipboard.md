@@ -1,5 +1,31 @@
 /** Content classification assigned by capture heuristics and refined by AI enrichment. */
-export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html'
+export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html' | 'note'
+
+/**
+ * A note is an item with kind='note' — see store/notes.ts. It differs from a clip in
+ * three ways: it has a user-authored title, it is edited in place rather than being
+ * append-only history, and its body can link to other notes with [[wikilinks]].
+ */
+export interface Note {
+  id: number
+  title: string
+  content: string
+  createdAt: number
+  updatedAt: number
+  pinned: boolean
+  tags: string[]
+}
+
+/** Notes list row — body replaced by its preview, so the sidebar stays cheap. */
+export interface NoteSummary {
+  id: number
+  title: string
+  preview: string
+  createdAt: number
+  updatedAt: number
+  pinned: boolean
+  tags: string[]
+}
 
 export type ContentClass =
   | 'transcription'
@@ -220,6 +246,16 @@ export interface PasteOutcome {
 
 /** IPC channel map: renderer -> main (invoke). */
 export interface IpcInvokeMap {
+  'notes:list': (opts: { q?: string }) => NoteSummary[]
+  'notes:get': (id: number) => Note | null
+  'notes:create': (input?: { title?: string; content?: string }) => number
+  'notes:update': (id: number, patch: { title?: string; content?: string }) => void
+  'notes:delete': (id: number) => void
+  'notes:backlinks': (id: number) => NoteSummary[]
+  'notes:outgoing': (id: number) => Array<{ title: string; toId: number | null }>
+  /** Resolve a [[wikilink]] by title, creating the note when it doesn't exist yet. */
+  'notes:open-by-title': (title: string) => number
+  'notes:daily': () => number
   'search': (q: SearchQuery) => SearchResult
   'item:get': (id: number) => ClipItem | null
   'item:pin': (id: number, pinned: boolean) => void
@@ -272,6 +308,10 @@ export interface IpcEventMap {
   'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' }
   'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
   'scratchpad:shown': { itemId?: number }
+  /** A note was created, edited or deleted — lists elsewhere should re-read. */
+  'notes:changed': { id: number }
+  /** Ask the notes window to open a specific note (menu bar, daily note, links). */
+  'notes:open': { id?: number }
   'dictation:start': Record<string, never>
   'dictation:stop': Record<string, never>
   'toast': { message: string; kind: 'info' | 'error' | 'success' }

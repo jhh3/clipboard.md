@@ -16,6 +16,7 @@ import {
   sendToPalette,
   broadcast,
   openScratchpadWindow,
+  openNotesWindow,
   showDictationHud,
   stopDictation,
   hideDictationHud
@@ -27,6 +28,7 @@ import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
+import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
@@ -265,7 +267,8 @@ if (!gotLock) {
       })()
     },
     scratchpad: () => openScratchpadWindow(),
-    dictate: () => dictateTrigger()
+    dictate: () => dictateTrigger(),
+    notes: () => openNotesWindow()
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -356,6 +359,7 @@ if (!gotLock) {
     // every window, and let the services that cached values re-read them.
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
+      buildTrayMenu() // the Pause-capture checkbox must reflect changes made in Settings
       capture.applySettings()
       if (s.embeddings.enabled) startEmbeddings()
       else stopEmbeddings()
@@ -385,6 +389,8 @@ if (!gotLock) {
     // fails at every login once the checkout moves or the dep is reinstalled.
     if (app.isPackaged && !isAutostartEnabled()) setAutostart(true)
 
+    createTray()
+
     routeArgsOnLaunch()
   })
 
@@ -398,6 +404,7 @@ if (!gotLock) {
   }
 
   app.on('will-quit', () => {
+    destroyTray()
     teardownHotkeys()
     stopPushToTalk()
     flushSettings() // don't lose a debounced write on exit

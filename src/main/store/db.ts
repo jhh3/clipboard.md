@@ -89,6 +89,64 @@ const MIGRATIONS: string[] = [
   `
   CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
   CREATE INDEX IF NOT EXISTS idx_items_secret ON items(secret);
+  `,
+  // Notes.
+  //
+  // Notes are items with kind='note', not a table of their own. That one decision
+  // inherits FTS5, the sqlite-vec embeddings, tags, pinning, sessions, enrichment and
+  // the whole palette for free; a separate table would mean reimplementing every one
+  // of them. What notes add over a clip is a user-authored title and mutability.
+  //
+  // items_fts has to be rebuilt rather than altered because FTS5 columns are fixed at
+  // creation. 'rebuild' repopulates it from the content table, so nothing is lost.
+  `
+  ALTER TABLE items ADD COLUMN title TEXT;
+  ALTER TABLE items ADD COLUMN updated_at INTEGER;
+
+  DROP TRIGGER IF EXISTS items_ai;
+  DROP TRIGGER IF EXISTS items_ad;
+  DROP TRIGGER IF EXISTS items_au;
+  DROP TABLE IF EXISTS items_fts;
+
+  CREATE VIRTUAL TABLE items_fts USING fts5(
+    content, title, auto_title, tags, ocr_text, description,
+    content='items', content_rowid='id', tokenize='unicode61'
+  );
+
+  CREATE TRIGGER items_ai AFTER INSERT ON items BEGIN
+    INSERT INTO items_fts(rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES (new.id, CASE WHEN new.secret = 1 THEN '' ELSE new.content END,
+            new.title, new.auto_title, new.tags, new.ocr_text, new.description);
+  END;
+  CREATE TRIGGER items_ad AFTER DELETE ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES ('delete', old.id, CASE WHEN old.secret = 1 THEN '' ELSE old.content END,
+            old.title, old.auto_title, old.tags, old.ocr_text, old.description);
+  END;
+  CREATE TRIGGER items_au AFTER UPDATE OF content, title, auto_title, tags, ocr_text, description, secret ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES ('delete', old.id, CASE WHEN old.secret = 1 THEN '' ELSE old.content END,
+            old.title, old.auto_title, old.tags, old.ocr_text, old.description);
+    INSERT INTO items_fts(rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES (new.id, CASE WHEN new.secret = 1 THEN '' ELSE new.content END,
+            new.title, new.auto_title, new.tags, new.ocr_text, new.description);
+  END;
+
+  INSERT INTO items_fts(items_fts) VALUES('rebuild');
+
+  -- Edges are implicit in the note body ([[wikilinks]]), the way Obsidian and
+  -- SilverBullet do it; backlinks are just the reverse-adjacency view. to_id is
+  -- nullable so a link to a note that doesn't exist yet is still recorded — that
+  -- unresolved edge is what makes "create it from the link" possible later.
+  CREATE TABLE note_links (
+    from_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    to_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    target_title TEXT NOT NULL,
+    PRIMARY KEY (from_id, target_title)
+  );
+  CREATE INDEX idx_note_links_to ON note_links(to_id);
+  CREATE INDEX idx_note_links_title ON note_links(target_title);
+  CREATE INDEX IF NOT EXISTS idx_items_title ON items(title);
   `
 ]
 
