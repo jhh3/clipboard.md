@@ -47,7 +47,7 @@ try {
 }
 
 /**
- * Pull the last assistant text out of the transcript.
+ * Pull the last assistant text out of the transcript, with its entry uuid.
  *
  * The transcript is JSONL, one message per line. We take only the final assistant
  * message: mirroring every intermediate step would flood the inbox with the tool
@@ -81,15 +81,31 @@ function lastAssistantText(path) {
       : typeof content === 'string'
         ? content.trim()
         : ''
-    if (text) return text
+    if (text) return { text, uuid: entry.uuid ?? null }
     // An assistant turn that was pure tool calls has no text worth mirroring —
     // the tools already reported themselves. Keep looking back.
   }
   return null
 }
 
-const text = hook.transcript_path ? lastAssistantText(hook.transcript_path) : null
-if (!text) bail()
+/**
+ * The Stop hook can fire BEFORE claude flushes the final assistant message to the
+ * transcript file — observed live: hook ran in 112ms, found nothing, bailed, and
+ * the reply never reached the inbox. Retry the read briefly; the flush lands
+ * within a second.
+ */
+async function lastAssistantTextRetry(path) {
+  for (let i = 0; i < 8; i++) {
+    const found = lastAssistantText(path)
+    if (found) return found
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  return null
+}
+
+const found = hook.transcript_path ? await lastAssistantTextRetry(hook.transcript_path) : null
+if (!found) bail()
+const { text, uuid } = found
 
 try {
   // better-sqlite3 is a native module; resolve it from the app's node_modules,
@@ -99,20 +115,33 @@ try {
   const db = new Database(DB)
   db.pragma('busy_timeout = 5000')
 
-  // Don't double-report: if the agent already sent this exact text through a tool
-  // in the last minute, the hook has nothing to add.
-  const dupe = db
-    .prepare(
-      `SELECT 1 FROM agent_messages
-       WHERE session_key = ? AND direction = 'outbound' AND body = ? AND created_at > ?`
-    )
-    .get(KEY, text, Date.now() - 60_000)
+  // Don't double-report. Two dupe sources: the retry above can surface the
+  // PREVIOUS turn's reply when this turn was tool-only (transcript uuid catches
+  // that precisely, with no time window to age out), and the agent may have sent
+  // this exact text through a tool moments ago (body match within a minute).
+  const prevUuid = uuid
+    ? db
+        .prepare(
+          `SELECT 1 FROM agent_messages
+           WHERE session_key = ? AND direction = 'outbound'
+             AND json_extract(meta, '$.uuid') = ? LIMIT 1`
+        )
+        .get(KEY, uuid)
+    : null
+  const dupe =
+    prevUuid ??
+    db
+      .prepare(
+        `SELECT 1 FROM agent_messages
+         WHERE session_key = ? AND direction = 'outbound' AND body = ? AND created_at > ?`
+      )
+      .get(KEY, text, Date.now() - 60_000)
 
   if (!dupe) {
     db.prepare(
       `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
        VALUES (?, 'outbound', 'reply', ?, ?, ?)`
-    ).run(KEY, text, JSON.stringify({ via: 'stop-hook' }), Date.now())
+    ).run(KEY, text, JSON.stringify({ via: 'stop-hook', uuid }), Date.now())
     db.prepare('UPDATE agent_sessions SET last_seen_at = ? WHERE key = ?').run(Date.now(), KEY)
   }
   db.close()

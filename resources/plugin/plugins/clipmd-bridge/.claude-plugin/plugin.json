@@ -1,7 +1,7 @@
 {
   "name": "clipmd-bridge",
   "description": "Channel MCP for clipboard.md. Lets a session report progress, ask questions and save notes back to the app, and lets the app speak into the session.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "keywords": [
     "channel",
     "bridge",
