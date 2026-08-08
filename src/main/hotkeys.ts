@@ -13,6 +13,7 @@ export interface HotkeyActions {
   /** Push-to-talk dictation: toggles recording (GNOME keybindings can't report key-up). */
   dictate: () => void
   notes: () => void
+  agents: () => void
 }
 
 /**
@@ -29,7 +30,8 @@ const MAC_SHORTCUTS: Array<[string, keyof HotkeyActions]> = [
   ['Command+Shift+S', 'screenshot'],
   ['Command+Shift+E', 'scratchpad'],
   ['Command+Shift+D', 'dictate'],
-  ['Command+Shift+N', 'notes']
+  ['Command+Shift+N', 'notes'],
+  ['Command+Shift+A', 'agents']
 ]
 
 export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
@@ -78,7 +80,8 @@ const BINDINGS: Binding[] = [
     arg: '--dictate',
     previous: ['<Control><Alt>d']
   },
-  { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' }
+  { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' },
+  { slug: 'clipboard-md-agents', name: 'clipboard.md — agent inbox', binding: '<Control><Alt>a', arg: '--agents' }
 ]
 
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
@@ -157,6 +160,7 @@ export function routeArgs(argv: string[], actions: HotkeyActions): void {
   else if (argv.includes('--scratchpad')) actions.scratchpad()
   else if (argv.includes('--dictate')) actions.dictate()
   else if (argv.includes('--notes')) actions.notes()
+  else if (argv.includes('--agents')) actions.agents()
   else actions.toggle()
 }
 

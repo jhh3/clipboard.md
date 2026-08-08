@@ -3,6 +3,7 @@ import { getSettings, updateSettings } from './settings'
 import { unreadCount } from './agents'
 import { openAgentsWindow, openNotesWindow, openSettingsWindow, showPalette } from './windows'
 
+
 /**
  * Menu bar / tray entry point.
  *
@@ -33,10 +34,19 @@ const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"
   </g>
 </svg>`
 
-function trayIcon(): Electron.NativeImage {
-  const img = nativeImage.createFromDataURL(
-    `data:image/svg+xml;base64,${Buffer.from(ICON_SVG).toString('base64')}`
-  )
+/**
+ * Rasterise the glyph to a PNG.
+ *
+ * nativeImage does NOT decode SVG — createFromDataURL on an SVG returns an empty
+ * 0x0 image, and `new Tray()` with that is an invisible menu bar item with no error
+ * anywhere. Verified. sharp is already a dependency, so render it once at startup.
+ *
+ * Drawn at 2x and tagged scaleFactor 2 so it is crisp on Retina.
+ */
+async function trayIcon(): Promise<Electron.NativeImage> {
+  const sharp = (await import('sharp')).default
+  const png = await sharp(Buffer.from(ICON_SVG)).resize(44, 44).png().toBuffer()
+  const img = nativeImage.createFromBuffer(png, { scaleFactor: 2 })
   // Template mode is what makes macOS invert it for a dark menu bar. On Linux the
   // flag is ignored, and the plain glyph is what we want anyway.
   img.setTemplateImage(true)
@@ -99,14 +109,17 @@ export function buildTrayMenu(): void {
   tray.setTitle(unread > 0 ? String(unread) : '')
 }
 
-export function createTray(): void {
+export async function createTray(): Promise<void> {
   if (tray) return
   try {
-    tray = new Tray(trayIcon())
+    const icon = await trayIcon()
+    if (icon.isEmpty()) throw new Error('tray icon failed to rasterise')
+    tray = new Tray(icon)
     buildTrayMenu()
-    // Left-click opens the palette on macOS; the context menu still shows on right
-    // click. Matching what a menu bar utility is expected to do.
-    tray.on('click', () => showPalette())
+    // NO click handler. setContextMenu already makes macOS open the menu on left
+    // click; adding one on top of that summoned the palette AND the menu together,
+    // overlapping each other. The menu is what a menu bar icon is for — the palette
+    // has its own hotkey and a menu entry.
   } catch (err) {
     // A missing tray must never be fatal — on Linux the appindicator support is
     // genuinely flaky (DESIGN.md §6), and the app works fine without it.

@@ -108,6 +108,81 @@ async function tmuxAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Startup menus claude can stop on, and the keys that dismiss each.
+ *
+ * Loading a custom MCP channel makes claude ask whether it trusts the folder /
+ * development channels, and the session WEDGES on that menu — the bridge connects
+ * over stdio, so everything looks healthy from our side, while the session never
+ * reaches chat and nothing we send is ever read. Taken from Nullframe/mobot, which
+ * hit exactly this.
+ */
+const DEV_CHANNEL_MENU = [
+  'Loading development channels',
+  'I am using this for local development',
+  'Is this a project you created',
+  'Yes, I trust this folder'
+]
+const RESUME_SUMMARY_MENU = ['Resume from summary', 'Resume full session as-is']
+/**
+ * Catch-all for a menu we don't know about. claude default-highlights the safe
+ * choice, so a bare Enter accepts it — this is what stops a NEW menu from wedging
+ * every spawn until someone notices.
+ */
+const GENERIC_PROMPT = [
+  'Enter to confirm',
+  '❯ 1.',
+  'Do you want to proceed',
+  '(use arrow keys',
+  'Press enter to continue'
+]
+/** claude is in the live chat UI once its input footer is drawn. */
+const CHAT_READY = ['? for shortcuts', 'Bypassing Permissions', '│ >']
+
+/**
+ * Wait for claude to reach its chat UI, dismissing startup menus on the way.
+ *
+ * Deliberately NOT a blind keystroke on a timer. Two reasons, both learned the hard
+ * way in mobot: a menu can take well over 5s to draw under load, so a timed guess
+ * races it; and a stray key sent to a menu that is still up can CANCEL it and exit
+ * claude. So we only ever send keys when a prompt we recognise is actually on
+ * screen, and we wait for a positive ready signal rather than assuming.
+ */
+async function waitForChatReady(target: string, timeoutMs = 180_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  let lastNudge = 0
+  while (Date.now() < deadline) {
+    const screen = await run('tmux', ['capture-pane', '-p', '-t', target], 5000)
+    if (screen === null) return true // pane is gone; let the caller surface the real error
+    if (CHAT_READY.some((m) => screen.includes(m))) return true
+
+    let keys: string[] | null = null
+    if (DEV_CHANNEL_MENU.some((m) => screen.includes(m))) keys = ['1', 'Enter']
+    else if (RESUME_SUMMARY_MENU.some((m) => screen.includes(m))) keys = ['Enter']
+    else if (GENERIC_PROMPT.some((m) => screen.includes(m))) keys = ['Enter']
+
+    // Rate-limit: a menu takes a moment to redraw, and hammering keys at it is how
+    // you end up several menus deep or cancelling out of claude entirely.
+    if (keys && Date.now() - lastNudge > 2000) {
+      await run('tmux', ['send-keys', '-t', target, ...keys], 5000)
+      lastNudge = Date.now()
+    }
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  console.error(`[agents] ${target} never reached chat-ready; it may be stuck on a prompt`)
+  return false
+}
+
+/** Bounded, non-throwing. A spawn must not die because one tmux call failed. */
+async function run(cmd: string, args: string[], timeout = 15_000): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP(cmd, args, { timeout })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
 export interface LaunchOptions {
   profile: string
   /** Opening prompt — a clip, a note, or free text. */
@@ -159,6 +234,10 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
   }
 
   db.prepare("UPDATE agent_sessions SET status = 'running' WHERE key = ?").run(key)
+  // Dismiss the trust/dev-channel menu the custom MCP channel triggers. Without
+  // this the session sits on that menu forever: the bridge is connected, so it
+  // looks alive, but nothing we send is ever read.
+  if (useTmux) void waitForChatReady(key)
   return key
 }
 
@@ -247,6 +326,8 @@ export async function reviveSession(key: string): Promise<boolean> {
       Date.now(),
       key
     )
+    // --resume adds its own "resume from summary" menu on top of the trust one.
+    if (p.tmux !== false) void waitForChatReady(key)
     console.log(`[agents] revived ${key} from session ${sessionId}`)
     return true
   } catch (err) {

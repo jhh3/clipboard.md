@@ -17,6 +17,7 @@ import {
   broadcast,
   openScratchpadWindow,
   openNotesWindow,
+  openAgentsWindow,
   showDictationHud,
   stopDictation,
   hideDictationHud
@@ -269,7 +270,8 @@ if (!gotLock) {
     },
     scratchpad: () => openScratchpadWindow(),
     dictate: () => dictateTrigger(),
-    notes: () => openNotesWindow()
+    notes: () => openNotesWindow(),
+    agents: () => openAgentsWindow()
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -397,7 +399,7 @@ if (!gotLock) {
     void sweep()
     setInterval(() => void sweep(), 5 * 60_000)
 
-    createTray()
+    void createTray()
 
     routeArgsOnLaunch()
   })
