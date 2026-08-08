@@ -61,6 +61,11 @@ export default function DictationHud() {
   const levelsRef = useRef<Float32Array>(new Float32Array(BAR_COUNT))
   const rafRef = useRef(0)
   const timerRef = useRef(0)
+  /** When this recording began — distinguishes a tap (latch) from a hold (PTT). */
+  const startedAtRef = useRef(0)
+  /** Guards against stopping/delivering the same recording more than once. */
+  const stoppingRef = useRef(false)
+  const deliveringRef = useRef(false)
 
   // ── finishing ─────────────────────────────────────────────────────────────
 
@@ -125,6 +130,8 @@ export default function DictationHud() {
   // ── transcription (runs from MediaRecorder.onstop) ────────────────────────
 
   const deliver = useCallback(async () => {
+    if (deliveringRef.current) return // a second onstop must not split the audio
+    deliveringRef.current = true
     const rec = recRef.current
     recRef.current = null
     const mime = rec?.mimeType || preferredAudioMime()
@@ -177,8 +184,13 @@ export default function DictationHud() {
         if (e.data.size > 0) chunksRef.current.push(e.data)
       }
       rec.onstop = () => void deliverRef.current()
-      rec.start(250)
+      // No timeslice: one complete, self-contained file at stop. Chunked output is
+      // only valid when every chunk is concatenated, which made partial delivery
+      // silently produce headerless, unplayable audio.
+      rec.start()
       recRef.current = rec
+      stoppingRef.current = false
+      deliveringRef.current = false
       setElapsed(0)
       setPhase({ kind: 'recording', fellBack })
     } catch {
@@ -197,13 +209,22 @@ export default function DictationHud() {
    * early would hide the HUD mid-transcription.
    */
   const stop = useCallback(() => {
+    // Strictly once per recording. Releasing a chord fires a key-up per key, and
+    // each one used to stop the recorder: the audio was then delivered twice, so
+    // each half was an incomplete WebM (the second with no EBML header at all)
+    // and the transcription API rejected both as corrupt.
+    if (stoppingRef.current) return
+    stoppingRef.current = true
     const rec = recRef.current
     // The stream itself is deliberately left running — it is reused next time.
     if (rec && rec.state !== 'inactive') rec.stop()
   }, [])
 
   useEffect(() => {
-    const offStart = on('dictation:start', () => void start())
+    const offStart = on('dictation:start', () => {
+      startedAtRef.current = Date.now()
+      void start()
+    })
     const offStop = on('dictation:stop', () => stop())
     return () => {
       offStart()
@@ -211,12 +232,20 @@ export default function DictationHud() {
     }
   }, [start, stop])
 
-  // Defensive only: the window is non-focusable, so this will not normally fire.
+  /**
+   * Push-to-talk. The global hotkey can only report key-DOWN, so the release is
+   * observed here: this window takes focus when it appears, and the first key-up
+   * of the trigger combo ends the recording.
+   *
+   * Tapping the hotkey instead of holding it latches recording on, so a quick
+   * press still works like a toggle — you don't have to keep a chord held down
+   * for a long dictation.
+   */
   useKeymap((e) => {
     if (e.key !== 'Escape') return
     e.preventDefault()
     if (recRef.current) {
-      chunksRef.current = []
+      chunksRef.current = [] // discard: Esc cancels rather than transcribes
       stop()
     } else {
       finish()
@@ -302,7 +331,7 @@ export default function DictationHud() {
               <span className="hud-note">Chosen mic unavailable — using the system default</span>
             ) : (
               <>
-                <kbd>⌃⌥D</kbd> again to stop · <kbd>Esc</kbd> cancel
+                Release <kbd>⌃⌥Space</kbd> to finish
               </>
             )}
           </div>

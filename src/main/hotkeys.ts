@@ -1,6 +1,7 @@
 import { app, globalShortcut } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 
 const execFileP = promisify(execFile)
 
@@ -57,6 +58,8 @@ interface Binding {
   name: string
   binding: string
   arg: string
+  /** Defaults we shipped previously — safe to migrate away from, unlike a user rebind. */
+  previous?: string[]
 }
 
 const BINDINGS: Binding[] = [
@@ -64,7 +67,15 @@ const BINDINGS: Binding[] = [
   { slug: 'clipboard-md-rewrite', name: 'clipboard.md — rewrite selection', binding: '<Control><Alt>r', arg: '--rewrite' },
   { slug: 'clipboard-md-shot', name: 'clipboard.md — screenshot', binding: '<Control><Alt>s', arg: '--capture' },
   { slug: 'clipboard-md-scratch', name: 'clipboard.md — scratchpad', binding: '<Control><Alt>e', arg: '--scratchpad' },
-  { slug: 'clipboard-md-dictate', name: 'clipboard.md — dictate', binding: '<Control><Alt>d', arg: '--dictate' }
+  {
+    slug: 'clipboard-md-dictate',
+    name: 'clipboard.md — dictate (hold to talk)',
+    // Ctrl+Alt+D is GNOME's built-in "show desktop" — it hid every window.
+    // Space is also far nicer to hold down for push-to-talk.
+    binding: '<Control><Alt>space',
+    arg: '--dictate',
+    previous: ['<Control><Alt>d']
+  }
 ]
 
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
@@ -89,9 +100,9 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
     if (changed) {
       await gsettings(['set', ...LIST_KEY.split(' '), '[' + list.map((p) => `'${p}'`).join(', ') + ']'])
     }
-    const cmdBase = app.isPackaged
-      ? process.execPath
-      : `${process.execPath} ${app.getAppPath()}`
+    const launch = app.isPackaged
+      ? `"${process.execPath}"`
+      : `"${process.execPath}" "${app.getAppPath()}"`
     for (const b of BINDINGS) {
       const schema = `org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
       const key = schema.split(' ')
@@ -102,9 +113,23 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
         /^'|'$/g,
         ''
       )
+      // Prefer gdbus (a few ms) over launching Electron (~1-3s, and GNOME re-runs
+      // the command on every key repeat). Fall back to the binary if the app isn't
+      // running yet, so a cold hotkey press still starts it.
+      const action = b.arg.replace(/^--/, '')
+      const gdbus =
+        `gdbus call --session --dest ${DBUS_NAME} --object-path ${DBUS_PATH} ` +
+        `--method ${DBUS_IFACE}.Trigger ${action}`
+      const command = `sh -c '${gdbus} >/dev/null 2>&1 || ${launch} ${b.arg}'`
       await gsettings(['set', ...key, 'name', b.name])
-      await gsettings(['set', ...key, 'command', `${cmdBase} ${b.arg}`])
-      if (!current || current === '@as []' || current === b.binding) {
+      await gsettings(['set', ...key, 'command', command])
+      // Write the default only when the slot is empty, already ours, or still holds
+      // a default we used to ship (so a bad pick can be corrected). A binding the
+      // user chose themselves is never touched.
+      const ours = !current || current === '@as []' || current === b.binding
+      const staleDefault = (b.previous ?? []).includes(current)
+      if (ours || staleDefault) {
+        if (staleDefault) console.log(`[hotkeys] migrating ${b.slug}: ${current} -> ${b.binding}`)
         await gsettings(['set', ...key, 'binding', b.binding])
       } else {
         console.log(`[hotkeys] keeping user binding for ${b.slug}: ${current}`)

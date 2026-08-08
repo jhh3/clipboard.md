@@ -42,6 +42,11 @@ describe('log redaction', () => {
     expect(out).toContain('~/.config')
   })
 
+  it('does not mangle pnpm paths that contain @', () => {
+    const path = '/home/u/app/node_modules/.pnpm/@openai+codex-sdk@1.2.3/dist/index.js'
+    expect(redact(path)).toContain('@openai+codex-sdk')
+  })
+
   it('leaves ordinary diagnostics readable', () => {
     const msg = '[capture] stored kind=text bytes=412 app=firefox'
     expect(redact(msg)).toBe(msg)

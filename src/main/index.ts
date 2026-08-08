@@ -30,16 +30,30 @@ import { takeScreenshot } from './screenshot'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
+import { startDbusService } from './dbusService'
+import { startPushToTalk, stopPushToTalk } from './ptt'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
 if (process.platform === 'linux') {
-  // Let Electron use its native Wayland backend (default since 38.2; we're on 43).
-  // We previously forced Xwayland to get focusless clipboard access — obsolete now
-  // that every clipboard read/write happens out-of-process (capture/clipboardIO),
-  // and forcing it is what gave us blurry HiDPI, wrong-monitor placement and the
-  // janky drag behaviour that native Wayland windows simply don't have.
-  app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
+  // Backend choice per compositor.
+  //
+  // Native Wayland refuses to let a client position its own windows, so the
+  // recording HUD lands wherever mutter wants it — dead centre, over whatever the
+  // user is doing. Under Xwayland we can place it ourselves. This is the same
+  // trade VibeTyper makes (its tests read "keeps native Wayland on wlroots-style
+  // compositors", forcing x11 elsewhere): wlroots compositors handle this well,
+  // GNOME and KDE do not.
+  //
+  // The reasons we originally moved OFF Xwayland — the desktop freeze, unmovable
+  // windows, wrong-monitor placement — were separately root-caused and fixed
+  // (clipboard ownership and UI-thread reads), so the trade is now worth taking.
+  // Use the direct switch, not --ozone-platform-hint: the hint is advisory and was
+  // observed resolving back to wayland on this system. (VibeTyper passes
+  // --ozone-platform=x11 for the same reason.)
+  const ozone = preferredOzonePlatform()
+  if (ozone === 'x11') app.commandLine.appendSwitch('ozone-platform', 'x11')
+  else app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
   // The GPU process sandbox cannot open Mesa's dri_gbm.so on this Ubuntu/NVIDIA
   // setup (the file is world-readable — it's the sandbox, not permissions), which
   // crash-loops the GPU process and can leave the transparent window unpainted.
@@ -63,6 +77,21 @@ if (existsSync(gpuFallbackFlag())) {
   // disableHardwareAcceleration alone doesn't set the command-line switch, and
   // several Chromium subsystems check that switch directly (electron#51363).
   app.commandLine.appendSwitch('disable-gpu')
+}
+
+/**
+ * 'x11' on compositors that won't let us place windows (GNOME, KDE); 'auto' —
+ * i.e. native Wayland — on wlroots-style compositors and X11 sessions, where
+ * either positioning works or the compositor does the right thing anyway.
+ */
+function preferredOzonePlatform(): string {
+  if (process.env.XDG_SESSION_TYPE !== 'wayland') return 'auto'
+  const desktop = `${process.env.XDG_CURRENT_DESKTOP ?? ''}:${process.env.XDG_SESSION_DESKTOP ?? ''}`
+  const wlroots = /sway|hyprland|river|wayfire|labwc|niri/i.test(desktop) || !!process.env.HYPRLAND_INSTANCE_SIGNATURE
+  if (wlroots) return 'auto'
+  // No Xwayland to fall back to: native Wayland is the only option.
+  if (!process.env.DISPLAY) return 'auto'
+  return 'x11'
 }
 
 function disableFeatures(list: string): void {
@@ -130,7 +159,37 @@ if (!gotLock) {
 } else {
   let pendingRewriteText: string | null = null
   let capture!: CaptureService
+
+  /**
+   * Dictation state. Hold-to-talk is driven by evdev (ptt.ts) when a keyboard
+   * device is readable; otherwise the hotkey acts as a plain toggle.
+   */
   let dictating = false
+  /** True when evdev is driving hold-to-talk, so the hotkey must not also toggle. */
+  let pttActive = false
+  /** Ignore a release that arrives implausibly fast (a tap, not a hold). */
+  let dictateStartedAt = 0
+  const MIN_HOLD_MS = 250
+
+  const beginDictation = (): void => {
+    if (dictating) return
+    dictating = true
+    dictateStartedAt = Date.now()
+    showDictationHud()
+  }
+
+  const endDictation = (): void => {
+    if (!dictating) return
+    dictating = false
+    stopDictation()
+  }
+
+  /** Hotkey path — only used when evdev hold-to-talk isn't available. */
+  const dictateTrigger = (): void => {
+    if (pttActive) return // evdev owns start/stop; ignore key-repeat noise
+    if (dictating) endDictation()
+    else beginDictation()
+  }
 
   /**
    * What the user has highlighted right now, for the rewrite hotkey.
@@ -206,17 +265,7 @@ if (!gotLock) {
       })()
     },
     scratchpad: () => openScratchpadWindow(),
-    dictate: () => {
-      // GNOME custom keybindings only fire on key-down, so the hotkey toggles:
-      // press to start, press again (or Esc) to stop and transcribe.
-      if (dictating) {
-        dictating = false
-        stopDictation()
-      } else {
-        dictating = true
-        showDictationHud()
-      }
-    }
+    dictate: () => dictateTrigger()
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -268,6 +317,21 @@ if (!gotLock) {
         hideDictationHud()
       }
     })
+    // Hotkeys talk to us over D-Bus so a held key doesn't cold-start Electron.
+    if (process.platform === 'linux') {
+      await startDbusService((action) => routeArgs([`--${action}`], actions))
+      // Real hold-to-talk from evdev key up/down. GNOME hotkeys can't express a
+      // release, so this is the only way to get honest push-to-talk here.
+      pttActive = startPushToTalk({
+        onPress: () => beginDictation(),
+        onRelease: () => {
+          // A quick tap latches recording on; a genuine hold ends on release.
+          if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
+          endDictation()
+        }
+      })
+    }
+
     createPaletteWindow()
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
@@ -333,6 +397,7 @@ if (!gotLock) {
 
   app.on('will-quit', () => {
     teardownHotkeys()
+    stopPushToTalk()
     flushSettings() // don't lose a debounced write on exit
     closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL
     closeLogging()

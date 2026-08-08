@@ -33,8 +33,10 @@ const PATTERNS: Array<[RegExp, string]> = [
     /([\w.-]*(?:password|passwd|secret|api[_-]?key|token))(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
     '$1$2[REDACTED]'
   ],
-  // Contact details.
-  [/\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b/g, '[REDACTED_EMAIL]']
+  // Contact details. Anchored to a non-path boundary and excluding '+' in the
+  // local part, so pnpm store paths like `@openai+codex-sdk@1.2.3/node_modules`
+  // aren't mangled into [REDACTED_EMAIL] inside every stack trace.
+  [/(^|[\s"'<(,;:])([\w.-]+@[\w-]+\.[A-Za-z]{2,})\b/g, '$1[REDACTED_EMAIL]']
 ]
 
 /** Scrub secrets and the user's home path from anything about to be written. */
