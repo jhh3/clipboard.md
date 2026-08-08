@@ -1,0 +1,15 @@
+{
+  "description": "Mirror each finished turn into clipboard.md's inbox, so a reply the agent didn't explicitly send through a tool is still visible.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLIPMD_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/mirror-turn.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

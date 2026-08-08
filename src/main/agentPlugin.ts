@@ -37,6 +37,19 @@ export const PLUGIN = 'clipmd-bridge'
 /** What the --dangerously-load-development-channels flag wants. */
 export const CHANNEL_REF = `plugin:${PLUGIN}@${MARKETPLACE}`
 
+/**
+ * Environment the Stop hook needs. It runs in claude's process tree, not ours, so
+ * everything it depends on has to be handed to it: a node binary, and somewhere to
+ * resolve better-sqlite3 from — there is no node_modules beside a plugin.
+ */
+export function hookEnv(): Record<string, string> {
+  return {
+    CLIPMD_HOOK_NODE: process.execPath,
+    // createRequire() resolves relative to this file's location.
+    CLIPMD_REQUIRE_FROM: join(__dirname, 'index.mjs')
+  }
+}
+
 export function pluginRoot(): string {
   return join(app.getPath('userData'), 'plugin')
 }
@@ -83,6 +96,12 @@ export async function ensurePlugin(): Promise<boolean> {
       join(src, 'plugins', PLUGIN, '.claude-plugin', 'plugin.json'),
       join(pluginDir(), '.claude-plugin', 'plugin.json')
     )
+    // Hooks DO get copied — they are dependency-free scripts claude runs directly.
+    mkdirSync(join(pluginDir(), 'hooks'), { recursive: true })
+    for (const f of ['hooks.json', 'mirror-turn.mjs']) {
+      copyFileSync(join(src, 'plugins', PLUGIN, 'hooks', f), join(pluginDir(), 'hooks', f))
+    }
+
     // The bridge is NOT copied here. It is an ESM bundle with externalised
     // dependencies (the MCP SDK, better-sqlite3), so away from the app's
     // node_modules its imports fail with ERR_MODULE_NOT_FOUND and claude drops the
@@ -118,6 +137,11 @@ export async function ensurePlugin(): Promise<boolean> {
   await run(['plugin', 'marketplace', 'add', pluginRoot()])
   await run(['plugin', 'marketplace', 'update', MARKETPLACE])
   await run(['plugin', 'install', `${PLUGIN}@${MARKETPLACE}`])
+  // `install` is a no-op once the plugin exists, and the cache is keyed by VERSION —
+  // so a plugin.json version bump alone leaves the old copy in place and the install
+  // looks successful while changing nothing. Observed exactly that: hooks were added
+  // and the cache stayed on 0.1.0. `update` is what actually pulls the new version.
+  await run(['plugin', 'update', `${PLUGIN}@${MARKETPLACE}`])
 
   const ok = await installed()
   console.log(

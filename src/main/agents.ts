@@ -7,7 +7,7 @@ import { randomBytes } from 'crypto'
 import { getDb } from './store/db'
 import { getSettings } from './settings'
 import { resumable } from './agentLifecycle'
-import { CHANNEL_REF } from './agentPlugin'
+import { CHANNEL_REF, hookEnv } from './agentPlugin'
 import type { AgentProfile, AgentSession, AgentMessage } from '@shared/types'
 
 const execFileP = promisify(execFile)
@@ -83,7 +83,10 @@ function sessionEnv(key: string): Record<string, string> {
     CLIPMD_SESSION_KEY: key,
     CLIPMD_DB: dbPath(),
     CLIPMD_BRIDGE_FILE: discoveryFile(key),
-    CLIPMD_BRIDGE_TOKEN: randomBytes(16).toString('hex')
+    CLIPMD_BRIDGE_TOKEN: randomBytes(16).toString('hex'),
+    // ELECTRON_RUN_AS_NODE so the Stop hook can invoke our binary as plain node.
+    ELECTRON_RUN_AS_NODE: '1',
+    ...hookEnv()
   }
 }
 
