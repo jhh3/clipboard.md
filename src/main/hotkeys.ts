@@ -21,13 +21,33 @@ export interface HotkeyActions {
  *    We register GNOME custom keybindings that run `<binary> --<action>`; the second
  *    instance hits our single-instance lock and wakes the running app.
  */
+/** macOS accelerators, in the order they're reported when registration fails. */
+const MAC_SHORTCUTS: Array<[string, keyof HotkeyActions]> = [
+  ['Command+Shift+V', 'toggle'],
+  ['Command+Shift+R', 'rewrite'],
+  ['Command+Shift+S', 'screenshot'],
+  ['Command+Shift+E', 'scratchpad'],
+  ['Command+Shift+D', 'dictate']
+]
+
 export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
   if (process.platform === 'darwin') {
-    globalShortcut.register('Command+Shift+V', actions.toggle)
-    globalShortcut.register('Command+Shift+R', actions.rewrite)
-    globalShortcut.register('Command+Shift+S', actions.screenshot)
-    globalShortcut.register('Command+Shift+E', actions.scratchpad)
-    globalShortcut.register('Command+Shift+D', actions.dictate)
+    // register() returns false when something else already owns the combination —
+    // another app, or a system shortcut. Ignoring that return value is how a hotkey
+    // ends up "just not working" with nothing anywhere to explain why. macOS has no
+    // API to name the owner, so the honest thing is to say which one failed.
+    const failed: string[] = []
+    for (const [accelerator, action] of MAC_SHORTCUTS) {
+      if (!globalShortcut.register(accelerator, actions[action])) failed.push(accelerator)
+    }
+    if (failed.length > 0) {
+      console.error(
+        `[hotkeys] could not register ${failed.join(', ')} — another app or a system ` +
+          'shortcut already owns them. Change or free the conflicting shortcut.'
+      )
+    } else {
+      console.log(`[hotkeys] registered ${MAC_SHORTCUTS.length} global shortcuts`)
+    }
     return
   }
   await ensureGnomeKeybindings()

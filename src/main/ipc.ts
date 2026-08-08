@@ -25,7 +25,7 @@ import type { CaptureService } from './capture'
 import { providersStatus } from './modelport'
 import { enrichmentRunStats } from './enrichment'
 import { embedQuery } from './embeddings'
-import { portalScreenshot } from './portal'
+import { takeScreenshot } from './screenshot'
 
 export interface RewriteState {
   getText: () => string | null
@@ -140,10 +140,10 @@ export function registerIpc(
   })
 
   handle('capture:screenshot', async () => {
-    // Hide the palette so it isn't in the shot, then invoke GNOME's picker.
+    // Hide the palette so it isn't in the shot, then invoke the system picker.
     hidePalette()
-    const path = await portalScreenshot()
-    if (!path) return { ok: false, error: 'Capture cancelled or portal unavailable' }
+    const path = await takeScreenshot()
+    if (!path) return { ok: false, error: 'Capture cancelled' }
     const result = capture.ingestImageFile(path)
     if (!result) return { ok: false, error: 'Could not read captured image' }
     return { ok: true, id: result.id }

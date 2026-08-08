@@ -7,14 +7,17 @@
   "type": "commonjs",
   "license": "MIT",
   "author": "John <john@nullframe.ai>",
+  "packageManager": "pnpm@10.18.0",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "pnpm build:helper && electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "build:helper": "bash src/native/mac/build.sh",
     "build:linux": "electron-vite build && electron-builder --linux",
-    "build:mac": "electron-vite build && electron-builder --mac"
+    "build:mac": "pnpm build:helper && electron-vite build && electron-builder --mac",
+    "build:mac:signed": "pnpm build:helper && electron-vite build && electron-builder --mac -c.mac.identity=\"$CLIPMD_SIGN_IDENTITY\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

@@ -34,7 +34,14 @@ function launchCommand(): string {
 
 export function setAutostart(enabled: boolean): void {
   if (process.platform === 'darwin') {
-    app.setLoginItemSettings({ openAtLogin: enabled, args: ['--background'] })
+    // openAsHidden is the macOS way to say "start without showing a window"; the
+    // --background argv flag is still passed because routeArgsOnLaunch reads it, and
+    // openAsHidden alone is advisory (and ignored outside a packaged .app).
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      openAsHidden: enabled,
+      args: ['--background']
+    })
     return
   }
   const file = autostartFile()

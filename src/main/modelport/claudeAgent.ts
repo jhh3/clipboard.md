@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
+import { resolveVendoredCli, agentScratchDir } from './nativeCli'
 
 /**
  * Subscription lane #1: Claude Agent SDK, riding the user's existing Claude Code
@@ -31,9 +32,21 @@ export async function claudeAgentComplete(req: PortRequest): Promise<string> {
     ? `${req.prompt}\n\nThe image to analyze is at: ${req.imagePath} — Read it first.`
     : req.prompt
 
+  // In a packaged build the SDK would derive this from its own location inside
+  // app.asar and spawn would fail with ENOTDIR; undefined in dev leaves its own
+  // (correct) resolution alone.
+  const pathToClaudeCodeExecutable = resolveVendoredCli('@anthropic-ai/claude-agent-sdk', 'claude')
+
   const q = query({
     prompt,
     options: {
+      ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+      // Keep the agent out of the user's files: an empty scratch dir, and none of the
+      // ambient CLAUDE.md/settings discovery that walking a real project implies.
+      // Without this it inherits our TCC identity and triggers folder-access prompts
+      // for work that only ever needs the text in the prompt.
+      cwd: agentScratchDir(),
+      settingSources: [],
       // Fast by default: haiku unless the user picks otherwise in Settings.
       model: getSettings().models['claude-agent'] ?? 'haiku',
       systemPrompt:

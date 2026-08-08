@@ -2,13 +2,54 @@ import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
 
+/**
+ * Under native Wayland the compositor owns window placement: setBounds x/y is a
+ * no-op and getBounds reports nothing useful, so all our placement logic must sit
+ * out. Mutter places and lets you drag these windows like any other app's.
+ */
+const WAYLAND =
+  process.platform === 'linux' &&
+  process.env.XDG_SESSION_TYPE === 'wayland' &&
+  // Only true when we are a NATIVE Wayland client. Under Xwayland (which we force
+  // on GNOME/KDE so we can place the HUD) positioning works normally.
+  app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
+const MACOS = process.platform === 'darwin'
+
+/**
+ * The display a summoned window should appear on.
+ *
+ * macOS: the one under the cursor. `getCursorScreenPoint()` is accurate there, and on
+ * a multi-monitor desk the pointer is the best available proxy for "where the user is
+ * looking" — a palette that always opens on the primary display is one that opens on
+ * the wrong monitor most of the time.
+ *
+ * X11: the primary display. Cursor coordinates go stale over Wayland-native surfaces
+ * under Xwayland, so the pointer is not trustworthy there, and a predictable location
+ * beats an occasionally-wrong one. (Under real Wayland we don't place at all.)
+ */
+function activeDisplay(): Electron.Display {
+  if (!MACOS) return screen.getPrimaryDisplay()
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  } catch {
+    return screen.getPrimaryDisplay()
+  }
+}
+
 let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
 
-// Content is 880x560; the extra 80px is transparent margin so the CSS drop
-// shadow fades out fully instead of clipping hard at the window edge.
-const PALETTE_W = 960
-const PALETTE_H = 640
+// Content is 880x560. On Linux the window is 80px larger in each axis: that margin is
+// transparent, so the CSS drop shadow can fade to zero alpha instead of clipping into
+// a hard rectangle at the window edge.
+//
+// macOS needs no margin — AppKit draws a proper shadow around the window's rounded
+// corners for us. Carrying the margin there produced two shadows: the CSS one, plus
+// AppKit's around the full invisible frame, which read as a boxy halo floating well
+// off the palette. Window is sized to the content and the native shadow is the only one.
+const MAC_PALETTE = process.platform === 'darwin'
+const PALETTE_W = MAC_PALETTE ? 880 : 960
+const PALETTE_H = MAC_PALETTE ? 560 : 640
 
 export function createPaletteWindow(): BrowserWindow {
   if (palette && !palette.isDestroyed()) return palette
@@ -22,6 +63,17 @@ export function createPaletteWindow(): BrowserWindow {
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
+    // A panel can take key focus without activating the application, which is what
+    // makes the summon feel like Spotlight instead of an app launch: no Dock bounce,
+    // and the app you were typing in stays "active" behind us so focus returns to it
+    // cleanly when we hide. This is the Maccy behaviour.
+    //
+    // hasShadow/roundedCorners hand the palette's chrome to AppKit: the shadow follows
+    // the rounded corners the way every other macOS panel's does, and the CSS shadow
+    // switches off (styles.css, [data-platform='darwin']).
+    ...(MACOS
+      ? { type: 'panel' as const, hasShadow: true, roundedCorners: true }
+      : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -35,8 +87,13 @@ export function createPaletteWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  // Summon must land on whatever workspace the user is on right now.
+  // Summon must land on whatever workspace the user is on right now. On macOS this
+  // is what makes it follow you across Spaces instead of yanking you back to the one
+  // it was first shown on.
   palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // The default 'floating' level sits below a fullscreen app's window, so the palette
+  // would be invisible over one no matter what visibleOnFullScreen says.
+  if (MACOS) palette.setAlwaysOnTop(true, 'screen-saver')
 
   // Hide-on-blur, but never within the first moments of a show: on a cold start
   // (and on some WM focus hand-offs) the window blurs before it is ever really
@@ -60,11 +117,10 @@ export function getPalette(): BrowserWindow | null {
 
 export function showPalette(collection?: string): void {
   const win = createPaletteWindow()
-  // On Wayland the compositor positions us (it centres popups sensibly). On X11,
-  // centre on the primary display — cursor-based placement is unreliable there
-  // because getCursorScreenPoint() goes stale over Wayland-native surfaces.
+  // On Wayland the compositor positions us (it centres popups sensibly). Elsewhere we
+  // place it ourselves — see activeDisplay() for why the choice of display differs.
   if (!WAYLAND) {
-    const { x, y, width, height } = screen.getPrimaryDisplay().workArea
+    const { x, y, width, height } = activeDisplay().workArea
     win.setBounds({
       width: PALETTE_W,
       height: PALETTE_H,
@@ -117,26 +173,14 @@ export function broadcast(channel: string, payload: unknown): void {
 let settingsWin: BrowserWindow | null = null
 let scratchWin: BrowserWindow | null = null
 
-/**
- * Under native Wayland the compositor owns window placement: setBounds x/y is a
- * no-op and getBounds reports nothing useful, so all our placement logic must sit
- * out. Mutter places and lets you drag these windows like any other app's.
- */
-const WAYLAND =
-  process.platform === 'linux' &&
-  process.env.XDG_SESSION_TYPE === 'wayland' &&
-  // Only true when we are a NATIVE Wayland client. Under Xwayland (which we force
-  // on GNOME/KDE so we can place the HUD) positioning works normally.
-  app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
-
 function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   // On Wayland: size only — the compositor decides where windows go, and any x/y
   // we pass is either ignored or actively wrong. On X11/macOS: restore the saved
-  // position, else centre on the primary display.
+  // position, else centre on the display the user is currently on.
   let bounds: { x?: number; y?: number; width: number; height: number } = { width: w, height: h }
   if (!WAYLAND) {
     const saved = getSettings().windowBounds?.[hash]
-    const primary = screen.getPrimaryDisplay().workArea
+    const primary = activeDisplay().workArea
     if (saved && screen.getAllDisplays().some((d) => isInside(saved, d.workArea))) {
       bounds = saved
     } else {
@@ -181,6 +225,7 @@ function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
     if (shown || win.isDestroyed()) return
     shown = true
     win.show()
+    activateApp()
     win.focus()
     if (!WAYLAND && bounds.x !== undefined) win.setBounds(bounds as Electron.Rectangle)
   }
@@ -270,7 +315,10 @@ export function showDictationHud(): void {
   }
   const win = dictationWin!
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  const area = screen.getPrimaryDisplay().workArea
+  // Same reasoning as the palette: the HUD belongs where the user is working, and it
+  // must float over a fullscreen app rather than behind it.
+  if (MACOS) win.setAlwaysOnTop(true, 'screen-saver')
+  const area = activeDisplay().workArea
   win.setBounds({
     width: W,
     height: H,
@@ -298,8 +346,9 @@ export function hideDictationHud(): void {
 
 /**
  * Placement on re-show. If the user has never moved this window themselves (no saved
- * bounds), we own its position and always center it on the primary display — that's
- * predictable. Once they've moved it, we only intervene if it ends up off-screen.
+ * bounds), we own its position and always centre it — that's predictable. Once they
+ * have moved it, we only intervene if it ends up off-screen, which is what happens
+ * when the display it was saved on gets unplugged.
  */
 function ensureOnScreen(win: BrowserWindow, hash: string, w: number, h: number): void {
   if (WAYLAND) return // compositor-managed; our coordinates mean nothing here
@@ -307,7 +356,7 @@ function ensureOnScreen(win: BrowserWindow, hash: string, w: number, h: number):
   const b = win.getBounds()
   const onScreen = screen.getAllDisplays().some((d) => isInside(b, d.workArea))
   if (userPlaced && onScreen) return
-  const area = screen.getPrimaryDisplay().workArea
+  const area = activeDisplay().workArea
   win.setBounds({
     width: Math.min(w, area.width - 80),
     height: Math.min(h, area.height - 80),
@@ -317,10 +366,24 @@ function ensureOnScreen(win: BrowserWindow, hash: string, w: number, h: number):
   console.log(`[win] ${hash} was off-screen; recentered`)
 }
 
+/**
+ * Bring the app forward for a real window.
+ *
+ * The Dock icon is hidden (see index.ts), which makes us an accessory app — and an
+ * accessory app's windows can be raised without the app ever becoming active, so a
+ * settings window would open behind whatever you were using and not take keystrokes.
+ * The palette deliberately does NOT do this: it is a panel precisely so it can take
+ * keys without stealing activation from the app you are pasting into.
+ */
+function activateApp(): void {
+  if (MACOS) app.focus({ steal: true })
+}
+
 export function openSettingsWindow(): void {
   if (settingsWin && !settingsWin.isDestroyed()) {
     ensureOnScreen(settingsWin, 'settings', 820, 640)
     settingsWin.show()
+    activateApp()
     settingsWin.focus()
     return
   }
@@ -331,6 +394,7 @@ export function openScratchpadWindow(itemId?: number): void {
   if (scratchWin && !scratchWin.isDestroyed()) {
     ensureOnScreen(scratchWin, 'scratchpad', 720, 560)
     scratchWin.show()
+    activateApp()
     scratchWin.focus()
     scratchWin.webContents.send('scratchpad:shown', { itemId })
     return

@@ -100,6 +100,36 @@ describe('runFilters', () => {
     expect(runFilters({ ...base, text: 'x', sourceApp: undefined }).verdict).toBe('store')
   })
 
+  it('matches an ignored app by macOS bundle id when the display name does not', () => {
+    // 1Password's browser helper is named "1Password Extension Helper" in some
+    // builds and localized in others, but the bundle id is stable. Without this the
+    // ignore list silently misses exactly the app it exists for.
+    const r = runFilters({
+      ...base,
+      text: 'x',
+      sourceApp: 'Extension Helper',
+      sourceAppId: 'com.1password.1password-launcher'
+    })
+    expect(r.verdict).toBe('skip')
+    expect(r.reason).toContain('ignored-app')
+  })
+
+  it('does not skip when neither the name nor the bundle id is ignored', () => {
+    const r = runFilters({
+      ...base,
+      text: 'x',
+      sourceApp: 'Safari',
+      sourceAppId: 'com.apple.Safari'
+    })
+    expect(r.verdict).toBe('store')
+  })
+
+  it('still applies the ignore list when only a bundle id is known', () => {
+    expect(
+      runFilters({ ...base, text: 'x', sourceAppId: 'org.keepassxc.KeePassXC' }).verdict
+    ).toBe('skip')
+  })
+
   it('skips empty text', () => {
     expect(runFilters({ ...base, text: '   ' }).verdict).toBe('skip')
   })

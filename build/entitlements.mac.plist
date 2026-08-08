@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the direct-download build.
+
+  Deliberately NOT sandboxed: paste injection posts a CGEvent, which the App Store
+  forbids under Guideline 2.4.5, so MAS is off the table and app-sandbox would only
+  break the features this app exists for. Distribution is direct download.
+
+  Accessibility and Screen Recording are TCC permissions granted by the user at
+  runtime, not entitlements — they cannot be requested here, only explained (see
+  the NS*UsageDescription keys in electron-builder.yml).
+-->
+<plist version="1.0">
+<dict>
+  <!-- Electron's V8 JIT cannot run under the hardened runtime without these. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!--
+    better-sqlite3, sqlite-vec, sharp, onnxruntime and sherpa-onnx are unsigned
+    third-party native modules loaded at runtime. Without this the hardened runtime
+    refuses to load them and the app dies on first DB access.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- Dictation records from the microphone. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!--
+    The Claude Agent SDK and Codex SDK read credentials from the user's home
+    directory (~/.claude, ~/.codex), and the subscription lanes spawn their CLIs.
+  -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

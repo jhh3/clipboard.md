@@ -1,6 +1,8 @@
 import { app, nativeImage } from 'electron'
+import { spawn, type ChildProcess } from 'child_process'
 import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
-import { getSourceApp } from './sourceApp'
+import { helperPath } from '../mac/helper'
+import { getSourceApp, type SourceApp } from './sourceApp'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -40,6 +42,8 @@ function imagesDir(): string {
  */
 export class CaptureService {
   private timer: ReturnType<typeof setInterval> | null = null
+  /** macOS pasteboard watcher child process, when event-driven capture is running. */
+  private watcher: ChildProcess | null = null
   private reading = false
   private paused = false
   private lastHash = ''
@@ -54,7 +58,7 @@ export class CaptureService {
 
   start(): void {
     this.paused = false
-    if (this.timer) return
+    if (this.timer || this.watcher) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     void this.tick(true)
     if (process.platform === 'linux') {
@@ -64,10 +68,75 @@ export class CaptureService {
         if (ok) console.log('[capture] event-driven (XFixes); polling disabled')
         else this.startPolling('XFixes unavailable')
       })
+    } else if (process.platform === 'darwin') {
+      this.startPasteboardWatcher().then((ok) => {
+        if (ok) console.log('[capture] event-driven (pasteboard watcher); polling disabled')
+        else this.startPolling('pasteboard watcher unavailable')
+      })
     } else {
-      // macOS has no clipboard-change notification API; polling is the only option.
       this.startPolling('platform has no clipboard events')
     }
+  }
+
+  /**
+   * Event-driven capture on macOS.
+   *
+   * NSPasteboard has no change notification, so someone must poll `changeCount`. Doing
+   * it here meant reading the entire pasteboard every tick just to discover nothing had
+   * changed — and for images that means a full PNG re-encode: measured at 55.7ms per
+   * poll with a screenshot on the pasteboard, every 400ms, on the thread that must
+   * never block (~14% of a core, indefinitely, for a clipboard nobody touched).
+   *
+   * The helper polls changeCount in its own process — a cheap call in something with
+   * nothing else to do — and writes a line when it actually changes. We then read the
+   * clipboard once, on a real change. Same shape as the Linux XFixes path, and it
+   * falls back to polling on any failure for the same reason.
+   */
+  private startPasteboardWatcher(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const path = helperPath()
+      if (!path) return resolve(false)
+      let settled = false
+      const done = (ok: boolean): void => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      try {
+        const child = spawn(path, ['watch', '--interval-ms', '250'], {
+          stdio: ['pipe', 'pipe', 'ignore']
+        })
+        this.watcher = child
+        child.stdout.setEncoding('utf8')
+        // The first line is the baseline changeCount at startup, not a change.
+        let primed = false
+        child.stdout.on('data', (chunk: string) => {
+          done(true)
+          for (const line of chunk.split('\n')) {
+            if (!line.trim()) continue
+            if (!primed) {
+              primed = true
+              continue
+            }
+            void this.tick()
+          }
+        })
+        child.on('error', () => done(false))
+        child.on('exit', (code) => {
+          this.watcher = null
+          // A watcher that dies mid-session would silently stop all capture.
+          if (!this.paused) {
+            console.error(`[capture] pasteboard watcher exited (${code}); falling back to polling`)
+            this.startPolling('watcher exited')
+          }
+          done(false)
+        })
+        // If it never produces its baseline line, treat it as unusable.
+        setTimeout(() => done(false), 3000)
+      } catch {
+        done(false)
+      }
+    })
   }
 
   private startPolling(reason: string): void {
@@ -124,7 +193,13 @@ export class CaptureService {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    // Set before killing: the exit handler checks it to tell a deliberate stop
+    // (lock/suspend) from a crash it should fall back to polling for.
     this.paused = true
+    if (this.watcher) {
+      this.watcher.kill()
+      this.watcher = null
+    }
   }
 
   /** Re-read settings that were only sampled at startup (poll interval, enabled). */
@@ -191,9 +266,15 @@ export class CaptureService {
     }
   }
 
-  private async captureText(text: string, formats: string[], sourceApp?: string): Promise<void> {
+  private async captureText(text: string, formats: string[], sourceApp?: SourceApp): Promise<void> {
     const settings = getSettings()
-    const { verdict, reason } = runFilters({ text, formats, sourceApp, ignoreApps: settings.ignoreApps })
+    const { verdict, reason } = runFilters({
+      text,
+      formats,
+      sourceApp: sourceApp?.name,
+      sourceAppId: sourceApp?.id,
+      ignoreApps: settings.ignoreApps
+    })
     if (verdict === 'skip') return
 
     const kind = classifyText(text)
@@ -203,7 +284,7 @@ export class CaptureService {
       content: text,
       html,
       preview: text.slice(0, 500),
-      sourceApp,
+      sourceApp: sourceApp?.name,
       secret: verdict === 'store-secret'
     })
     if (created && verdict === 'store' && settings.enrichment.enabled) {
@@ -215,12 +296,17 @@ export class CaptureService {
     this.events.onItem(id, created)
   }
 
-  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: string): void {
-    const { verdict } = runFilters({ formats, sourceApp, ignoreApps: getSettings().ignoreApps })
+  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: SourceApp): void {
+    const { verdict } = runFilters({
+      formats,
+      sourceApp: sourceApp?.name,
+      sourceAppId: sourceApp?.id,
+      ignoreApps: getSettings().ignoreApps
+    })
     if (verdict === 'skip') return
     const img = nativeImage.createFromBuffer(png)
     if (img.isEmpty()) return
-    const result = ingestNativeImage(img, sourceApp)
+    const result = ingestNativeImage(img, sourceApp?.name)
     if (!result) return
     this.events.onItem(result.id, result.created)
   }

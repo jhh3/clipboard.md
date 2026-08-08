@@ -1,4 +1,4 @@
-import { app, powerMonitor, BrowserWindow } from 'electron'
+import { app, powerMonitor, BrowserWindow, Notification } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, setAutostart } from './autostart'
 import { join } from 'path'
@@ -26,7 +26,8 @@ import { startEnrichment, drain as drainEnrichment, assignSession } from './enri
 import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete } from './modelport'
-import { portalScreenshot } from './portal'
+import { takeScreenshot } from './screenshot'
+import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
@@ -190,11 +191,64 @@ if (!gotLock) {
     else beginDictation()
   }
 
+  /**
+   * What the user has highlighted right now, for the rewrite hotkey.
+   *
+   * Linux reads the PRIMARY selection (off the UI thread). macOS has no PRIMARY, so
+   * the fallback there was `clipboard.readText()` — which quietly rewrites whatever
+   * was last *copied* instead of what is *selected*. The helper's AX chain reads the
+   * real selection; if it can't, we return empty and the palette opens normally
+   * rather than acting on the wrong text.
+   */
+  /**
+   * Ask for Accessibility once, at launch, on macOS.
+   *
+   * Nothing called the trust check before, so a fresh install was never added to the
+   * Accessibility list and was never prompted to be. Paste and rewrite then failed
+   * silently forever — the exact symptom of "Enter does nothing", with nothing in the
+   * log to explain it, because both features degrade quietly by design.
+   *
+   * The prompt is what registers us in System Settings, so it has to happen even
+   * though macOS only shows the dialog once per binary. Firing it from the helper (a
+   * child process) is deliberate: TCC attributes the request to the responsible
+   * process, which is the app bundle, so the grant lands on clipboard.md.app rather
+   * than on the helper.
+   */
+  async function ensureAccessibility(): Promise<void> {
+    if (!helperAvailable()) return
+    if (await isTrusted()) {
+      console.log('[mac] Accessibility granted; paste injection and selection capture are live')
+      return
+    }
+    console.error(
+      '[mac] Accessibility NOT granted — paste will fall back to "press ⌘V" and the ' +
+        'rewrite hotkey cannot read your selection. Requesting it now.'
+    )
+    await isTrusted(true)
+    new Notification({
+      title: 'clipboard.md needs Accessibility',
+      body: 'Allow clipboard.md under Privacy & Security ▸ Accessibility, then restart it, to paste automatically and rewrite selected text.'
+    }).show()
+  }
+
+  async function currentSelection(): Promise<string> {
+    if (process.platform !== 'darwin') return readPrimarySelection()
+    const { text, untrusted } = await macSelectedText()
+    if (untrusted) {
+      new Notification({
+        title: 'clipboard.md needs Accessibility',
+        body: 'Allow clipboard.md under Privacy & Security ▸ Accessibility to rewrite selected text.',
+        silent: true
+      }).show()
+      return ''
+    }
+    return text ?? ''
+  }
+
   const actions: HotkeyActions = {
     toggle: () => togglePalette(),
     rewrite: () => {
-      // PRIMARY selection (what's highlighted right now), read off the UI thread.
-      void readPrimarySelection().then((text) => {
+      void currentSelection().then((text) => {
         if (!text.trim()) {
           showPalette()
           return
@@ -206,7 +260,7 @@ if (!gotLock) {
     },
     screenshot: () => {
       void (async () => {
-        const path = await portalScreenshot()
+        const path = await takeScreenshot()
         if (path) capture.ingestImageFile(path)
       })()
     },
@@ -222,6 +276,10 @@ if (!gotLock) {
     const logFile = initLogging()
     console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()
+    // No Dock icon and no ⌘-Tab entry: this is a background app summoned by a hotkey,
+    // and a Dock bounce on every launch is exactly the "it feels like an app" texture
+    // Maccy avoids. Windows that genuinely need activation call app.focus() instead.
+    if (process.platform === 'darwin') app.dock?.hide()
     openDb(join(app.getPath('userData'), 'data'))
 
     capture = new CaptureService({
@@ -317,8 +375,13 @@ if (!gotLock) {
     powerMonitor.on('lock-screen', () => capture.stop())
     powerMonitor.on('unlock-screen', () => capture.start())
 
+    if (process.platform === 'darwin') void ensureAccessibility()
+
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
-    if (!isAutostartEnabled()) setAutostart(true)
+    // Only from a packaged build: in dev this would register the Electron binary
+    // inside node_modules as a login item on the developer's machine, which then
+    // fails at every login once the checkout moves or the dep is reinstalled.
+    if (app.isPackaged && !isAutostartEnabled()) setAutostart(true)
 
     routeArgsOnLaunch()
   })

@@ -1,7 +1,5 @@
 import { nativeImage, Notification } from 'electron'
-import { execFile } from 'child_process'
 import { readFileSync } from 'fs'
-import { join } from 'path'
 import {
   writeClipboardText,
   writeClipboardImage,
@@ -14,8 +12,18 @@ import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { portalPaste } from './portal'
+import { macPaste } from './mac/helper'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * How long to wait after hiding our window before injecting the paste keystroke.
+ * Focus has to land back on the target window before the keystroke arrives, or it
+ * goes nowhere. Linux waits on mutter refocusing the previous surface, and 150ms was
+ * too tight on a loaded system. macOS hands focus back faster, and the helper adds its
+ * own 30ms drain after posting.
+ */
+const FOCUS_SETTLE_MS = process.platform === 'darwin' ? 120 : 300
 
 /**
  * Paste tiers (see DESIGN.md §2):
@@ -87,19 +95,35 @@ export class PasteService {
 
   private async deliver(): Promise<PasteOutcome> {
     if (process.platform === 'darwin') {
+      // Hide first: macOS returns key focus to the previously active app, and the
+      // ⌘V has to arrive *there*, not at our palette.
       this.hideWindow()
-      const injected = await this.macInject()
+      await sleep(FOCUS_SETTLE_MS)
+      const { injected, untrusted } = await macPaste()
       if (injected) return { method: 'injected' }
-      return { method: 'copied', message: 'Copied — press ⌘V to paste' }
+      // Paste degrades quietly by design, which makes a broken one invisible: the
+      // content really is on the clipboard, so nothing throws and nothing logs. Say
+      // why we fell back, or the next person debugging this has nothing to go on.
+      console.error(
+        untrusted
+          ? '[paste] not injected: Accessibility permission missing'
+          : '[paste] not injected: helper unavailable or failed'
+      )
+      // Distinguish "we can't" from "we won't": a missing Accessibility grant is
+      // fixable by the user, and saying so beats a generic fallback message.
+      return {
+        method: 'copied',
+        message: untrusted
+          ? 'Copied — allow clipboard.md under Privacy & Security ▸ Accessibility to paste automatically'
+          : 'Copied — press ⌘V to paste'
+      }
     }
 
     // Linux tier 1: hide (mutter refocuses the previous surface), then inject
     // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
     if (getSettings().pasteInjection === 'portal') {
       this.hideWindow()
-      // Focus has to land back on the target window before the keystroke arrives,
-      // or it goes nowhere. 150ms was too tight on a loaded system.
-      await sleep(300)
+      await sleep(FOCUS_SETTLE_MS)
       if (await portalPaste()) {
         console.log('[paste] injected via portal')
         return { method: 'injected' }
@@ -108,6 +132,8 @@ export class PasteService {
       // identical to a successful one: the window closed and nothing happened.
       // Tell the truth so the UI can say "press Ctrl+V".
       console.error('[paste] portal injection failed; content is on the clipboard')
+      // Window is already hidden, so the renderer toast won't be seen — use a
+      // desktop notification for the fallback hint instead.
       new Notification({ title: 'Copied', body: 'Press Ctrl+V to paste', silent: true }).show()
       return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
     }
@@ -116,13 +142,4 @@ export class PasteService {
     return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
   }
 
-  private macInject(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const helper = join(process.resourcesPath ?? '', 'clipmd-helper')
-      // Small delay lets focus return to the target app after our window hides.
-      setTimeout(() => {
-        execFile(helper, ['paste'], { timeout: 3000 }, (err) => resolve(!err))
-      }, 120)
-    })
-  }
 }

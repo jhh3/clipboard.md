@@ -16,11 +16,24 @@ export function blobToB64(blob: Blob): Promise<string> {
   })
 }
 
-/** The best opus container this Chromium build will record, for MediaRecorder. */
+/**
+ * The container to record in, per platform.
+ *
+ * Local transcription needs the recording decoded to raw 16k mono samples. Linux does
+ * that with ffmpeg; macOS does not ship ffmpeg, so it decodes with AVFoundation via
+ * the Swift helper — and AVFoundation cannot read WebM or Opus at all (verified: an
+ * Opus-in-WebM file reports "no audio track"). mp4/AAC is the format both Chromium
+ * can record and AVFoundation can read, so darwin asks for that first.
+ *
+ * The WebM fallbacks stay: if a Chromium build can't record mp4, a recording that
+ * needs Homebrew ffmpeg to transcribe still beats no recording at all.
+ */
 export function preferredAudioMime(): string {
-  return MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : 'audio/webm'
+  const candidates =
+    navigator.platform.toLowerCase().includes('mac') || navigator.userAgent.includes('Mac OS X')
+      ? ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
+      : ['audio/webm;codecs=opus', 'audio/webm']
+  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) ?? 'audio/webm'
 }
 
 // ── microphone selection ─────────────────────────────────────────────────────

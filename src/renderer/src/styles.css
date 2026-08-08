@@ -39,6 +39,21 @@ body {
   padding: 40px;
 }
 
+/*
+  macOS draws window shadows itself, correctly, following the window's rounded
+  corners. Faking one in CSS meant carrying a 40px transparent margin AND getting
+  AppKit's real shadow around the full (invisible) window frame on top of it — two
+  shadows, the outer one a hard rounded-rect halo well away from the palette. On
+  darwin the window is sized to the content and the native shadow is the only one.
+*/
+:root[data-platform='darwin'] #root {
+  padding: 0;
+}
+
+:root[data-platform='darwin'] .palette {
+  box-shadow: none;
+}
+
 /* ── theme tokens (shared by the palette and the opaque app windows) ── */
 
 .palette,
