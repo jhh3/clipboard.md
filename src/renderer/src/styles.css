@@ -1076,11 +1076,25 @@ code {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Routes: settings & scratchpad are opaque, normal windows (no shadow margin).
+   Routes: every opaque, normally-framed window (no shadow margin).
+
+   #root carries 40px of transparent padding so the PALETTE's CSS drop shadow can
+   fade out instead of clipping at the window edge. In a normal framed window that
+   padding is just a transparent border with the desktop showing through it — which
+   is what "the agent view is messed up" looked like: a pale frame around the
+   content on all four sides.
+
+   EVERY route that opens a real window belongs in this list. It listed only
+   settings and scratchpad, so notes and agents inherited the palette's margin the
+   moment they were added. Adding a route above without adding it here reintroduces
+   the same visual bug, which is why this reads as one list rather than per-route
+   rules scattered around.
    ───────────────────────────────────────────────────────────────────────── */
 
 body.route-settings #root,
-body.route-scratchpad #root {
+body.route-scratchpad #root,
+body.route-notes #root,
+body.route-agents #root {
   padding: 0;
 }
 

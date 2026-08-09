@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { spawn, execFile } from 'child_process'
+import { claudeBin } from './claudeBin'
 import { promisify } from 'util'
 import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -264,9 +265,9 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
       // -d so launching never steals the user's terminal; they attach when they want.
       const env = sessionEnv(key, p)
       const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
-      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, 'claude', ...args])
+      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, claudeBin(), ...args])
     } else {
-      const child = await spawnDetached('claude', args, {
+      const child = await spawnDetached(claudeBin(), args, {
         cwd,
         env: { ...process.env, ...sessionEnv(key, p) }
       })
@@ -367,9 +368,9 @@ export async function reviveSession(key: string): Promise<boolean> {
     const args = ['--resume', sessionId, ...claudeArgs(p, key, undefined, sys)]
     if (p.tmux !== false && (await tmuxAvailable())) {
       const envFlags = Object.entries(sessionEnv(key, p)).flatMap(([k, v]) => ['-e', `${k}=${v}`])
-      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, ...envFlags, 'claude', ...args])
+      await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, ...envFlags, claudeBin(), ...args])
     } else {
-      const child = await spawnDetached('claude', args, {
+      const child = await spawnDetached(claudeBin(), args, {
         cwd: row.cwd,
         env: { ...process.env, ...sessionEnv(key, p) }
       })

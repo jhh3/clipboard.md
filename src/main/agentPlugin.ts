@@ -3,6 +3,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { claudeBin } from './claudeBin'
 
 const execFileP = promisify(execFile)
 
@@ -44,7 +45,12 @@ export const CHANNEL_REF = `plugin:${PLUGIN}@${MARKETPLACE}`
  */
 export function hookEnv(): Record<string, string> {
   return {
-    CLIPMD_HOOK_NODE: process.execPath,
+    // Under an AppImage, process.execPath points inside the ephemeral FUSE mount
+    // (/tmp/.mount_XXXX/...), which disappears when the app exits or is relaunched —
+    // so a session outliving one app run would invoke a node that no longer exists
+    // and the hook would fail for OUR sessions too. APPIMAGE is the stable path, and
+    // it honours ELECTRON_RUN_AS_NODE (set alongside this in sessionEnv).
+    CLIPMD_HOOK_NODE: process.env.APPIMAGE ?? process.execPath,
     // createRequire() resolves relative to this file's location.
     CLIPMD_REQUIRE_FROM: join(__dirname, 'index.mjs')
   }
@@ -154,7 +160,7 @@ export async function ensurePlugin(): Promise<boolean> {
 
 async function run(args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execFileP('claude', args, { timeout: 60_000 })
+    const { stdout } = await execFileP(claudeBin(), args, { timeout: 60_000 })
     return stdout
   } catch (err) {
     // Expected on re-run ("already added"), so this is informational, not an error.

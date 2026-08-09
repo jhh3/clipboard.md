@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLIPMD_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/mirror-turn.mjs\""
+            "command": "if [ -n \"$CLIPMD_HOOK_NODE\" ] && [ -n \"$CLIPMD_SESSION_KEY\" ]; then \"$CLIPMD_HOOK_NODE\" \"${CLAUDE_PLUGIN_ROOT}/hooks/mirror-turn.mjs\"; fi",
+            "_comment": "The guard is load-bearing. Installing this plugin enables it GLOBALLY, so this hook fires at the end of every turn in every Claude Code session on the machine — not only the ones clipboard.md spawned. CLIPMD_HOOK_NODE and CLIPMD_SESSION_KEY are injected into our sessions' environment only (agents.ts sessionEnv), so everywhere else the command expanded to `\"\" \"...mirror-turn.mjs\"`, which the shell reports as `: Permission denied` (exit 127) on every single turn of the user's unrelated sessions. Foreign sessions must be a silent no-op."
           }
         ]
       }
