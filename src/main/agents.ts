@@ -611,6 +611,13 @@ async function deliverWithRetry(key: string, text: string, kind: string): Promis
   }
 }
 
+/** The agent's current singleton session key, or null — without launching one.
+ *  Powers "reopen the last conversation" from the palette. */
+export function sessionFor(agentName?: string): string | null {
+  const def = agentByName(agentName)
+  return def ? liveAgent(def) : null
+}
+
 /** End an agent's singleton (default: the primary) so the next ask relaunches
  *  it with fresh identity/memory/settings. */
 export async function restartAgent(agentName?: string): Promise<void> {

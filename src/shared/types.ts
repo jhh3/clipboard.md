@@ -346,6 +346,8 @@ export interface IpcInvokeMap {
    *  exists; delivery retries in the background, so this returns immediately.
    *  itemId attaches a clip: its content + enrichment ride along as context. */
   'agents:ask': (text: string, agent?: string, itemId?: number) => { key: string }
+  /** The agent's current session key without launching one (null = none yet). */
+  'agents:session-for': (agent?: string) => string | null
   /** Send a clip's content into a running session (formats text/image consistently). */
   'agents:send-clip': (key: string, itemId: number) => boolean
   /** Start a new session whose opening prompt is the clip's content. */

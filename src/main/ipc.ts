@@ -40,6 +40,7 @@ import {
   unreadCount,
   endSession,
   askAgent,
+  sessionFor,
   sendClip,
   launchWithClip,
   restartAgent
@@ -122,6 +123,7 @@ export function registerIpc(
     broadcast('agents:changed', { unread: unreadCount() })
     return res
   })
+  handle('agents:session-for', (_e, agent?: string) => sessionFor(agent))
   handle('agents:send-clip', (_e, key: string, itemId: number) => sendClip(key, itemId))
   handle('agents:launch-with-clip', async (_e, opts: { profile: string; itemId: number }) => {
     const key = await launchWithClip(opts.profile, opts.itemId)

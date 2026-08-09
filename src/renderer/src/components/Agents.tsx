@@ -3,6 +3,7 @@ import { invoke, on } from '../lib/ipc'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import Toasts from './Toasts'
+import Markdown from './Markdown'
 import { relTime } from '../lib/time'
 import type { AgentMessage, AgentProfile, AgentSession } from '@shared/types'
 
@@ -187,7 +188,9 @@ export default function Agents(): React.JSX.Element {
                     </span>
                     <span>{relTime(m.createdAt)}</span>
                   </div>
-                  <div className="agents-msg-body">{m.body}</div>
+                  <div className="agents-msg-body">
+                    {m.direction === 'outbound' ? <Markdown text={m.body} /> : m.body}
+                  </div>
                 </div>
               ))}
               <div ref={bottom} />

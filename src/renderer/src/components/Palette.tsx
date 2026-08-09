@@ -26,6 +26,7 @@ import PreviewPane, { type TransformView } from './PreviewPane'
 import ActionBar from './ActionBar'
 import AgentPicker, { targetLabel, type AgentTarget } from './AgentPicker'
 import HelpOverlay from './HelpOverlay'
+import Markdown from './Markdown'
 import Toasts from './Toasts'
 import { CameraIcon, GearIcon, MicIcon, PencilIcon, SparkIcon } from './icons'
 
@@ -45,8 +46,9 @@ type Mode =
   | { name: 'action'; item: ClipItem }
   | { name: 'agent'; item: ClipItem }
   /** Conversation with the assistant, in place: the answer arrives HERE, not in a
-   *  window you have to go find. `askedAt` scopes which messages belong to it. */
-  | { name: 'ask'; sessionKey: string; askedAt: number }
+   *  window you have to go find. `askedAt` scopes which messages belong to it;
+   *  `showHistory` (↑ on the ask row) shows the whole recent thread instead. */
+  | { name: 'ask'; sessionKey: string; askedAt: number; showHistory?: boolean }
   | { name: 'result'; item: ClipItem; req: TransformRequest; out: TransformOutput; label: string }
 
 /**
@@ -400,7 +402,9 @@ export default function Palette() {
     // Strictly >= askedAt: a grace window here pulled the previous exchange's
     // answer into a new ask. The question itself renders from the optimistic
     // local entry, so excluding its slightly-earlier server row costs nothing.
-    const since = mode.askedAt
+    // A deliberately REOPENED conversation (↑) is the exception — there, the
+    // history is the point.
+    const since = mode.showHistory ? 0 : mode.askedAt
     let cancelled = false
     const tick = async (): Promise<void> => {
       // A hidden palette must not consume the conversation: mark-read from an
@@ -409,7 +413,7 @@ export default function Palette() {
       try {
         const msgs = await invoke('agents:messages', key)
         if (cancelled) return
-        const server = msgs.filter((m) => m.createdAt >= since)
+        const server = msgs.filter((m) => m.createdAt >= since).slice(-40)
         setAskThread((local) => {
           // Server wins; keep only optimistic entries the server hasn't echoed yet.
           // Matched on the QUESTION part: an attached ask's server body carries the
@@ -481,6 +485,22 @@ export default function Palette() {
     setMode({ name: 'normal' })
     setAskThread([])
   }, [])
+
+  /** ↑ on the ask row: reopen the last conversation with the current agent —
+   *  the chat reflex for "where did that answer go". */
+  const resumeConversation = useCallback(async () => {
+    try {
+      const key = await invoke('agents:session-for', targetAgent?.name)
+      if (!key) {
+        addToast(`No conversation with @${targetAgent?.name ?? 'the agent'} yet — just ask`, 'info')
+        return
+      }
+      setAskThread([])
+      setMode({ name: 'ask', sessionKey: key, askedAt: Date.now(), showHistory: true })
+    } catch {
+      addToast('Could not open the conversation', 'error')
+    }
+  }, [targetAgent, addToast])
 
   // ── voice ask (mic → transcribe → ask) ────────────────────────────────────
   const recRef = useRef<MediaRecorder | null>(null)
@@ -1170,8 +1190,10 @@ export default function Palette() {
     }
     if (e.key === 'ArrowUp' && !mod) {
       e.preventDefault()
-      // Above the first item sits the ask row.
-      setSel((s) => Math.max(s - 1, -1))
+      // Above the first item sits the ask row — and above THAT, like every chat
+      // input, sits the previous conversation.
+      if (sel === -1) void resumeConversation()
+      else setSel((s) => Math.max(s - 1, -1))
       return
     }
     if (e.key === 'Enter') {
@@ -1274,6 +1296,7 @@ export default function Palette() {
                   : 'paste latest'
             ],
             ...(persistentAgents.length > 1 ? ([['⇧Tab', 'agent']] as Array<[string, string]>) : []),
+            ['↑', 'last convo'],
             ['↓', 'history'],
             ['Tab', 'actions'],
             [`${MOD}1-9`, 'quick paste'],
@@ -1476,7 +1499,9 @@ export default function Palette() {
                     </span>
                     <span>{relTime(m.createdAt)}</span>
                   </div>
-                  <div className="agents-msg-body">{shown}</div>
+                  <div className="agents-msg-body">
+                    {m.direction === 'outbound' ? <Markdown text={shown} /> : shown}
+                  </div>
                   {chip && <div className="ask-msg-attachment">📎 {chip}</div>}
                 </div>
               )

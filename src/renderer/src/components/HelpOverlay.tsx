@@ -14,6 +14,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
     [
       ['↵', 'ask agent (input) / paste (item selected)'],
       ['↓ ↑', 'move between agent and history'],
+      ['↑ (ask row)', 'reopen the last conversation'],
       ['⇧Tab', 'switch which agent you ask'],
       ['@name', 'target an agent for one ask'],
       [`${MOD}D`, 'voice ask (toggle mic)'],
