@@ -48,7 +48,7 @@ type Mode =
   /** Conversation with the assistant, in place: the answer arrives HERE, not in a
    *  window you have to go find. `askedAt` scopes which messages belong to it;
    *  `showHistory` (↑ on the ask row) shows the whole recent thread instead. */
-  | { name: 'ask'; sessionKey: string; askedAt: number; showHistory?: boolean }
+  | { name: 'ask'; sessionKey: string; askedAt: number; agentName?: string; showHistory?: boolean }
   | { name: 'result'; item: ClipItem; req: TransformRequest; out: TransformOutput; label: string }
 
 /**
@@ -379,7 +379,7 @@ export default function Palette() {
             ? `${text}\n\n<attached-clip>\n${attach.autoTitle ?? attach.preview.slice(0, 60)}\n</attached-clip>`
             : text
           setAskThread([localMsg(res.key, shown)])
-          setMode({ name: 'ask', sessionKey: res.key, askedAt })
+          setMode({ name: 'ask', sessionKey: res.key, askedAt, agentName: targetAgent?.name })
           setQuery('')
           setAttachment(null)
         }
@@ -496,18 +496,38 @@ export default function Palette() {
         return
       }
       setAskThread([])
-      setMode({ name: 'ask', sessionKey: key, askedAt: Date.now(), showHistory: true })
+      setMode({
+        name: 'ask',
+        sessionKey: key,
+        askedAt: Date.now(),
+        agentName: targetAgent?.name,
+        showHistory: true
+      })
     } catch {
       addToast('Could not open the conversation', 'error')
     }
   }, [targetAgent, addToast])
 
-  // ── voice ask (mic → transcribe → ask) ────────────────────────────────────
+  // ── voice ask (mic → transcribe → INPUT, never auto-sent) ─────────────────
   const recRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const micStreamRef = useRef<MediaStream | null>(null)
-  const askRef = useRef(askAssistant)
-  askRef.current = askAssistant
+
+  /**
+   * Dictated text lands in the input box for review — Enter sends it. Auto-
+   * submitting shipped half-finished sentences the moment the key was released
+   * (John hit exactly that), and a mis-transcription went to the agent with no
+   * chance to fix it. Appends after anything already typed, so "@studio " +
+   * dictation composes naturally.
+   */
+  const insertTranscript = useCallback((text: string) => {
+    const t = text.trim()
+    if (!t) return
+    setQuery((q) => (q.trim() ? `${q.trimEnd()} ${t}` : t))
+    searchInputRef.current?.focus()
+  }, [])
+  const insertRef = useRef(insertTranscript)
+  insertRef.current = insertTranscript
 
   const finishMic = useCallback(async () => {
     const rec = recRef.current
@@ -525,9 +545,7 @@ export default function Palette() {
     try {
       const res = await invoke('scratch:transcribe', { audioB64: await blobToB64(blob), mime })
       if (res.ok && res.text?.trim()) {
-        // Straight to the assistant — the question bubble shows what was heard,
-        // and a follow-up corrects any mishearing faster than re-typing would.
-        void askRef.current(res.text.trim())
+        insertRef.current(res.text)
       } else {
         addToast(res.error ?? 'Heard nothing', 'error')
       }
@@ -599,13 +617,11 @@ export default function Palette() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [cancelMic])
 
-  // Hold-to-talk finished while the palette was open: the transcript is an ask
-  // for the current target, not a paste (main routes it here — see ipc.ts).
+  // Hold-to-talk finished while the palette was open: the transcript belongs in
+  // the ask input, not pasted into the app underneath (main routes it here — see
+  // ipc.ts) and NOT auto-sent — you read it, then hit Enter.
   useEffect(() => {
-    return on('palette:dictation', (p) => {
-      const text = p.text.trim()
-      if (text) void askRef.current(text)
-    })
+    return on('palette:dictation', (p) => insertRef.current(p.text))
   }, [])
 
   // ── send to agent ─────────────────────────────────────────────────────────
@@ -1076,6 +1092,12 @@ export default function Palette() {
         exitAsk()
         return
       }
+      // ↑ with an empty box: reveal the rest of the conversation, in place.
+      if (e.key === 'ArrowUp' && !mod && !query.trim() && !mode.showHistory) {
+        e.preventDefault()
+        setMode({ ...mode, showHistory: true })
+        return
+      }
       if (e.key === 'Enter' && mod) {
         e.preventDefault()
         void copyAnswer()
@@ -1315,8 +1337,9 @@ export default function Palette() {
       : mode.name === 'ask'
         ? [
             ['↵', query.trim() ? 'send follow-up' : 'paste answer'],
+            ...(!mode.showHistory ? ([['↑', 'history']] as Array<[string, string]>) : []),
             [`${MOD}↵`, 'copy answer'],
-            [`${MOD}D`, micState === 'recording' ? 'stop & send' : 'voice'],
+            [`${MOD}D`, micState === 'recording' ? 'stop & review' : 'voice'],
             ['esc', 'back']
           ]
         : mode.name === 'action'
@@ -1428,10 +1451,10 @@ export default function Palette() {
         placeholder={
           mode.name === 'ask'
             ? micState === 'recording'
-              ? 'Listening… (⌘D to stop & send)'
-              : 'Follow up… (↵ sends · empty ↵ pastes the answer)'
+              ? 'Listening… release to review, then ↵ to send'
+              : `Reply to @${mode.agentName ?? 'assistant'}… (↵ sends · empty ↵ pastes the answer)`
             : micState === 'recording'
-              ? 'Listening… (⌘D to stop & ask)'
+              ? 'Listening… release to review, then ↵ to ask'
               : attachment
                 ? `Ask ${targetAgent?.name ?? 'agent'} about the attached clip…`
                 : undefined
@@ -1476,6 +1499,14 @@ export default function Palette() {
       />
       {mode.name === 'ask' ? (
         <div className="ask-view">
+          <div className="ask-view-head">
+            <SparkIcon size={12} />
+            <span className="ask-view-agent">@{mode.agentName ?? 'assistant'}</span>
+            <span className="ask-view-sub">
+              {askWaiting ? 'thinking…' : 'conversation'}
+              {!mode.showHistory && ' · ↑ shows earlier messages'}
+            </span>
+          </div>
           <div className="ask-thread">
             {askThread.map((m) => {
               // Attached-clip context is for the model; the thread shows the
@@ -1495,7 +1526,7 @@ export default function Palette() {
                 <div key={m.id} className={`agents-msg agents-${m.direction} agents-kind-${m.kind}`}>
                   <div className="agents-msg-head">
                     <span className="agents-msg-kind">
-                      {m.direction === 'inbound' ? 'you' : 'assistant'}
+                      {m.direction === 'inbound' ? 'you' : `@${mode.agentName ?? 'assistant'}`}
                     </span>
                     <span>{relTime(m.createdAt)}</span>
                   </div>

@@ -18,7 +18,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
       ['⇧Tab', 'switch which agent you ask'],
       ['@name', 'target an agent for one ask'],
       [`${MOD}D`, 'voice ask (toggle mic)'],
-      [MOD === '⌘' ? '🌐 (hold)' : '⌃⌥Space (hold)', 'dictate — asks the agent while open'],
+      [MOD === '⌘' ? '🌐 (hold)' : '⌃⌥Space (hold)', 'dictate into the ask box (review, then ↵)'],
       ['⇧↵', 'paste as plain text'],
       [`${MOD}↵`, 'copy without pasting'],
       [`${MOD}1–9`, 'quick-paste item 1–9'],
