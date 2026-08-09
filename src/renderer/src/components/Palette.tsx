@@ -43,7 +43,7 @@ type TransformOutput = { output: string; outputKind: 'text' | 'image' }
 
 type Mode =
   | { name: 'normal' }
-  | { name: 'action'; item: ClipItem }
+  | { name: 'action'; item: ClipItem; imageEdit?: boolean }
   | { name: 'agent'; item: ClipItem }
   /** Conversation with the assistant, in place: the answer arrives HERE, not in a
    *  window you have to go find. `askedAt` scopes which messages belong to it;
@@ -736,6 +736,7 @@ export default function Palette() {
 
   const PSEUDO_ACTIONS: SavedAction[] = useMemo(
     () => [
+      { id: 'x-img-edit', title: 'Edit image with AI…', key: 'e', type: 'builtin', appliesTo: ['image'] },
       { id: 'x-send-agent', title: 'Send to agent session…', type: 'builtin', appliesTo: ['text', 'image'] },
       { id: 'x-new-note', title: 'New note from clip', key: 'n', type: 'builtin', appliesTo: ['text', 'image'] }
     ],
@@ -749,8 +750,10 @@ export default function Palette() {
     try {
       // Keep the 'actions:list' order verbatim (never alphabetize): the
       // interesting AI actions come first by design.
-      const list = await invoke('actions:list', item.kind === 'image' ? 'image' : 'text')
-      setActions([ASK_CLIP_ACTION, ...list, ...PSEUDO_ACTIONS])
+      const kind = item.kind === 'image' ? 'image' : 'text'
+      const list = await invoke('actions:list', kind)
+      const pseudo = PSEUDO_ACTIONS.filter((a) => a.appliesTo.includes(kind))
+      setActions([ASK_CLIP_ACTION, ...list, ...pseudo])
     } catch {
       setActions([ASK_CLIP_ACTION, ...PSEUDO_ACTIONS])
     }
@@ -814,6 +817,14 @@ export default function Palette() {
         setMode({ name: 'normal' })
         setSel(-1)
         setQuery('')
+        return
+      }
+      if (action.id === 'x-img-edit') {
+        // Same panel, different verb: the input becomes an edit instruction and
+        // the result comes back as a new image (preview → paste, as ever).
+        setActionInput('')
+        setActionHighlight(0)
+        setMode({ name: 'action', item, imageEdit: true })
         return
       }
       if (action.id === 'x-send-agent') {
@@ -1164,6 +1175,17 @@ export default function Palette() {
       }
       if (e.key === 'Enter') {
         e.preventDefault()
+        if (mode.imageEdit) {
+          const p = actionInput.trim()
+          if (p) {
+            void runTransform(
+              mode.item,
+              { itemId: mode.item.id, freePrompt: p, imageEdit: true },
+              `Edit: ${p}`
+            )
+          }
+          return
+        }
         runActionEnter(mode.item)
       } else if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -1171,7 +1193,7 @@ export default function Palette() {
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
         setActionHighlight((h) => Math.max(h - 1, 0))
-      } else if (!actionInput && !mod && !e.altKey && e.key.length === 1) {
+      } else if (!mode.imageEdit && !actionInput && !mod && !e.altKey && e.key.length === 1) {
         // Single-key saved-action bindings fire only while the input is empty.
         const bound = actions.find((a) => a.key && a.key.toLowerCase() === e.key.toLowerCase())
         if (bound) {
@@ -1343,12 +1365,17 @@ export default function Palette() {
             ['esc', 'back']
           ]
         : mode.name === 'action'
-          ? [
-              ['↵', 'run'],
-              ['↑↓', 'choose'],
-              ['key', 'instant action'],
-              ['esc', 'back']
-            ]
+          ? mode.imageEdit
+            ? [
+                ['↵', 'edit image'],
+                ['esc', 'back']
+              ]
+            : [
+                ['↵', 'run'],
+                ['↑↓', 'choose'],
+                ['key', 'instant action'],
+                ['esc', 'back']
+              ]
           : mode.name === 'agent'
             ? [
                 ['↵', 'send'],
@@ -1671,12 +1698,17 @@ export default function Palette() {
                 setActionInput(v)
                 setActionHighlight(0)
               }}
-              actions={filteredActions}
+              actions={mode.imageEdit ? [] : filteredActions}
               highlight={actionHighlight}
               onHighlight={setActionHighlight}
               onRunAction={(a) => runSavedAction(mode.item, a)}
               running={running}
               inputRef={actionInputRef}
+              placeholder={
+                mode.imageEdit
+                  ? 'Describe the edit… ("remove the background", "circle the error in red")'
+                  : undefined
+              }
             />
           )}
           <PreviewPane item={previewItem} result={resultView} />

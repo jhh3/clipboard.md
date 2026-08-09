@@ -16,6 +16,8 @@ interface Props {
   onRunAction: (a: SavedAction) => void
   running: boolean
   inputRef: RefObject<HTMLInputElement | null>
+  /** Overridden by submodes (image edit) where the input is not a filter. */
+  placeholder?: string
 }
 
 export default function ActionBar({
@@ -26,7 +28,8 @@ export default function ActionBar({
   onHighlight,
   onRunAction,
   running,
-  inputRef
+  inputRef,
+  placeholder
 }: Props) {
   const typed = input.trim().length > 0
   const freeMode = typed && actions.length === 0
@@ -41,7 +44,7 @@ export default function ActionBar({
           type="text"
           value={input}
           onChange={(e) => onInput(e.target.value)}
-          placeholder="Filter actions, or type an AI prompt…"
+          placeholder={placeholder ?? 'Filter actions, or type an AI prompt…'}
           spellCheck={false}
           autoComplete="off"
           autoFocus

@@ -58,6 +58,14 @@ export async function runTransform(req: TransformRequest): Promise<TransformResu
   }
 
   try {
+    // Image EDITING: the prompt is an instruction, the output is a new image.
+    // Distinct from the vision lane below, which answers questions in text.
+    if (req.imageEdit && req.freePrompt && item.kind === 'image') {
+      const { editImage } = await import('./imageEdit')
+      const output = await editImage(item.content, req.freePrompt)
+      return { ok: true, output, outputKind: 'image' }
+    }
+
     // Free-text prompt → AI lane.
     if (req.freePrompt) {
       return await runAi(req.freePrompt, item.kind === 'image' ? '' : item.content, item.kind === 'image' ? item.content : undefined)

@@ -1197,6 +1197,50 @@ export default function Settings() {
                   ))}
                 </div>
               </div>
+              <Row
+                label="Image editing"
+                sub="Edits image clips from an instruction (palette: e on an image). Nano Banana 2 Lite is ~3s and cheap; GPT Image 2 is slower but stronger."
+              >
+                <div className="set-stack">
+                  <select
+                    className="set-input"
+                    value={s.imageEdit.provider}
+                    onChange={(e) =>
+                      patch({
+                        imageEdit: { provider: e.target.value as 'gemini' | 'openai', model: '' }
+                      })
+                    }
+                  >
+                    <option value="gemini">Gemini (GEMINI_API_KEY)</option>
+                    <option value="openai">OpenAI (OPENAI_API_KEY)</option>
+                  </select>
+                  <select
+                    className="set-input"
+                    value={s.imageEdit.model ?? ''}
+                    onChange={(e) =>
+                      patch({ imageEdit: { ...s.imageEdit, model: e.target.value || undefined } })
+                    }
+                  >
+                    {(s.imageEdit.provider === 'gemini'
+                      ? [
+                          ['', 'Nano Banana 2 Lite (default)'],
+                          ['gemini-3.1-flash-image', 'Nano Banana 2'],
+                          ['gemini-3-pro-image', 'Nano Banana Pro'],
+                          ['gemini-2.5-flash-image', 'Nano Banana (v1)']
+                        ]
+                      : [
+                          ['', 'GPT Image 2 (default)'],
+                          ['gpt-image-1.5', 'GPT Image 1.5'],
+                          ['gpt-image-1-mini', 'GPT Image 1 mini']
+                        ]
+                    ).map(([v, label]) => (
+                      <option key={v} value={v}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </Row>
               <div className="set-block">
                 <div className="set-label">Provider status</div>
                 <div className="provider-list">

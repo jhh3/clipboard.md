@@ -205,6 +205,9 @@ export interface TransformRequest {
   /** Either a saved action id, or a free-text AI prompt. */
   actionId?: string
   freePrompt?: string
+  /** With freePrompt on an image clip: route to the image-EDITING model (the
+   *  prompt is an edit instruction, the output is a new image). */
+  imageEdit?: boolean
 }
 
 export interface TransformResult {
@@ -306,6 +309,8 @@ export interface AppSettings {
   }
   /** Adapt pastes to the destination app (plain text into terminals, fenced code into chat). */
   smartPaste: boolean
+  /** AI image editing (palette: `e` on an image clip). Model '' = provider default. */
+  imageEdit: { provider: 'gemini' | 'openai'; model?: string }
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
   /** Spawn recipes for agent sessions. */
@@ -481,6 +486,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ],
   assistant: { identity: '', identityFiles: [], prewarm: true },
   smartPaste: true,
+  // Nano Banana 2 Lite: ~3s round-trip on a real edit, cheapest of the family.
+  imageEdit: { provider: 'gemini' },
   savedActions: [],
   smartCollections: [],
   agentProfiles: [

@@ -24,6 +24,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
       [`${MOD}1–9`, 'quick-paste item 1–9'],
       ['Tab', 'actions on the selected item'],
       ['Tab a', 'ask an agent ABOUT the clip (attaches it)'],
+      ['Tab e', 'edit an image clip with AI'],
       [`${MOD}↵`, 'in actions: ask instead of transform'],
       [`${MOD}J`, 'send clip to an agent session'],
       [`${MOD}N`, 'new note from the selected clip'],
