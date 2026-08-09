@@ -53,16 +53,23 @@ delete it. To remove your history and settings too, delete
 - **History palette** (`Ctrl+Alt+V`) — search everything you've copied, by words or by
   meaning ("that error from Tuesday"). Enter pastes it straight back into the app you
   came from.
-- **Ask an assistant** — the palette opens on an ask row. Type a question, hit Enter,
-  and a persistent Claude session answers — it can read your clipboard and notes.
-  Press `↓` for plain history instead.
+- **Ask your agents** — the palette opens on an ask row. Type (or dictate) a question,
+  hit Enter, and the answer arrives right there, rendered as markdown, ready to paste.
+  Define multiple agents in Settings → Agents (identity, working directory, per-agent
+  long-term memory); `⇧Tab` cycles the target, `@name` autocompletes one, `↑` reopens
+  the last conversation. `Tab a` on any clip asks *about* it — links travel with their
+  fetched page text, images with their OCR and description. Press `↓` for plain history.
+- **Edit images with AI** — `Tab e` on any image: "remove the background", "circle the
+  error in red" — the edited image is back in ~3 seconds (Gemini Nano Banana 2 Lite by
+  default, GPT Image 2 selectable), previewed, pasteable, kept in history.
 - **Transform before pasting** — `Tab` on any item: type an instruction ("as CSV",
   "translate to German", "make it polite") or hit a saved one-key action. Preview, then
   paste the result.
 - **Rewrite what's on screen** (`Ctrl+Alt+R`) — highlight text in any app, hit the
   hotkey, pick *fix typos* / *my voice* / your own prompt. The selection is replaced.
 - **Dictate** (hold `Ctrl+Alt+Space`) — hold, talk, release. The transcript is typed
-  into whatever you're using. Runs locally; no audio leaves the machine.
+  into whatever you're using — or lands in the palette's ask box when it's open. Runs
+  locally; no audio leaves the machine.
 - **Screenshots and images are searchable** — captured images are read (OCR) and
   described, so search finds them. Convert, compress, or **auto-redact** sensitive text.
 - **Organizes itself** — every clip gets a title, tags and a type; related clips group
@@ -167,6 +174,7 @@ pnpm install
 pnpm dev            # run with hot reload
 pnpm test           # unit tests
 pnpm typecheck
+pnpm build:mac      # dmg (run on macOS; docs/MACOS-VALIDATION.md has the hardware notes)
 
 make run            # build and (re)start a single background instance
 make status         # running? which display backend? capture/dictation state
@@ -192,7 +200,8 @@ dictation. GNOME 48+ recommended.
   runs under Xwayland when hardware acceleration is available (it can place its own
   windows there) and native Wayland when it isn't.
 - **macOS** — a small Swift side-car handles paste, reading the selected text, the
-  frontmost app, and audio decoding. See `MACOS-VALIDATION.md` for what has been
+  frontmost app, and audio decoding. See `docs/MACOS-VALIDATION.md` for what has been
   verified on hardware.
-- `DESIGN.md` has the architecture, the measured platform ground truth, and the
+- `docs/DESIGN.md` has the architecture, the measured platform ground truth, and the
   decision history — including the wrong turns and why they were wrong.
+  Cross-machine sync design: `docs/SYNC-DESIGN.md`.

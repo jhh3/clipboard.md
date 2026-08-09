@@ -1,7 +1,7 @@
 /**
  * ASR worker (utilityProcess). Parakeet inference is a synchronous native call that
  * takes seconds and loads ~490MB of weights — doing that on the Electron main thread
- * stalls every window and gets the app declared unresponsive (DESIGN.md §2 rule 2).
+ * stalls every window and gets the app declared unresponsive (docs/DESIGN.md §2 rule 2).
  *
  * Protocol: {type:'transcribe', id, wavPath, modelDir} -> {type:'text', id, text}
  *           {type:'error', id, error}

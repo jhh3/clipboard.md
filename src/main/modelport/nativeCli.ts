@@ -12,7 +12,7 @@ import { dirname, join, sep } from 'path'
  * syscall and gets ENOTDIR. The result: both subscription providers fail on every
  * request in the installed app while working perfectly in dev.
  *
- * This is the sqlite-vec failure mode again (DESIGN.md: "native modules must be
+ * This is the sqlite-vec failure mode again (docs/DESIGN.md: "native modules must be
  * verified in a PACKAGED build"), so the fix is the same shape — find the real
  * unpacked path and hand it to the SDK explicitly.
  */

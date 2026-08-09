@@ -5,7 +5,7 @@
 macOS code paths exist but have **never run on real hardware**. Your job is to make
 them real, fix what's broken, and report back.
 
-Read `DESIGN.md` first — especially §2 "Platform ground truth" and its
+Read `docs/DESIGN.md` first — especially §2 "Platform ground truth" and its
 **"Hard-won rules (do not regress these)"**. Those rules were paid for painfully on
 Linux; several have direct macOS analogues.
 
@@ -255,7 +255,7 @@ Be sceptical of anything here; none of it was watched working.
 - **Secure Input.** Confirmed *off* during testing (`IsSecureEventInputEnabled()`), so
   the degradation path with a password field focused was never exercised.
 - **Accessibility prompt attribution.** The build is unsigned (`identity: null`), so
-  whether the grant attaches to clipboard.md.app rather than a helper — DESIGN.md §6
+  whether the grant attaches to clipboard.md.app rather than a helper — docs/DESIGN.md §6
   open item 5 — remains open. In dev it attributes to the terminal.
 - **The interactive screenshot picker.** `screencapture -x` full-screen works and
   Screen Recording is granted to the terminal, but `-i` (the picker the app uses) and

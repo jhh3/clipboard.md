@@ -1,7 +1,7 @@
 # clipboard.md — Cross-Machine Sync Design
 
 *Drafted 2026-08-09 from the sync feasibility study, grounded against the code as of
-`2b94911`. Companion to DESIGN.md; same rule applies: decisions come with reasons.*
+`2b94911`. Companion to docs/DESIGN.md; same rule applies: decisions come with reasons.*
 
 ## 1. Goal & non-goals
 

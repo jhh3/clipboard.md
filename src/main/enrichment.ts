@@ -202,8 +202,13 @@ async function firecrawlScrape(url: string): Promise<{ text: string; title: stri
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = (await res.json()) as {
-      data?: { markdown?: string; metadata?: { title?: string } }
+      data?: { markdown?: string; metadata?: { title?: string; statusCode?: number } }
     }
+    // Firecrawl happily renders the TARGET's error page and returns it as a
+    // successful scrape — a private GitHub repo came back as a fully-enriched
+    // "Page not found · GitHub" clip. The page's own status is in metadata.
+    const status = data.data?.metadata?.statusCode
+    if (status != null && status >= 400) return null
     const text = data.data?.markdown?.slice(0, 8000) ?? ''
     if (!text) return null
     return { text, title: data.data?.metadata?.title ?? '' }
@@ -265,6 +270,21 @@ async function enrichLink(id: number, url: string): Promise<void> {
     }
   } catch (err) {
     console.log(`[enrich] link fetch failed for ${url}:`, err instanceof Error ? err.message : err)
+  }
+
+  // Auth walls and error pages that come back with HTTP 200: what we fetched is
+  // the SITE's furniture, not the user's page — indexing it produces clips titled
+  // "Page not found" or "Sign in" for perfectly good private links. Heuristic on
+  // purpose; a false positive just leaves the URL as the title, which is honest.
+  const AUTH_WALL_RE =
+    /^(sign in|log ?in|page not found|not found|404|403|access denied|authentication required|unauthori[sz]ed|verify your)/i
+  if (
+    AUTH_WALL_RE.test(pageTitle.trim()) ||
+    /\b(sign|log) in to (continue|access|view)\b/i.test(pageText.slice(0, 500))
+  ) {
+    console.log(`[enrich] ${url} looks auth-walled ("${pageTitle.slice(0, 40)}"); keeping the bare link`)
+    updateEnrichment(id, { autoTitle: url.slice(0, 80), contentClass: 'link' })
+    return
   }
 
   if (!pageText) {

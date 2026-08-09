@@ -138,7 +138,7 @@ export function createTray(): void {
     // has its own hotkey and a menu entry.
   } catch (err) {
     // A missing tray must never be fatal — on Linux the appindicator support is
-    // genuinely flaky (DESIGN.md §6), and the app works fine without it.
+    // genuinely flaky (docs/DESIGN.md §6), and the app works fine without it.
     console.error('[tray] could not create the tray icon:', err)
     tray = null
   }

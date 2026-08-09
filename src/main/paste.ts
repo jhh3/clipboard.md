@@ -69,7 +69,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const FOCUS_SETTLE_MS = process.platform === 'darwin' ? 120 : 300
 
 /**
- * Paste tiers (see DESIGN.md §2):
+ * Paste tiers (see docs/DESIGN.md §2):
  *  - darwin: hide window (focus returns to previous app) → Swift helper posts Cmd+V.
  *  - linux/GNOME tier 0: put content on clipboard, hide, tell the user to Ctrl+V.
  *    Tier 1 (RemoteDesktop portal injection) slots in here once the spike lands.
