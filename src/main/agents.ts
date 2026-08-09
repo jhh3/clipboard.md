@@ -496,15 +496,58 @@ function liveAgent(def: AgentProfile): string | null {
 /** In-flight launches per agent, so rapid asks share one session, not spawn two. */
 const agentLaunches = new Map<string, Promise<string>>()
 
-export async function askAgent(text: string, agentName?: string): Promise<{ key: string }> {
+/**
+ * A clip as ASK context: everything the app already knows about it, so the
+ * agent never has to re-fetch what enrichment fetched. For a link that means
+ * the Firecrawl-extracted page text riding along with the question.
+ *
+ * Wrapped in an <attached-clip> block the palette's thread view collapses into
+ * a chip — the context is for the model, not for re-reading in the inbox.
+ */
+function clipAskContext(item: ClipItem): string {
+  const parts: string[] = []
+  if (item.kind === 'image') {
+    parts.push(`Image clip — file at ${item.content}`)
+    if (item.description) parts.push(`Description: ${item.description}`)
+    if (item.ocrText) parts.push(`Text in image:\n${item.ocrText.slice(0, 4000)}`)
+  } else if (item.kind === 'link' || item.contentClass === 'link') {
+    parts.push(`Link: ${item.content}`)
+    if (item.autoTitle) parts.push(`Page title: ${item.autoTitle}`)
+    if (item.description) parts.push(`Summary: ${item.description}`)
+    // ocr_text holds the fetched page text for links (see enrichment.ts).
+    if (item.ocrText) parts.push(`Page text (extracted at copy time):\n${item.ocrText.slice(0, 6000)}`)
+  } else {
+    if (item.autoTitle) parts.push(`Titled: ${item.autoTitle}`)
+    parts.push(item.content.slice(0, 8000))
+  }
+  if (item.tags.length > 0) parts.push(`Tags: ${item.tags.join(', ')}`)
+  return parts.join('\n\n')
+}
+
+/** The `<attached-clip>` sentinel — shared with the palette's thread renderer. */
+export const ATTACHMENT_OPEN = '<attached-clip>'
+
+export async function askAgent(
+  text: string,
+  agentName?: string,
+  itemId?: number
+): Promise<{ key: string }> {
   const def = agentByName(agentName)
   if (!def) throw new Error(agentName ? `unknown agent: ${agentName}` : 'no agents configured')
+
+  let body = text
+  if (itemId != null) {
+    const item = getItem(itemId)
+    if (item && !item.secret) {
+      body = `${text}\n\n${ATTACHMENT_OPEN}\n${clipAskContext(item)}\n</attached-clip>`
+    }
+  }
 
   const inFlight = agentLaunches.get(def.name)
   if (inFlight) {
     // A launch is already under way — join it and deliver once the bridge is up.
     const key = await inFlight
-    void deliverWithRetry(key, text, 'message')
+    void deliverWithRetry(key, body, 'message')
     return { key }
   }
   const existing = liveAgent(def)
@@ -514,7 +557,7 @@ export async function askAgent(text: string, agentName?: string): Promise<{ key:
     const launch = launchSession({
       profile: def.name,
       title: sessionTitleFor(def),
-      prompt: text,
+      prompt: body,
       systemPrompt: agentSystemPrompt(def)
     })
     agentLaunches.set(def.name, launch)
@@ -524,7 +567,7 @@ export async function askAgent(text: string, agentName?: string): Promise<{ key:
       agentLaunches.delete(def.name)
     }
   }
-  void deliverWithRetry(existing, text, 'message')
+  void deliverWithRetry(existing, body, 'message')
   return { key: existing }
 }
 

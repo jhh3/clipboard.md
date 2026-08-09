@@ -117,8 +117,8 @@ export function registerIpc(
     await endSession(key)
     broadcast('agents:changed', { unread: unreadCount() })
   })
-  handle('agents:ask', async (_e, text: string, agent?: string) => {
-    const res = await askAgent(text, agent)
+  handle('agents:ask', async (_e, text: string, agent?: string, itemId?: number) => {
+    const res = await askAgent(text, agent, itemId)
     broadcast('agents:changed', { unread: unreadCount() })
     return res
   })

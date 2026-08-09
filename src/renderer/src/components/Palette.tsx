@@ -85,6 +85,8 @@ export default function Palette() {
   const [agentDefs, setAgentDefs] = useState<AgentDef[]>([])
   /** Sticky ask target (⇧Tab cycles it); null = the primary. */
   const [askTarget, setAskTarget] = useState<string | null>(null)
+  /** Clip riding along with the next ask — same ask box, with context. */
+  const [attachment, setAttachment] = useState<ClipItem | null>(null)
   const [micState, setMicState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [showHelp, setShowHelp] = useState(false)
   const [running, setRunning] = useState(false)
@@ -222,6 +224,7 @@ export default function Palette() {
       setAgentInput('')
       setAgentHighlight(0)
       setAskThread([])
+      setAttachment(null)
       setShowHelp(false)
       if (p.mode === 'rewrite' && p.rewriteText) {
         // Rewrite mini-flow: materialize the selection as a clip so transforms
@@ -345,9 +348,10 @@ export default function Palette() {
   })
 
   const askAssistant = useCallback(
-    async (textArg?: string) => {
+    async (textArg?: string, attachOverride?: ClipItem) => {
       const text = (textArg ?? askText).trim()
       if (!text || runningRef.current) return
+      const attach = attachOverride ?? attachment
       runningRef.current = true
       setRunning(true)
       try {
@@ -366,10 +370,16 @@ export default function Palette() {
           // the question, and this stamp is what scopes the thread — a lookback
           // window here once showed the PREVIOUS answer as the new one.
           const askedAt = Date.now()
-          const res = await invoke('agents:ask', text, targetAgent?.name)
-          setAskThread([localMsg(res.key, text)])
+          const res = await invoke('agents:ask', text, targetAgent?.name, attach?.id)
+          // The optimistic entry mirrors the server's <attached-clip> shape so the
+          // thread renderer collapses both into the same chip.
+          const shown = attach
+            ? `${text}\n\n<attached-clip>\n${attach.autoTitle ?? attach.preview.slice(0, 60)}\n</attached-clip>`
+            : text
+          setAskThread([localMsg(res.key, shown)])
           setMode({ name: 'ask', sessionKey: res.key, askedAt })
           setQuery('')
+          setAttachment(null)
         }
       } catch (err) {
         addToast(err instanceof Error ? err.message : 'Could not reach the agent', 'error')
@@ -378,7 +388,7 @@ export default function Palette() {
         setRunning(false)
       }
     },
-    [askText, targetAgent, mode, addToast]
+    [askText, targetAgent, attachment, mode, addToast]
   )
 
   // Poll the conversation while ask mode is up. The reply is written to SQLite by
@@ -402,8 +412,13 @@ export default function Palette() {
         const server = msgs.filter((m) => m.createdAt >= since)
         setAskThread((local) => {
           // Server wins; keep only optimistic entries the server hasn't echoed yet.
-          const seen = new Set(server.filter((m) => m.direction === 'inbound').map((m) => m.body))
-          const pending = local.filter((m) => m.id < 0 && !seen.has(m.body))
+          // Matched on the QUESTION part: an attached ask's server body carries the
+          // full clip context while the optimistic one carries only a chip label.
+          const qOf = (b: string): string => b.split('<attached-clip>')[0].trim()
+          const seen = new Set(
+            server.filter((m) => m.direction === 'inbound').map((m) => qOf(m.body))
+          )
+          const pending = local.filter((m) => m.id < 0 && !seen.has(qOf(m.body)))
           return [...server, ...pending].sort((a, b) => a.createdAt - b.createdAt)
         })
         if (server.some((m) => m.direction === 'outbound' && m.readAt === null)) {
@@ -670,9 +685,22 @@ export default function Palette() {
    * makes shortcuts learnable). Intercepted by id in runSavedAction — they change
    * mode instead of running a transform.
    */
+  /** Pinned FIRST: asking an agent about the entry is the headline action (John's
+   *  call) — the rest of the list keeps its shipped order below it. */
+  const ASK_CLIP_ACTION: SavedAction = useMemo(
+    () => ({
+      id: 'x-ask-clip',
+      title: `Ask @${targetAgent?.name ?? 'agent'} about this…`,
+      key: 'a',
+      type: 'builtin',
+      appliesTo: ['text', 'image']
+    }),
+    [targetAgent]
+  )
+
   const PSEUDO_ACTIONS: SavedAction[] = useMemo(
     () => [
-      { id: 'x-send-agent', title: 'Send to agent…', key: 'a', type: 'builtin', appliesTo: ['text', 'image'] },
+      { id: 'x-send-agent', title: 'Send to agent session…', type: 'builtin', appliesTo: ['text', 'image'] },
       { id: 'x-new-note', title: 'New note from clip', key: 'n', type: 'builtin', appliesTo: ['text', 'image'] }
     ],
     []
@@ -686,15 +714,15 @@ export default function Palette() {
       // Keep the 'actions:list' order verbatim (never alphabetize): the
       // interesting AI actions come first by design.
       const list = await invoke('actions:list', item.kind === 'image' ? 'image' : 'text')
-      setActions([...list, ...PSEUDO_ACTIONS])
+      setActions([ASK_CLIP_ACTION, ...list, ...PSEUDO_ACTIONS])
     } catch {
-      setActions(PSEUDO_ACTIONS)
+      setActions([ASK_CLIP_ACTION, ...PSEUDO_ACTIONS])
     }
     setActionInput('')
     // Empty input → the first action is preselected.
     setActionHighlight(0)
     setMode({ name: 'action', item })
-  }, [actionTarget, sel, PSEUDO_ACTIONS])
+  }, [actionTarget, sel, ASK_CLIP_ACTION, PSEUDO_ACTIONS])
 
   const filteredActions = useMemo(
     () => fuzzyFilter(actions, actionInput, (a) => a.title),
@@ -740,6 +768,18 @@ export default function Palette() {
 
   const runSavedAction = useCallback(
     (item: ClipItem, action: SavedAction) => {
+      if (action.id === 'x-ask-clip') {
+        // Back to the ordinary ask box — with the clip riding along as a chip.
+        if (item.secret) {
+          addToast('Secret clips are never sent to agents', 'error')
+          return
+        }
+        setAttachment(item)
+        setMode({ name: 'normal' })
+        setSel(-1)
+        setQuery('')
+        return
+      }
       if (action.id === 'x-send-agent') {
         void enterAgentMode(item)
         return
@@ -750,7 +790,7 @@ export default function Palette() {
       }
       void runTransform(item, { itemId: item.id, actionId: action.id }, action.title)
     },
-    [runTransform, enterAgentMode, noteFromClip]
+    [runTransform, enterAgentMode, noteFromClip, addToast]
   )
 
   const runActionEnter = useCallback(
@@ -1068,6 +1108,18 @@ export default function Palette() {
         return
       }
       if (running) return
+      // Two submit verbs on the free-prompt box: Enter = one-shot transform (a
+      // pasteable result), ⌘Enter = ask the agent this ABOUT the clip — the
+      // conversational lane, clip context attached.
+      if (e.key === 'Enter' && mod && actionInput.trim()) {
+        e.preventDefault()
+        if (mode.item.secret) {
+          addToast('Secret clips are never sent to agents', 'error')
+          return
+        }
+        void askAssistant(actionInput.trim(), mode.item)
+        return
+      }
       if (e.key === 'Enter') {
         e.preventDefault()
         runActionEnter(mode.item)
@@ -1135,7 +1187,9 @@ export default function Palette() {
           void askAssistant()
           return
         }
-        if (mention) return
+        // An attachment (or bare @mention) without a question is not "paste
+        // latest" — it's a half-composed ask.
+        if (mention || attachment) return
         if (!visible[0]) return
         if (mod) void copyItem(visible[0])
         else void pasteItem(visible[0], e.shiftKey)
@@ -1191,6 +1245,7 @@ export default function Palette() {
     if (e.key === 'Escape') {
       e.preventDefault()
       if (query) setQuery('')
+      else if (attachment) setAttachment(null)
       else void invoke('window:hide')
       return
     }
@@ -1210,7 +1265,14 @@ export default function Palette() {
     mode.name === 'normal'
       ? sel < 0
         ? [
-            ['↵', askText ? `ask ${targetAgent?.name ?? 'assistant'}` : 'paste latest'],
+            [
+              '↵',
+              askText
+                ? `ask ${targetAgent?.name ?? 'assistant'}${attachment ? ' about clip' : ''}`
+                : attachment
+                  ? 'type a question first'
+                  : 'paste latest'
+            ],
             ...(persistentAgents.length > 1 ? ([['⇧Tab', 'agent']] as Array<[string, string]>) : []),
             ['↓', 'history'],
             ['Tab', 'actions'],
@@ -1347,7 +1409,9 @@ export default function Palette() {
               : 'Follow up… (↵ sends · empty ↵ pastes the answer)'
             : micState === 'recording'
               ? 'Listening… (⌘D to stop & ask)'
-              : undefined
+              : attachment
+                ? `Ask ${targetAgent?.name ?? 'agent'} about the attached clip…`
+                : undefined
         }
         actions={
           <>
@@ -1390,17 +1454,33 @@ export default function Palette() {
       {mode.name === 'ask' ? (
         <div className="ask-view">
           <div className="ask-thread">
-            {askThread.map((m) => (
-              <div key={m.id} className={`agents-msg agents-${m.direction} agents-kind-${m.kind}`}>
-                <div className="agents-msg-head">
-                  <span className="agents-msg-kind">
-                    {m.direction === 'inbound' ? 'you' : 'assistant'}
-                  </span>
-                  <span>{relTime(m.createdAt)}</span>
+            {askThread.map((m) => {
+              // Attached-clip context is for the model; the thread shows the
+              // question plus a chip, not 6KB of page text.
+              const cut = m.body.indexOf('<attached-clip>')
+              const shown = cut < 0 ? m.body : m.body.slice(0, cut).trim()
+              const chip =
+                cut < 0
+                  ? null
+                  : m.body
+                      .slice(cut + '<attached-clip>'.length)
+                      .replace('</attached-clip>', '')
+                      .trim()
+                      .split('\n')[0]
+                      .slice(0, 60)
+              return (
+                <div key={m.id} className={`agents-msg agents-${m.direction} agents-kind-${m.kind}`}>
+                  <div className="agents-msg-head">
+                    <span className="agents-msg-kind">
+                      {m.direction === 'inbound' ? 'you' : 'assistant'}
+                    </span>
+                    <span>{relTime(m.createdAt)}</span>
+                  </div>
+                  <div className="agents-msg-body">{shown}</div>
+                  {chip && <div className="ask-msg-attachment">📎 {chip}</div>}
                 </div>
-                <div className="agents-msg-body">{m.body}</div>
-              </div>
-            ))}
+              )
+            })}
             {askWaiting && (
               <div className="ask-waiting">
                 <span className="ask-pulse" />
@@ -1469,13 +1549,28 @@ export default function Palette() {
             tabIndex={-1}
           >
             <SparkIcon className="ask-spark" size={14} />
+            {attachment && (
+              <span
+                className="ask-attachment"
+                title={attachment.autoTitle ?? attachment.preview}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setAttachment(null)
+                }}
+              >
+                📎 {(attachment.autoTitle ?? attachment.preview).slice(0, 32)}
+                <span className="ask-attachment-x">✕</span>
+              </span>
+            )}
             {askText ? (
               <span className="ask-text">
                 Ask {targetAgent?.name ?? 'assistant'}: <em>“{askText}”</em>
               </span>
             ) : (
               <span className="ask-text dim">
-                Ask {targetAgent?.name ?? 'your assistant'} — type, then ↵
+                {attachment
+                  ? 'Ask about this clip — type or dictate, then ↵'
+                  : `Ask ${targetAgent?.name ?? 'your assistant'} — type, then ↵`}
               </span>
             )}
             {persistentAgents.length > 1 && (

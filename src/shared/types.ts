@@ -333,8 +333,9 @@ export interface IpcInvokeMap {
   'agents:mark-read': (key?: string) => void
   'agents:end': (key: string) => void
   /** Ask a defined agent (default: the primary). Ensures its singleton session
-   *  exists; delivery retries in the background, so this returns immediately. */
-  'agents:ask': (text: string, agent?: string) => { key: string }
+   *  exists; delivery retries in the background, so this returns immediately.
+   *  itemId attaches a clip: its content + enrichment ride along as context. */
+  'agents:ask': (text: string, agent?: string, itemId?: number) => { key: string }
   /** Send a clip's content into a running session (formats text/image consistently). */
   'agents:send-clip': (key: string, itemId: number) => boolean
   /** Start a new session whose opening prompt is the clip's content. */
