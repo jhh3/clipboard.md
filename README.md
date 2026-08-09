@@ -123,3 +123,46 @@ paste as plain text · `⌃↵` copy · `⌃1–9` quick-paste · `Tab`/`⌃K` A
 - AI: any of a Claude subscription (`claude` login), Codex subscription (`codex` login),
   `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Fast models are the default
   (Haiku / GPT-5.6 Luna / Gemini Flash-Lite) and are configurable per feature.
+
+## Running it on Linux
+
+Use the AppImage for daily use, and the Makefile for development. Do not start the
+binary by hand — the app depends on session state that is easy to get wrong, and each
+variation fails in a way that looks like a different bug.
+
+```
+make appimage          # build dist/clipboard.md-*.AppImage — double-clickable
+make install-appimage  # copy it to ~/.local/bin and use it as the login item
+make run               # build + (re)start from the checkout, for development
+make status            # running? which backend? capture and dictation state
+make doctor            # check the things that actually break on Linux
+make logs              # follow today's log
+make stop              # stop it, including strays
+```
+
+### Things that must be true
+
+- **`DISPLAY` must be set**, even on a Wayland session. Clipboard I/O is X11-based
+  (`xclip`, XFixes). With it unset, capture goes blind and dictation's clipboard write
+  fails silently — the paste then delivers whatever you copied previously.
+- **Only one instance may run.** Several all poll the clipboard and write the same
+  SQLite file. `make run` and `make stop` clear strays; `make doctor` counts them.
+- **Key repeat must be enabled** (Settings → Keyboard). It is the hold signal for
+  push-to-talk: GNOME keybindings only ever deliver key-down, so "still held" is
+  inferred from repeats and "released" from their absence. The timings are read from
+  the desktop, not assumed.
+- **Xwayland vs native Wayland is chosen for you.** Xwayland lets the app place its
+  own windows (the dictation HUD sits at the bottom instead of mid-screen), so it is
+  preferred — *except* when hardware acceleration is off. Software rendering cannot
+  present X11 windows on some setups: the app runs, the tray appears, and no window is
+  ever mapped. With the GPU disabled we use native Wayland and let the compositor
+  place the HUD.
+- **A crash-looping GPU disables itself.** After three GPU crashes the app writes
+  `~/.config/clipboard.md/force-software-gpu` and restarts software-rendered. Delete
+  that file to retry hardware acceleration.
+
+### The dictation shortcut
+
+`Ctrl+Alt+Space`, hold to talk. Change it in Settings → General → Hold-to-talk chord;
+it drives both the GNOME keybinding and the key codes that watch the hold, so the two
+cannot drift apart.

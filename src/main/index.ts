@@ -105,6 +105,16 @@ function preferredOzonePlatform(): string {
   if (wlroots) return 'auto'
   // No Xwayland to fall back to: native Wayland is the only option.
   if (!process.env.DISPLAY) return 'auto'
+  // Software rendering cannot drive Xwayland here. With the GPU disabled, Chromium
+  // presents X11 windows through x11_software_bitmap_presenter, which fails on this
+  // setup ("XGetWindowAttributes failed for window N") and NO window is ever mapped —
+  // the app runs, the tray works, and nothing can be opened. Native Wayland renders
+  // fine in the same state, so when the GPU is out we take Wayland and accept that
+  // the compositor, not us, places the dictation HUD.
+  //
+  // Note this only reads the flag; DISPLAY stays set either way, which matters
+  // because clipboard I/O is X11-based (xclip, XFixes) regardless of the UI backend.
+  if (existsSync(gpuFallbackFlag())) return 'auto'
   return 'x11'
 }
 
