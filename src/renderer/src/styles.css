@@ -2755,3 +2755,10 @@ body.route-dictation #root {
 .agent-card-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .agent-inline { display: inline-flex; gap: 7px; align-items: center; font-size: 12px; color: var(--text-dim); }
 .agent-restart { margin-left: auto; }
+
+/* AI summary line in the preview footer (links, described images). */
+.meta-description {
+  display: flex; gap: 7px; align-items: flex-start;
+  margin-bottom: 8px; font-size: 12px; line-height: 1.5; color: var(--text-dim);
+}
+.meta-description svg { flex: none; margin-top: 3px; color: var(--accent-bright); }

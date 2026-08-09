@@ -161,9 +161,18 @@ function MetaFooter({ item }: { item: ClipItem }) {
           derived via <em>{item.derivedVia ?? 'transform'}</em> from #{item.derivedFrom}
         </div>
       )}
+      {/* The AI summary — computed for links and images since day one, shown
+          nowhere until John asked where all this information actually was. */}
+      {!item.secret && item.description && (
+        <div className="meta-description">
+          <SparkIcon size={11} />
+          <span>{item.description}</span>
+        </div>
+      )}
       {!item.secret && item.ocrText && (
         <div className="ocr-block">
-          <span className="ocr-badge">matched via OCR</span>
+          {/* For links this field holds fetched page text, not OCR. */}
+          <span className="ocr-badge">{item.kind === 'image' ? 'text in image' : 'page text'}</span>
           <span className="ocr-snippet">{item.ocrText.slice(0, 220)}</span>
         </div>
       )}
