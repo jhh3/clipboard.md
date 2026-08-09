@@ -39,14 +39,21 @@ process.parentPort?.on('message', (e) => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const sherpa = require('sherpa-onnx-node') as {
-        readWave: (p: string) => { samples: Float32Array; sampleRate: number }
+        readWave: (
+          p: string,
+          enableExternalBuffer?: boolean
+        ) => { samples: Float32Array; sampleRate: number }
       }
       const rec = getRecognizer(msg.modelDir!) as {
         createStream: () => unknown
         decode: (s: unknown) => void
         getResult: (s: unknown) => { text: string }
       }
-      const wave = sherpa.readWave(msg.wavPath!)
+      // enableExternalBuffer MUST be false here: this runs inside an Electron
+      // utilityProcess, and Electron's V8 memory cage forbids napi external
+      // buffers — the default path throws "External buffers are not allowed"
+      // the moment a wave is read. False makes the binding copy instead.
+      const wave = sherpa.readWave(msg.wavPath!, false)
       const stream = rec.createStream() as { acceptWaveform: (w: unknown) => void }
       stream.acceptWaveform({ sampleRate: wave.sampleRate, samples: wave.samples })
       rec.decode(stream)

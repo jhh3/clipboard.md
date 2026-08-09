@@ -2700,8 +2700,19 @@ body.route-dictation #root {
   display: flex; gap: 8px; padding: 8px 16px 10px; border-top: 1px solid var(--border);
 }
 
-/* Mic states: red while listening, dim while transcribing. */
-.mic-btn.recording { color: var(--danger); animation: askpulse 1.4s ease-in-out infinite; }
+/* Mic states. The icon stays fully visible while recording — animating the
+   button's own opacity/scale (first attempt) left an unreadable orange blob;
+   a pulsing ring around a steady red mic says "live" without hiding what it is. */
+.mic-btn { outline: none; }
+.mic-btn.recording {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  animation: micring 1.6s ease-out infinite;
+}
+@keyframes micring {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
 .mic-btn.transcribing { opacity: 0.5; }
 
 .set-inline-actions { margin-top: 6px; display: flex; gap: 8px; }
