@@ -12,9 +12,15 @@
  * drives the unread badge and the do-not-interrupt behaviour. The hook covers
  * visibility; the tools cover intent.
  *
- * Deliberately dependency-free and written straight to SQLite via the app's own
- * better-sqlite3 — a hook runs in claude's process tree, not ours, so it cannot rely
- * on anything but node and paths we hand it through the environment.
+ * TIMING, learned the hard way twice: the Stop hook can fire BEFORE claude flushes
+ * the final assistant message to the transcript file. The first fix retried until
+ * ANY assistant text appeared — which on every turn after the first immediately
+ * found the PREVIOUS turn's reply, "deduped" it, and exited before the new reply
+ * flushed. So the staleness check has to live INSIDE the retry loop: an entry we
+ * have already mirrored keeps us waiting; only a NEW entry (or timeout) ends it.
+ *
+ * Deliberately dependency-free beyond the app's own better-sqlite3 — a hook runs in
+ * claude's process tree, not ours, so everything it needs arrives via environment.
  *
  * Never blocks the session: any failure exits 0 quietly. A broken mirror must not
  * stop an agent from working.
@@ -26,7 +32,12 @@ const KEY = process.env.CLIPMD_SESSION_KEY
 const DB = process.env.CLIPMD_DB
 const REQUIRE_FROM = process.env.CLIPMD_REQUIRE_FROM
 
-function bail() {
+function bail(db) {
+  try {
+    db?.close()
+  } catch {
+    /* already closed */
+  }
   process.exit(0)
 }
 
@@ -45,13 +56,13 @@ try {
 } catch {
   bail()
 }
+if (!hook.transcript_path) bail()
 
 /**
- * Pull the last assistant text out of the transcript, with its entry uuid.
+ * Last assistant text in the transcript, with its entry uuid.
  *
- * The transcript is JSONL, one message per line. We take only the final assistant
- * message: mirroring every intermediate step would flood the inbox with the tool
- * chatter the user is reading the inbox to avoid.
+ * Only the final assistant message: mirroring every intermediate step would flood
+ * the inbox with the tool chatter the user is reading the inbox to avoid.
  */
 function lastAssistantText(path) {
   let lines
@@ -88,60 +99,62 @@ function lastAssistantText(path) {
   return null
 }
 
-/**
- * The Stop hook can fire BEFORE claude flushes the final assistant message to the
- * transcript file — observed live: hook ran in 112ms, found nothing, bailed, and
- * the reply never reached the inbox. Retry the read briefly; the flush lands
- * within a second.
- */
-async function lastAssistantTextRetry(path) {
-  for (let i = 0; i < 8; i++) {
-    const found = lastAssistantText(path)
-    if (found) return found
-    await new Promise((r) => setTimeout(r, 300))
-  }
-  return null
-}
-
-const found = hook.transcript_path ? await lastAssistantTextRetry(hook.transcript_path) : null
-if (!found) bail()
-const { text, uuid } = found
-
+let db = null
 try {
   // better-sqlite3 is a native module; resolve it from the app's node_modules,
   // whose location the app passes in. There is no node_modules next to a plugin.
   const require = createRequire(REQUIRE_FROM)
   const Database = require('better-sqlite3')
-  const db = new Database(DB)
+  db = new Database(DB)
   db.pragma('busy_timeout = 5000')
+} catch {
+  bail(db)
+}
 
-  // Don't double-report. Two dupe sources: the retry above can surface the
-  // PREVIOUS turn's reply when this turn was tool-only (transcript uuid catches
-  // that precisely, with no time window to age out), and the agent may have sent
-  // this exact text through a tool moments ago (body match within a minute).
-  const prevUuid = uuid
-    ? db
-        .prepare(
-          `SELECT 1 FROM agent_messages
-           WHERE session_key = ? AND direction = 'outbound'
-             AND json_extract(meta, '$.uuid') = ? LIMIT 1`
-        )
-        .get(KEY, uuid)
-    : null
-  const dupe =
-    prevUuid ??
-    db
+const alreadyMirrored = (uuid) => {
+  if (!uuid) return false
+  try {
+    return !!db
       .prepare(
         `SELECT 1 FROM agent_messages
-         WHERE session_key = ? AND direction = 'outbound' AND body = ? AND created_at > ?`
+         WHERE session_key = ? AND direction = 'outbound'
+           AND json_extract(meta, '$.uuid') = ? LIMIT 1`
       )
-      .get(KEY, text, Date.now() - 60_000)
+      .get(KEY, uuid)
+  } catch {
+    return false
+  }
+}
+
+// Retry until a NOT-yet-mirrored assistant entry appears. A stale entry (the
+// previous turn's reply) does not end the loop — the fresh one is still flushing.
+let found = null
+for (let i = 0; i < 8; i++) {
+  const cand = lastAssistantText(hook.transcript_path)
+  if (cand && !alreadyMirrored(cand.uuid)) {
+    found = cand
+    break
+  }
+  await new Promise((r) => setTimeout(r, 300))
+}
+if (!found) bail(db)
+
+try {
+  // Entries without a uuid (older transcript formats) fall back to a short
+  // body-match window; it also catches the agent sending this exact text
+  // through a tool moments ago.
+  const dupe = db
+    .prepare(
+      `SELECT 1 FROM agent_messages
+       WHERE session_key = ? AND direction = 'outbound' AND body = ? AND created_at > ?`
+    )
+    .get(KEY, found.text, Date.now() - 60_000)
 
   if (!dupe) {
     db.prepare(
       `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
        VALUES (?, 'outbound', 'reply', ?, ?, ?)`
-    ).run(KEY, text, JSON.stringify({ via: 'stop-hook', uuid }), Date.now())
+    ).run(KEY, found.text, JSON.stringify({ via: 'stop-hook', uuid: found.uuid }), Date.now())
     db.prepare('UPDATE agent_sessions SET last_seen_at = ? WHERE key = ?').run(Date.now(), KEY)
   }
   db.close()

@@ -32,7 +32,7 @@ import {
   profiles,
   listSessions,
   launchSession,
-  sendToSession,
+  sendOrQueue,
   messages,
   inbox,
   markRead,
@@ -43,7 +43,7 @@ import {
   launchWithClip,
   restartAssistant
 } from './agents'
-import { readMemory, writeMemory, consolidateMemory, generateIdentity } from './assistantMemory'
+import { readMemory, saveMemoryEdit, consolidateMemory, generateIdentity } from './assistantMemory'
 import {
   listNotes,
   getNote,
@@ -103,7 +103,7 @@ export function registerIpc(
     return key
   })
   handle('agents:send', (_e, key: string, text: string, kind?: string) =>
-    sendToSession(key, text, kind ?? 'message')
+    sendOrQueue(key, text, kind ?? 'message')
   )
   handle('agents:messages', (_e, key: string) => messages(key))
   handle('agents:inbox', () => inbox())
@@ -128,7 +128,7 @@ export function registerIpc(
   })
   handle('agents:restart-assistant', () => restartAssistant())
   handle('assistant:memory-get', () => readMemory())
-  handle('assistant:memory-set', (_e, text: string) => writeMemory(text))
+  handle('assistant:memory-set', (_e, text: string) => saveMemoryEdit(text))
   handle('assistant:consolidate', () => consolidateMemory(true))
   handle('assistant:generate-identity', async () => {
     try {

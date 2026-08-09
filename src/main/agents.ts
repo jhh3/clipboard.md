@@ -444,17 +444,32 @@ function liveAssistant(): string | null {
   // 'starting' counts only while a launch could plausibly still be in flight; an
   // old 'starting' row is a corpse from a failed spawn, and adopting it would
   // swallow every ask until the sweep buries it.
-  const row = getDb()
+  const db = getDb()
+  const rows = db
     .prepare(
-      `SELECT key FROM agent_sessions
+      `SELECT key, status FROM agent_sessions
        WHERE title = ? AND (
          status IN ('running', 'dormant')
          OR (status = 'starting' AND created_at > ?)
        )
-       ORDER BY created_at DESC LIMIT 1`
+       ORDER BY created_at DESC`
     )
-    .get(ASSISTANT_TITLE, Date.now() - 3 * 60_000) as { key: string } | undefined
-  return row?.key ?? null
+    .all(ASSISTANT_TITLE, Date.now() - 3 * 60_000) as Array<{ key: string; status: string }>
+  for (const row of rows) {
+    // A dormant session whose Claude session id was never learned CANNOT be
+    // revived — adopting it would blackhole every ask until the 7-day teardown.
+    // Bury it now and fall through to launching a fresh assistant.
+    if (row.status === 'dormant' && !resumable(row.key)) {
+      db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(
+        Date.now(),
+        row.key
+      )
+      console.log(`[agents] buried unresumable dormant assistant ${row.key}`)
+      continue
+    }
+    return row.key
+  }
+  return null
 }
 
 /** The profile the assistant runs under: 'personal' by convention, else the first. */
@@ -588,21 +603,29 @@ function clipBody(item: ClipItem): string {
   return item.content
 }
 
-export async function sendClip(key: string, itemId: number): Promise<boolean> {
-  const item = getItem(itemId)
-  if (!item) return false
-  if (item.secret) throw new Error('secret clips are never sent to agents')
-  // Reachable now → send now, so a dead bridge is reported honestly. Not reachable
-  // (dormant, or still starting) → deliver in the background: a cold
-  // `claude --resume` takes well over the seconds a UI can hang, and failing the
-  // send AFTER waking the session left it running without the clip.
-  if (discovery(key)) return sendToSession(key, clipBody(item), 'clip')
+/**
+ * Send now when the bridge is reachable (a dead bridge is reported honestly);
+ * otherwise queue a background retry — a cold `claude --resume` takes well over
+ * the seconds a UI can hang, and failing the send AFTER waking the session left
+ * it running without the message. Every renderer-initiated send goes through
+ * this; a one-shot sendToSession from the UI reliably lost follow-ups to
+ * sessions that were mid-wake.
+ */
+export async function sendOrQueue(key: string, text: string, kind: string): Promise<boolean> {
+  if (discovery(key)) return sendToSession(key, text, kind)
   const row = getDb().prepare('SELECT status FROM agent_sessions WHERE key = ?').get(key) as
     | { status: string }
     | undefined
   if (!row || row.status === 'exited') return false
-  void deliverWithRetry(key, clipBody(item), 'clip')
+  void deliverWithRetry(key, text, kind)
   return true
+}
+
+export async function sendClip(key: string, itemId: number): Promise<boolean> {
+  const item = getItem(itemId)
+  if (!item) return false
+  if (item.secret) throw new Error('secret clips are never sent to agents')
+  return sendOrQueue(key, clipBody(item), 'clip')
 }
 
 export async function launchWithClip(profileName: string, itemId: number): Promise<string> {

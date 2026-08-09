@@ -92,6 +92,18 @@ export function writeMemory(text: string): void {
 }
 
 /**
+ * A user edit from Settings. Snapshots first (this path replaces the whole file,
+ * and it had no undo), and guarantees a trailing newline — the bridge's
+ * `remember` blind-appends, and a file ending mid-line silently welded the next
+ * remembered fact onto the last line, corrupting both.
+ */
+export function saveMemoryEdit(text: string): void {
+  snapshot()
+  writeMemory(text.trim() ? text.replace(/\n*$/, '\n') : '')
+  ensureMemoryFile()
+}
+
+/**
  * Guarantee every section header exists — not just the file. A user can erase
  * the textarea in Settings; a headerless file would make validateMemory reject
  * every consolidation forever (nothing to put sections back). Recent is kept
@@ -304,10 +316,16 @@ export async function consolidateMemory(force = false): Promise<ConsolidateResul
 
     // The two LLM round-trips above take tens of seconds, and consolidation is
     // triggered by fresh conversation — exactly when the assistant is calling
-    // `remember`. Carry over any lines the bridge appended since we read the
-    // file, or the rename below would silently eat them.
+    // `remember`. Pure appends (the only thing the bridge does) are carried over;
+    // ANY other concurrent change means a human edited the file, and their edit
+    // outranks ours — abort without writing rather than resurrect what they
+    // deleted. The next scheduled pass re-reads and reconciles from scratch.
     const fresh = readMemory()
     if (fresh !== current) {
+      if (!fresh.startsWith(current)) {
+        console.log('[memory] file was edited mid-consolidation; keeping the edit, not our pass')
+        return { ok: true, changed: false }
+      }
       const known = new Set(current.split('\n'))
       const appended = fresh.split('\n').filter((l) => l.startsWith('- ') && !known.has(l))
       if (appended.length > 0) {

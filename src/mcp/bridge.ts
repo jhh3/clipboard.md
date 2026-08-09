@@ -27,7 +27,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { createServer } from 'http'
-import { appendFileSync, writeFileSync, chmodSync, mkdirSync, statSync } from 'fs'
+import { appendFileSync, readFileSync, writeFileSync, chmodSync, mkdirSync, statSync } from 'fs'
 import { dirname } from 'path'
 import { randomBytes } from 'crypto'
 import Database from 'better-sqlite3'
@@ -340,8 +340,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // Appends land in the "Recent (unconsolidated)" tail section (kept LAST in
       // the file exactly so a blind append is correct); the app's consolidation
       // pass folds them into their proper sections later. Dated like every fact.
+      // Lead with a newline when the file doesn't end in one — an externally
+      // edited file ending mid-line otherwise welds the fact onto the last line.
+      let lead = ''
+      try {
+        const tail = readFileSync(MEMORY_FILE, 'utf8')
+        if (tail.length > 0 && !tail.endsWith('\n')) lead = '\n'
+      } catch {
+        /* file may not exist yet; append creates it */
+      }
       const today = new Date().toISOString().slice(0, 10)
-      appendFileSync(MEMORY_FILE, `- ${today}: ${text.replace(/\n+/g, ' ').slice(0, 500)}\n`)
+      appendFileSync(MEMORY_FILE, `${lead}- ${today}: ${text.replace(/\n+/g, ' ').slice(0, 500)}\n`)
       return { content: [{ type: 'text', text: 'Remembered.' }] }
     } catch (err) {
       log(`remember failed: ${String(err)}`)

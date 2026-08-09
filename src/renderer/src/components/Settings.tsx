@@ -520,12 +520,37 @@ export default function Settings() {
   const [memory, setMemory] = useState<string | null>(null)
   const [consolidating, setConsolidating] = useState(false)
   const memoryRef = useRef<HTMLTextAreaElement | null>(null)
+  /** What the file held when we last loaded it — writes only happen on a real
+   *  edit. An unconditional blur-save clobbered facts the assistant remembered
+   *  after Settings loaded its snapshot. */
+  const memoryLoadedRef = useRef<string | null>(null)
+
+  const loadMemory = useCallback(async () => {
+    try {
+      const text = await invoke('assistant:memory-get')
+      memoryLoadedRef.current = text
+      setMemory(text)
+    } catch {
+      setMemory('')
+    }
+  }, [])
 
   useEffect(() => {
-    invoke('assistant:memory-get')
-      .then(setMemory)
-      .catch(() => setMemory(''))
-  }, [])
+    void loadMemory()
+    // The file changes underneath us (remember tool, consolidation) — re-read
+    // whenever the window comes back, unless the user is mid-edit.
+    const onVis = (): void => {
+      if (document.hidden) return
+      if (document.activeElement === memoryRef.current) return
+      void loadMemory()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+    }
+  }, [loadMemory])
 
   const flashSaved = useCallback(() => {
     setSavedFlash(true)
@@ -535,7 +560,11 @@ export default function Settings() {
 
   const saveMemory = useCallback(
     (text: string) => {
+      // No edit, no write: the loaded snapshot may be stale against what the
+      // assistant remembered since, and writing it back would erase that.
+      if (text === memoryLoadedRef.current) return
       setMemory(text)
+      memoryLoadedRef.current = text
       invoke('assistant:memory-set', text)
         .then(flashSaved)
         .catch(() => addToast('Failed to save memory', 'error'))
@@ -549,7 +578,7 @@ export default function Settings() {
       const res = await invoke('assistant:consolidate')
       if (!res.ok) addToast(res.error ?? 'Consolidation failed', 'error')
       else addToast(res.changed ? 'Memory consolidated' : 'Nothing new to fold in', 'success')
-      setMemory(await invoke('assistant:memory-get'))
+      await loadMemory()
     } catch {
       addToast('Consolidation failed', 'error')
     } finally {
@@ -830,25 +859,49 @@ export default function Settings() {
                 </select>
               </Row>
               <Row label="Enrichment provider" sub="Only providers in the chosen lane are offered.">
-                <select
-                  className="set-input"
-                  value={s.enrichment.provider}
-                  onChange={(e) =>
-                    patch({
-                      enrichment: { ...s.enrichment, provider: e.target.value as ProviderId }
-                    })
-                  }
-                >
-                  {PROVIDERS.filter((p) =>
+                {(() => {
+                  const laneIds =
                     s.enrichment.lane === 'subscription'
-                      ? p.id === 'claude-agent' || p.id === 'codex'
-                      : p.id === 'openai' || p.id === 'gemini'
-                  ).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
+                      ? ['claude-agent', 'codex']
+                      : ['openai', 'gemini']
+                  // A stored value OUTSIDE the lane (saved by the old unrestricted
+                  // UI) must stay visible — hiding it made the select claim a
+                  // working provider while enrichment silently ran on the broken
+                  // one and produced nothing.
+                  const stray = !laneIds.includes(s.enrichment.provider)
+                  return (
+                    <div className="set-stack">
+                      <select
+                        className="set-input"
+                        value={s.enrichment.provider}
+                        onChange={(e) =>
+                          patch({
+                            enrichment: { ...s.enrichment, provider: e.target.value as ProviderId }
+                          })
+                        }
+                      >
+                        {PROVIDERS.filter((p) => laneIds.includes(p.id)).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                        {stray && (
+                          <option value={s.enrichment.provider}>
+                            {PROVIDERS.find((p) => p.id === s.enrichment.provider)?.label ??
+                              s.enrichment.provider}{' '}
+                            — not in this lane
+                          </option>
+                        )}
+                      </select>
+                      {stray && (
+                        <div className="set-note warn">
+                          This provider isn&apos;t in the chosen lane, so enrichment produces
+                          nothing — pick one of the offered providers (or switch the lane).
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
               </Row>
               <Row
                 label="Transforms provider"

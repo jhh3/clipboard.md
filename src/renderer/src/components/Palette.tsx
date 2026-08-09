@@ -310,18 +310,23 @@ export default function Palette() {
       setRunning(true)
       try {
         if (mode.name === 'ask') {
-          // Follow-up into the same conversation.
+          // Follow-up into the same conversation. agents:send queues a background
+          // retry when the session is still waking, so false means truly gone.
           const ok = await invoke('agents:send', mode.sessionKey, text, 'message')
           if (!ok) {
-            addToast('Could not reach the assistant — it may be waking up; try again', 'error')
+            addToast('That assistant session has ended — Esc and ask again', 'error')
             return
           }
           setAskThread((t) => [...t, localMsg(mode.sessionKey, text)])
           setQuery('')
         } else {
+          // Clock the ask BEFORE the round-trip: the reply can only be newer than
+          // the question, and this stamp is what scopes the thread — a lookback
+          // window here once showed the PREVIOUS answer as the new one.
+          const askedAt = Date.now()
           const res = await invoke('agents:ask', text)
           setAskThread([localMsg(res.key, text)])
-          setMode({ name: 'ask', sessionKey: res.key, askedAt: Date.now() })
+          setMode({ name: 'ask', sessionKey: res.key, askedAt })
           setQuery('')
         }
       } catch (err) {
@@ -340,7 +345,10 @@ export default function Palette() {
   useEffect(() => {
     if (mode.name !== 'ask') return
     const key = mode.sessionKey
-    const since = mode.askedAt - 10_000
+    // Strictly >= askedAt: a grace window here pulled the previous exchange's
+    // answer into a new ask. The question itself renders from the optimistic
+    // local entry, so excluding its slightly-earlier server row costs nothing.
+    const since = mode.askedAt
     let cancelled = false
     const tick = async (): Promise<void> => {
       // A hidden palette must not consume the conversation: mark-read from an
@@ -754,11 +762,13 @@ export default function Palette() {
   }, [addToast])
 
   const openScratchpad = useCallback(() => {
-    const item = selectedItem
+    // Effective item: the top match while the ask row is selected, like every
+    // other item-targeting shortcut.
+    const item = actionTarget()
     // Only hand over textual clips: images/files/secrets open a blank pad.
     const textual = item && !item.secret && item.kind !== 'image' && item.kind !== 'files'
     void invoke('window:open-scratchpad', textual ? item.id : undefined).catch(() => {})
-  }, [selectedItem])
+  }, [actionTarget])
 
   const openSettings = useCallback(() => {
     void invoke('window:open-settings').catch(() => {})
@@ -1059,10 +1069,17 @@ export default function Palette() {
       e.preventDefault()
       if (sel < 0) {
         // The ask row: Enter hands the typed text to the personal assistant.
-        // With nothing typed there is nothing to ask — fall back to pasting the
-        // most recent clip, which is what a bare "summon, Enter" always did.
-        if (query.trim()) void askAssistant()
-        else if (visible[0]) void pasteItem(visible[0], e.shiftKey)
+        // With nothing typed there is nothing to ask — fall through to the
+        // first item, honouring the same modifiers as an explicit selection
+        // (mod+Enter must still COPY; regressing it to paste injected keys
+        // into whatever app had focus).
+        if (query.trim()) {
+          void askAssistant()
+          return
+        }
+        if (!visible[0]) return
+        if (mod) void copyItem(visible[0])
+        else void pasteItem(visible[0], e.shiftKey)
         return
       }
       if (!selectedItem) return
@@ -1076,14 +1093,20 @@ export default function Palette() {
       if (item) void pasteItem(item, false)
       return
     }
+    // Pin/delete act on the effective item — the top match while the ask row is
+    // selected. With the ask-first default, requiring an explicit selection made
+    // these SILENT no-ops in exactly the state they were most used from (type a
+    // filter, ⌘⌫ the sensitive clip — which then quietly survived).
     if (mod && e.key.toLowerCase() === 'p') {
       e.preventDefault()
-      if (selectedItem) void togglePin(selectedItem)
+      const t = actionTarget()
+      if (t) void togglePin(t)
       return
     }
     if (mod && e.key === 'Backspace') {
       e.preventDefault()
-      if (selectedItem) void deleteItem(selectedItem)
+      const t = actionTarget()
+      if (t) void deleteItem(t)
       return
     }
     if (mod && e.key.toLowerCase() === 'f') {
