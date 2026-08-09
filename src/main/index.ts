@@ -1,6 +1,6 @@
 import { app, powerMonitor, BrowserWindow, Notification } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
-import { isAutostartEnabled, setAutostart } from './autostart'
+import { isAutostartEnabled, autostartIsStale, setAutostart } from './autostart'
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
 import { openDb, closeDb, maintainDb } from './store/db'
@@ -540,7 +540,8 @@ if (!gotLock) {
     // Only from a packaged build: in dev this would register the Electron binary
     // inside node_modules as a login item on the developer's machine, which then
     // fails at every login once the checkout moves or the dep is reinstalled.
-    if (app.isPackaged && !isAutostartEnabled()) setAutostart(true)
+    // Rewrite a stale entry too, not just a missing one — see autostartIsStale.
+    if (app.isPackaged && (!isAutostartEnabled() || autostartIsStale())) setAutostart(true)
 
     // Sessions outlive the app and die behind its back. The sweep adopts orphans,
     // buries dead rows, sleeps idle sessions and tears down what is never coming
