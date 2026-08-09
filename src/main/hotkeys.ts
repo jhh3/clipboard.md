@@ -2,6 +2,8 @@ import { app, globalShortcut } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
+import { getSettings } from './settings'
+import { parseChordOrDefault, toGnomeBinding } from '@shared/chord'
 
 const execFileP = promisify(execFile)
 
@@ -64,6 +66,18 @@ interface Binding {
   arg: string
   /** Defaults we shipped previously — safe to migrate away from, unlike a user rebind. */
   previous?: string[]
+  /**
+   * Settings owns this binding, so always write it — never treat the existing value
+   * as a user rebind to preserve.
+   *
+   * Only the dictate chord sets this, and it has to. The chord is now editable in our
+   * own Settings, and evdev is reprogrammed from it immediately; if the GNOME side
+   * were left alone as a "user rebind", changing the chord would move the observer
+   * and not the trigger, which is precisely the drift shared/chord.ts exists to stop.
+   * The cost is that rebinding this one entry in GNOME's own control centre gets
+   * overwritten — correct, because our Settings is where it belongs now.
+   */
+  authoritative?: boolean
 }
 
 const BINDINGS: Binding[] = [
@@ -74,11 +88,18 @@ const BINDINGS: Binding[] = [
   {
     slug: 'clipboard-md-dictate',
     name: 'clipboard.md — dictate (hold to talk)',
-    // Ctrl+Alt+D is GNOME's built-in "show desktop" — it hid every window.
-    // Space is also far nicer to hold down for push-to-talk.
-    binding: '<Control><Alt>space',
+    // Derived from settings.dictateChord, NOT hardcoded: ptt.ts watches the evdev
+    // codes for the same chord, and the two must agree or dictation degrades
+    // silently. See shared/chord.ts.
+    //
+    // Ctrl+Alt+D was the original default and is GNOME's built-in "show desktop" —
+    // it hid every window. Space is also far nicer to hold for push-to-talk.
+    get binding() {
+      return toGnomeBinding(parseChordOrDefault(getSettings().dictateChord))
+    },
     arg: '--dictate',
-    previous: ['<Control><Alt>d']
+    previous: ['<Control><Alt>d'],
+    authoritative: true
   },
   { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' },
   { slug: 'clipboard-md-agents', name: 'clipboard.md — agent inbox', binding: '<Control><Alt>a', arg: '--agents' }
@@ -134,7 +155,7 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
       // user chose themselves is never touched.
       const ours = !current || current === '@as []' || current === b.binding
       const staleDefault = (b.previous ?? []).includes(current)
-      if (ours || staleDefault) {
+      if (b.authoritative || ours || staleDefault) {
         if (staleDefault) console.log(`[hotkeys] migrating ${b.slug}: ${current} -> ${b.binding}`)
         await gsettings(['set', ...key, 'binding', b.binding])
       } else {

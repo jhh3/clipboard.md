@@ -1,6 +1,8 @@
 import { createReadStream, readFileSync, type ReadStream } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
+import { getSettings } from './settings'
+import { formatChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from '@shared/chord'
 
 /**
  * Real push-to-talk, from evdev key events.
@@ -12,7 +14,7 @@ import { helperPath } from './mac/helper'
  * press. Reading evdev gives the actual press and release.
  *
  * PRIVACY: this reads a keyboard device, so it must be beyond reproach. We match
- * only the three keycodes of the dictation chord, never buffer or log key data,
+ * only the handful of keycodes in the dictation chord, never buffer or log key data,
  * and never look at any other key. Nothing here is written to disk or sent
  * anywhere. It also degrades silently: if the device can't be opened (no
  * permission), push-to-talk is simply unavailable and the hotkey toggle remains.
@@ -20,16 +22,16 @@ import { helperPath } from './mac/helper'
 
 // Linux input-event-codes.h
 const EV_KEY = 1
-const KEY_LEFTCTRL = 29
-const KEY_RIGHTCTRL = 97
-const KEY_LEFTALT = 56
-const KEY_RIGHTALT = 100
-const KEY_SPACE = 57
 
-const CTRL = new Set([KEY_LEFTCTRL, KEY_RIGHTCTRL])
-const ALT = new Set([KEY_LEFTALT, KEY_RIGHTALT])
-/** Every code we care about; anything else is ignored without inspection. */
-const WATCHED = new Set([...CTRL, ...ALT, KEY_SPACE])
+/**
+ * The chord to watch, derived from settings.dictateChord via shared/chord.ts — the
+ * same definition that produces the GNOME binding, so the trigger and the observer
+ * cannot disagree. Null until startPushToTalk runs.
+ */
+let chord: EvdevChord | null = null
+/** Which of the chord's modifier groups are currently held, by group index. */
+let modsHeld: boolean[] = []
+let keyHeld = false
 
 // struct input_event on 64-bit: __kernel_ulong_t sec, usec (8+8), __u16 type,
 // __u16 code, __s32 value.
@@ -41,7 +43,6 @@ export interface PttHandlers {
 }
 
 let streams: ReadStream[] = []
-let held = { ctrl: false, alt: false, space: false }
 let chordActive = false
 
 /**
@@ -68,46 +69,85 @@ function keyboardDevices(): string[] {
 }
 
 /**
- * Start watching for the Ctrl+Alt+Space chord. Returns false when no keyboard
+ * Start watching for the configured dictation chord. Returns false when no keyboard
  * device could be opened, so the caller can fall back to the toggle.
+ *
+ * Call again to re-arm after the chord changes in Settings — it tears down first.
  */
 export function startPushToTalk(handlers: PttHandlers): boolean {
   stopPushToTalk()
   if (process.platform === 'darwin') return startMacPushToTalk(handlers)
+
+  const parsed = parseChordOrDefault(getSettings().dictateChord)
+  chord = toEvdevChord(parsed)
+  if (!chord) {
+    console.error(`[ptt] chord "${formatChord(parsed)}" has no evdev mapping; hold-to-talk off`)
+    return false
+  }
+  modsHeld = chord.modifierGroups.map(() => false)
+  keyHeld = false
+
+  // Count devices we can actually READ, not ones we attempted to open.
+  //
+  // createReadStream is lazy: a device we lack permission for fails asynchronously
+  // via 'error', long after this loop. Counting pushed streams therefore reported
+  // "hold-to-talk active on N devices" even when every single open was about to fail
+  // with EACCES — the app then disabled the hotkey toggle in favour of a PTT that
+  // could never fire, and dictation was dead with a reassuring log line. Track the
+  // failures and say so.
   const devices = keyboardDevices()
+  let failed = 0
   for (const path of devices) {
     try {
       const stream = createReadStream(path)
-      stream.on('error', () => stream.destroy())
+      stream.on('error', (err) => {
+        failed++
+        stream.destroy()
+        // One line per device, once — enough to explain a silent PTT.
+        console.error(`[ptt] cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? err.message}`)
+        if (failed === devices.length) {
+          console.error(
+            '[ptt] NO keyboard device is readable — hold-to-talk will never fire. ' +
+              'Add your user to the "input" group (sudo usermod -aG input $USER) and log back in.'
+          )
+        }
+      })
       stream.on('data', (chunk) => onChunk(chunk as Buffer, handlers))
       streams.push(stream)
     } catch {
-      /* device not readable — skip it */
+      failed++
     }
   }
   if (streams.length === 0) {
     console.log('[ptt] no readable keyboard device; hold-to-talk unavailable')
     return false
   }
-  console.log(`[ptt] hold-to-talk active on ${streams.length} keyboard device(s)`)
+  console.log(
+    `[ptt] hold-to-talk armed on ${streams.length} keyboard device(s); chord ${formatChord(parsed)}`
+  )
   return true
 }
 
 function onChunk(chunk: Buffer, handlers: PttHandlers): void {
+  const c = chord
+  if (!c) return
   for (let off = 0; off + EVENT_SIZE <= chunk.length; off += EVENT_SIZE) {
     const type = chunk.readUInt16LE(off + 16)
     if (type !== EV_KEY) continue
     const code = chunk.readUInt16LE(off + 18)
-    if (!WATCHED.has(code)) continue // never inspect any other key
+    if (!c.watched.has(code)) continue // never inspect any other key
     const value = chunk.readInt32LE(off + 20)
     if (value === 2) continue // auto-repeat: the key is already down
 
     const down = value === 1
-    if (CTRL.has(code)) held.ctrl = down
-    else if (ALT.has(code)) held.alt = down
-    else if (code === KEY_SPACE) held.space = down
+    if (code === c.key) keyHeld = down
+    // A modifier may appear in only one group, but check them all rather than
+    // assuming: left and right variants both satisfy their group.
+    c.modifierGroups.forEach((group, i) => {
+      if (group.includes(code)) modsHeld[i] = down
+    })
 
-    const complete = held.ctrl && held.alt && held.space
+    const complete = keyHeld && modsHeld.every(Boolean)
     if (complete && !chordActive) {
       chordActive = true
       handlers.onPress()
@@ -176,7 +216,8 @@ let macChild: ChildProcess | null = null
 export function stopPushToTalk(): void {
   for (const s of streams) s.destroy()
   streams = []
-  held = { ctrl: false, alt: false, space: false }
+  modsHeld = modsHeld.map(() => false)
+  keyHeld = false
   chordActive = false
   if (macChild) {
     macChild.kill()

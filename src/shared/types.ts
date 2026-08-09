@@ -1,3 +1,5 @@
+import { DEFAULT_DICTATE_CHORD } from './chord'
+
 /** Content classification assigned by capture heuristics and refined by AI enrichment. */
 export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html' | 'note'
 
@@ -309,6 +311,14 @@ export interface AppSettings {
   /** Spawn recipes for agent sessions. */
   agentProfiles: AgentProfile[]
   hotkeyHint: string
+  /**
+   * Push-to-talk chord, Linux only, as "Ctrl+Alt+Space" (see shared/chord.ts).
+   *
+   * Drives BOTH the GNOME keybinding and the evdev codes that observe the hold, so
+   * the two cannot drift. macOS ignores it entirely: dictation there is the Fn/🌐
+   * key via the helper's event tap, with ⌘⇧D as the toggle fallback.
+   */
+  dictateChord: string
   theme: 'system' | 'dark' | 'light'
   /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
   pasteInjection: 'portal' | 'off'
@@ -477,6 +487,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { name: 'studio', cwd: '/Users/jhh3/Documents/work-code/2025/nullframe-studio', tmux: true }
   ],
   hotkeyHint: 'Ctrl+Alt+V',
+  dictateChord: DEFAULT_DICTATE_CHORD,
   theme: 'system',
   pasteInjection: 'portal'
 }

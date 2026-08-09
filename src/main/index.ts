@@ -178,17 +178,32 @@ if (!gotLock) {
   let dictateStartedAt = 0
   const MIN_HOLD_MS = 250
 
+  // Both ends are logged because dictation has several ways to fail silently — the
+  // chord never matching, the HUD never appearing, the recording never stopping —
+  // and they are indistinguishable from the outside. One line each turns "it does
+  // nothing" into a specific answer.
   const beginDictation = (): void => {
     if (dictating) return
     dictating = true
     dictateStartedAt = Date.now()
+    console.log('[dictate] start')
     showDictationHud()
   }
 
   const endDictation = (): void => {
     if (!dictating) return
     dictating = false
+    console.log(`[dictate] stop after ${Date.now() - dictateStartedAt}ms`)
     stopDictation()
+  }
+
+  const pttHandlers = {
+    onPress: () => beginDictation(),
+    onRelease: () => {
+      // A quick tap latches recording on; a genuine hold ends on release.
+      if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
+      endDictation()
+    }
   }
 
   /** Hotkey path — only used when evdev hold-to-talk isn't available. */
@@ -334,14 +349,7 @@ if (!gotLock) {
     // the helper on macOS. Neither platform's global-hotkey API can express a release
     // — GNOME keybindings and Electron's globalShortcut both only ever fire on
     // key-down — so this is the only way to get honest push-to-talk on either.
-    pttActive = startPushToTalk({
-      onPress: () => beginDictation(),
-      onRelease: () => {
-        // A quick tap latches recording on; a genuine hold ends on release.
-        if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
-        endDictation()
-      }
-    })
+    pttActive = startPushToTalk(pttHandlers)
 
     createPaletteWindow()
     capture.start()
@@ -363,12 +371,23 @@ if (!gotLock) {
 
     // Settings used to require a restart to take effect anywhere: push changes to
     // every window, and let the services that cached values re-read them.
+    let lastChord = getSettings().dictateChord
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
       buildTrayMenu() // the Pause-capture checkbox must reflect changes made in Settings
       capture.applySettings()
       if (s.embeddings.enabled) startEmbeddings()
       else stopEmbeddings()
+      // A new dictation chord has to reach BOTH halves or it half-applies: evdev is
+      // re-armed here, and the GNOME keybinding is rewritten by setupHotkeys (that
+      // binding is derived from the same setting — see hotkeys.ts). Linux only;
+      // macOS dictation is the Fn key via the helper and ignores this entirely.
+      if (process.platform === 'linux' && s.dictateChord !== lastChord) {
+        lastChord = s.dictateChord
+        pttActive = startPushToTalk(pttHandlers)
+        void setupHotkeys(actions)
+        console.log(`[dictate] chord changed to ${s.dictateChord}`)
+      }
     })
 
     // Don't capture while the session is locked or asleep. This kills idle wakeups

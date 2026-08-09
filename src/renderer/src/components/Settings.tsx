@@ -239,6 +239,77 @@ function TextField({
   )
 }
 
+/**
+ * Capture a keyboard chord by pressing it.
+ *
+ * Typing a chord as text is how you get "Ctrl+Alt+Spacebar" stored and silently
+ * unmatched, so the field records a real key event instead. `e.code` is the physical
+ * key and is layout-independent, which matters here: evdev reports raw keycodes too,
+ * so recording by code is what keeps the two ends describing the same physical key.
+ *
+ * Rejected chords are shown as rejected rather than swallowed — a chord evdev cannot
+ * observe would look bound and never fire.
+ */
+function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  const [recording, setRecording] = useState(false)
+  const [rejected, setRejected] = useState(false)
+
+  const codeToKey = (code: string): string | null => {
+    if (code === 'Space') return 'Space'
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3)
+    if (/^Digit\d$/.test(code)) return code.slice(5)
+    if (/^F\d{1,2}$/.test(code)) return code
+    return null
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.key === 'Escape') {
+      setRecording(false)
+      setRejected(false)
+      return
+    }
+    const key = codeToKey(e.code)
+    if (!key) return // a lone modifier: keep waiting for the main key
+    const parts: string[] = []
+    if (e.ctrlKey) parts.push('Ctrl')
+    if (e.altKey) parts.push('Alt')
+    if (e.shiftKey) parts.push('Shift')
+    if (e.metaKey) parts.push('Super')
+    if (parts.length === 0) {
+      // A bare key would swallow it system-wide; chord.ts rejects it too.
+      setRejected(true)
+      return
+    }
+    parts.push(key)
+    setRecording(false)
+    setRejected(false)
+    onCommit(parts.join('+'))
+  }
+
+  return (
+    <div className="chord-field">
+      <button
+        type="button"
+        className={'set-input chord-capture' + (recording ? ' recording' : '')}
+        onClick={() => {
+          setRecording(true)
+          setRejected(false)
+        }}
+        onBlur={() => {
+          setRecording(false)
+          setRejected(false)
+        }}
+        onKeyDown={recording ? onKeyDown : undefined}
+      >
+        {recording ? 'Press a chord…' : value || 'Ctrl+Alt+Space'}
+      </button>
+      {rejected && <span className="set-sub">Needs at least one modifier</span>}
+    </div>
+  )
+}
+
 function ProviderSelect({
   value,
   onChange
@@ -987,11 +1058,28 @@ export default function Settings() {
                 sub={
                   IS_MAC
                     ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation: hold 🌐 (Fn) to talk, or ⌘⇧D to toggle. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
-                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts. Dictation: hold ⌃⌥Space to talk.'
+                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
                 }
               >
                 <kbd className="hotkey-kbd">{IS_MAC ? `${GLOBAL_MOD}V` : s.hotkeyHint}</kbd>
               </Row>
+              {/*
+                Linux only. The chord drives both the GNOME keybinding that starts
+                dictation and the evdev codes that watch the hold, so it has to be one
+                setting — see shared/chord.ts. macOS dictation is the Fn/🌐 key via the
+                helper's event tap and is deliberately not configurable here.
+              */}
+              {!IS_MAC && (
+                <Row
+                  label="Hold-to-talk chord"
+                  sub="Hold this to dictate; release to transcribe. Needs at least one modifier."
+                >
+                  <ChordField
+                    value={s.dictateChord}
+                    onCommit={(v) => patch({ dictateChord: v })}
+                  />
+                </Row>
+              )}
             </>
           )}
 
