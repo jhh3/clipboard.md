@@ -172,6 +172,55 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
 /** Every CLI flag that maps to an action — keep in sync with routeArgs. */
 export const ACTION_FLAGS = BINDINGS.map((b) => b.arg)
 
+export interface KeyRepeat {
+  /** Milliseconds held before the first repeat. */
+  delay: number
+  /** Milliseconds between repeats after that. */
+  interval: number
+  /** False when the user has turned key repeat off — then there is no hold signal. */
+  enabled: boolean
+}
+
+/**
+ * The desktop's key-repeat timing, READ rather than assumed.
+ *
+ * GNOME re-runs a custom keybinding's command on every key repeat, which is the only
+ * hold signal available when evdev is unreadable. A previous attempt hardcoded a
+ * 350ms gap to detect "still held" — but the real repeat delay here is 500ms, so the
+ * first repeat always looked like a deliberate second press and recording stopped
+ * immediately. The numbers differ per machine and per user, so they have to be read.
+ *
+ * Falls back to the GNOME defaults if gsettings is unavailable.
+ */
+export async function keyRepeatTiming(): Promise<KeyRepeat> {
+  const fallback: KeyRepeat = { delay: 500, interval: 30, enabled: true }
+  if (process.platform !== 'linux') return fallback
+  const read = async (key: string, dflt: number): Promise<number> => {
+    try {
+      const out = await gsettings(['get', 'org.gnome.desktop.peripherals.keyboard', key])
+      // gsettings prints the TYPE first: "uint32 500". Matching the first digit run
+      // returns 32 — from "uint32" — which is a plausible-looking millisecond value
+      // and therefore a bug that hides. Take the trailing number.
+      const n = Number(/(\d+)\s*$/.exec(out.trim())?.[1])
+      return Number.isFinite(n) && n > 0 ? n : dflt
+    } catch {
+      return dflt
+    }
+  }
+  try {
+    const enabled = (await gsettings(['get', 'org.gnome.desktop.peripherals.keyboard', 'repeat']))
+      .trim()
+      .endsWith('true')
+    return {
+      delay: await read('delay', fallback.delay),
+      interval: await read('repeat-interval', fallback.interval),
+      enabled
+    }
+  } catch {
+    return fallback
+  }
+}
+
 /** Route a second-instance argv to the matching action. */
 export function routeArgs(argv: string[], actions: HotkeyActions): void {
   // --background is a session-start launch: stay resident, show nothing.

@@ -22,7 +22,14 @@ import {
   stopDictation,
   hideDictationHud
 } from './windows'
-import { setupHotkeys, routeArgs, teardownHotkeys, ACTION_FLAGS, type HotkeyActions } from './hotkeys'
+import {
+  setupHotkeys,
+  routeArgs,
+  teardownHotkeys,
+  keyRepeatTiming,
+  ACTION_FLAGS,
+  type HotkeyActions
+} from './hotkeys'
 import { getSettings, flushSettings, onSettingsChanged } from './settings'
 import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
 import { startEmbeddings, stopEmbeddings } from './embeddings'
@@ -193,7 +200,9 @@ if (!gotLock) {
   const endDictation = (): void => {
     if (!dictating) return
     dictating = false
-    console.log(`[dictate] stop after ${Date.now() - dictateStartedAt}ms`)
+    clearHoldTimer()
+    lastStopAt = Date.now()
+    console.log(`[dictate] stop after ${lastStopAt - dictateStartedAt}ms`)
     stopDictation()
   }
 
@@ -206,11 +215,96 @@ if (!gotLock) {
     }
   }
 
-  /** Hotkey path — only used when evdev hold-to-talk isn't available. */
+  /**
+   * Hotkey path. ALWAYS live, even when evdev is watching.
+   *
+   * This used to `return` whenever pttActive was true, handing dictation entirely to
+   * evdev. That makes evdev a single point of failure: if the chord never matches —
+   * wrong keycodes for the keyboard, a device that appears after enumeration, a read
+   * that silently delivers nothing — dictation is not degraded, it is *gone*, and the
+   * hotkey that would still have worked was switched off to make room for it.
+   *
+   * So the two now cooperate instead of one excluding the other. The hotkey starts
+   * dictation; evdev's release stops it the instant it arrives (true hold-to-talk).
+   * With no evdev, the hotkey alone toggles. Dictation is reachable either way.
+   */
+  const RESTART_GUARD_MS = 400
+  /** Slack added to a repeat deadline, to absorb scheduling jitter. */
+  const REPEAT_SLACK_MS = 250
+  let lastHotkeyAt = 0
+  let lastStopAt = 0
+  let holdTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * unknown → pressed, but we have not yet learned whether it is a tap or a hold.
+   * holding → key repeats are arriving, so the chord is still down.
+   * latched → it was a tap; recording stays on until the chord is pressed again.
+   */
+  let holdMode: 'unknown' | 'holding' | 'latched' = 'unknown'
+  /** Read from the desktop at startup; see hotkeys.keyRepeatTiming. */
+  let repeat = { delay: 500, interval: 30, enabled: true }
+
+  const clearHoldTimer = (): void => {
+    if (holdTimer) clearTimeout(holdTimer)
+    holdTimer = null
+  }
+
+  const armHoldTimer = (ms: number): void => {
+    clearHoldTimer()
+    holdTimer = setTimeout(() => {
+      holdTimer = null
+      if (holdMode === 'holding') {
+        // Repeats stopped arriving: the chord was released.
+        endDictation()
+      } else {
+        // Never saw a repeat, so it was a tap, not a hold. Latch recording on rather
+        // than cutting it off — a tap is how you dictate something long without
+        // holding a chord down for a minute.
+        holdMode = 'latched'
+        console.log('[dictate] tap detected; latched on until the chord is pressed again')
+      }
+    }, ms)
+  }
+
+  /**
+   * Hotkey path. ALWAYS live, even when evdev is watching.
+   *
+   * Release detection here comes from GNOME's key REPEAT, because a custom
+   * keybinding only ever delivers key-down. While the chord is held GNOME re-runs the
+   * command every `repeat.interval` ms after an initial `repeat.delay`; when the
+   * repeats stop, the key is up. Those timings are read from the desktop rather than
+   * assumed — hardcoding them is exactly why the previous attempt failed.
+   *
+   * evdev, when it works, still wins: its release fires endDictation immediately and
+   * cancels this timer. This is the fallback that makes dictation work anyway.
+   */
   const dictateTrigger = (): void => {
-    if (pttActive) return // evdev owns start/stop; ignore key-repeat noise
-    if (dictating) endDictation()
-    else beginDictation()
+    const now = Date.now()
+    const sinceLast = now - lastHotkeyAt
+    lastHotkeyAt = now
+
+    if (!dictating) {
+      // A trailing key-repeat can land just after we stopped on release; without this
+      // it would immediately start a second recording.
+      if (now - lastStopAt < RESTART_GUARD_MS) return
+      holdMode = 'unknown'
+      beginDictation()
+      // No repeat can arrive before `delay`, so anything sooner means a tap.
+      if (repeat.enabled) armHoldTimer(repeat.delay + REPEAT_SLACK_MS)
+      return
+    }
+
+    // Already recording. A gap no larger than the repeat delay means this is the same
+    // hold continuing; anything longer is a deliberate second press.
+    const isRepeat = repeat.enabled && sinceLast <= repeat.delay + REPEAT_SLACK_MS
+    if (isRepeat) {
+      holdMode = 'holding'
+      // Now that repeats are flowing they arrive every `interval` ms, so the deadline
+      // can tighten — that is what keeps the stop responsive after release.
+      armHoldTimer(repeat.interval + REPEAT_SLACK_MS)
+      return
+    }
+    clearHoldTimer()
+    endDictation()
   }
 
   /**
@@ -350,6 +444,15 @@ if (!gotLock) {
     // — GNOME keybindings and Electron's globalShortcut both only ever fire on
     // key-down — so this is the only way to get honest push-to-talk on either.
     pttActive = startPushToTalk(pttHandlers)
+    // Read the desktop's repeat timing before the first hotkey can arrive: it is what
+    // turns key-down-only triggers into a usable hold signal.
+    repeat = await keyRepeatTiming()
+    console.log(
+      `[dictate] evdev=${pttActive ? 'on' : 'off'}; key-repeat hold signal ` +
+        (repeat.enabled
+          ? `delay=${repeat.delay}ms interval=${repeat.interval}ms`
+          : 'DISABLED in the desktop settings — the chord will toggle instead of hold')
+    )
 
     createPaletteWindow()
     capture.start()

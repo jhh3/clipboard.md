@@ -297,10 +297,13 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
           setRecording(true)
           setRejected(false)
         }}
-        onBlur={() => {
-          setRecording(false)
-          setRejected(false)
-        }}
+        /*
+         * No onBlur cancel. Pressing a chord that is ALREADY a global binding fires
+         * that action too — the dictation HUD appears and takes focus — and a blur
+         * handler would then cancel the capture before the keydown committed it, so
+         * rebinding away from the current chord could never work. Escape cancels,
+         * and clicking elsewhere is harmless because we only listen while recording.
+         */
         onKeyDown={recording ? onKeyDown : undefined}
       >
         {recording ? 'Press a chord…' : value || 'Ctrl+Alt+Space'}

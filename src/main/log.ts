@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { createWriteStream, mkdirSync, readdirSync, rmSync, statSync, type WriteStream } from 'fs'
+import { appendFileSync, createWriteStream, mkdirSync, readdirSync, rmSync, statSync, type WriteStream } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -80,6 +80,12 @@ export function initLogging(): string {
   logDir = join(app.getPath('userData'), 'logs')
   mkdirSync(logDir, { recursive: true })
   rotate()
+  // Captured BEFORE wrapping, so re-installation never wraps a wrapper.
+  const originals = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console)
+  }
   const day = new Date().toISOString().slice(0, 10)
   const file = join(logDir, `main-${day}.log`)
   stream = createWriteStream(file, { flags: 'a' })
@@ -94,16 +100,46 @@ export function initLogging(): string {
             typeof a === 'string' ? a : a instanceof Error ? (a.stack ?? a.message) : safeJson(a)
           )
           .join(' ')
-        stream?.write(`${new Date().toISOString()} ${level} ${redact(line)}\n`)
+        // appendFileSync, not stream.write. A WriteStream buffers, and this log's
+        // whole job is to survive the moments worth debugging — a crash, a kill, a
+        // hang — which are exactly when a buffer is lost. Volume here is a few lines
+        // a minute, so the synchronous write costs nothing.
+        appendFileSync(file, `${new Date().toISOString()} ${level} ${redact(line)}\n`)
       } catch {
         /* never let logging throw */
       }
     }
 
-  console.log = wrap('INFO', console.log.bind(console))
-  console.warn = wrap('WARN', console.warn.bind(console))
-  console.error = wrap('ERROR', console.error.bind(console))
+  /**
+   * Re-assert our wrappers periodically.
+   *
+   * Console is global and any dependency can replace it. Something in this app's
+   * tree does exactly that a few seconds after launch: startup lines are recorded
+   * and then logging goes silent for the rest of the process's life, which cost
+   * hours of debugging against logs that looked like "the code never ran" when the
+   * code had run fine. Re-installing is cheap and makes the log trustworthy.
+   */
+  const install = (): void => {
+    if ((console.log as MaybeOurs).__clipmd !== true) {
+      console.log = tag(wrap('INFO', originals.log))
+      console.warn = tag(wrap('WARN', originals.warn))
+      console.error = tag(wrap('ERROR', originals.error))
+    }
+  }
+  install()
+  // Unref'd so it never keeps the process alive on quit.
+  setInterval(install, 5000).unref()
   return file
+}
+
+interface MaybeOurs {
+  __clipmd?: boolean
+}
+
+/** Mark a wrapper as ours, so re-installation can tell it from a hijacker's. */
+function tag<T extends (...a: never[]) => void>(fn: T): T {
+  ;(fn as unknown as MaybeOurs).__clipmd = true
+  return fn
 }
 
 function safeJson(value: unknown): string {

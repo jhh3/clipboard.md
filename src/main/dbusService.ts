@@ -27,7 +27,15 @@ export async function startDbusService(onTrigger: TriggerHandler): Promise<boole
 
     class ActionsInterface extends Interface {
       Trigger(action: string): void {
-        onTrigger(action)
+        // Logged because this is the seam every Linux hotkey passes through, and a
+        // gdbus call that returns success while nothing happens is otherwise
+        // indistinguishable from the action itself silently doing nothing.
+        console.log(`[dbus] trigger ${action}`)
+        try {
+          onTrigger(action)
+        } catch (err) {
+          console.error(`[dbus] handler for ${action} threw:`, err)
+        }
       }
     }
 
