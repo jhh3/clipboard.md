@@ -2,167 +2,197 @@
 
 A local-first, keyboard-first, AI-supercharged clipboard manager for Linux and macOS.
 
-Everything you copy is captured, classified, and indexed — then one hotkey away from
-being searched, transformed by AI, or pasted anywhere. Powered by **your existing
-Claude / Codex subscriptions** or API keys (BYOK). No accounts, no telemetry, no
-subscription of its own, nothing leaves your machine except the AI calls you configure.
+Everything you copy is captured, classified and indexed — then one hotkey away from
+being searched, rewritten by AI, or pasted anywhere. It runs on **your existing Claude
+or Codex subscription** (or an API key). No account, no telemetry, no subscription of
+its own. Nothing leaves your machine except the AI calls you configure.
+
+---
+
+## Install
+
+Download the file for your system from the [**Releases**](../../releases/latest) page.
+
+| System | Download | How to install |
+|---|---|---|
+| **Ubuntu / Debian / Pop!_OS** | `clipboard-md_*_amd64.deb` | Double-click it, then **Install**. Recommended. |
+| **Any other Linux** | `clipboard.md-*.AppImage` | Right-click → Properties → tick **Allow executing**, then double-click. |
+| **macOS** | `clipboard.md-*.dmg` | Open it and drag the app to Applications. |
+
+That's the whole install. On first launch it sets itself up:
+
+- **Starts automatically** when you log in, and stays running in the background.
+- **Registers its keyboard shortcuts** (`Ctrl+Alt+V` opens it).
+- **Adds an icon** to your menu bar / top bar — click it if you forget the shortcuts.
+- **Connects itself to Claude Code**, so your agents can search your clipboard
+  (see [Agents](#agents-and-the-mcp-server) below). Nothing else to run or configure.
+
+Then press **`Ctrl+Alt+V`** (macOS: **`⌘⇧V`**) and start typing.
+
+### First-run permissions
+
+You'll be asked for a couple of things once. Both are needed for pasting to work, and
+both can be changed later in your system settings.
+
+- **Linux** — a *"Allow remote control?"* dialog the first time it pastes for you. Say
+  yes; without it the text is copied but not typed into the app you're in.
+- **macOS** — **Accessibility** (paste, and rewriting selected text) and, if you use
+  screenshots, **Screen Recording**. The app asks and links you straight to the right
+  settings pane.
+
+### Uninstall
+
+The `.deb` uninstalls from your software manager. The AppImage is a single file —
+delete it. To remove your history and settings too, delete
+`~/.config/clipboard.md` (macOS: `~/Library/Application Support/clipboard.md`).
+
+---
 
 ## What it does
 
-- **History palette** (`Ctrl+Alt+V` / `⌘⇧V`) — instant keyboard-first search over
-  everything you've copied: full-text + semantic ("that error from Tuesday"). `↓` then
-  Enter pastes straight into the app you came from.
-- **A personal assistant behind the palette** — the palette opens on an *ask* row:
-  type a question and hit Enter, and it goes to a persistent Claude session that can
-  read your clipboard history and notes (identity configurable in Settings →
-  Assistant). Replies land in the agent inbox. Arrow down for classic history.
-- **Agent sessions** — `⌘J` sends any clip into a running Claude Code session, or
-  starts a new one per profile with the clip as its opening prompt. Two-way: agents
-  report progress, ask questions, and save notes back into the app.
-- **Transform before paste** — `Tab` on any item opens Action Mode: type a free-form AI
-  prompt ("as CSV", "translate to German", "make it polite") or hit a single-key saved
-  action (fix typos, plain text, JSON pretty…). Preview, then paste the result.
-- **Auto-organization** — background AI gives every clip a title, tags, and class
-  (code / link / error / address / screenshot…); smart collections fill themselves;
-  clips cluster into named work **sessions**.
-- **Images are first-class** — screenshots get OCR'd and described so search finds
-  them; Action Mode on an image: convert, compress, **auto-redact sensitive text**
-  (emails, keys, long numbers — OCR-guided, fully local).
-- **Selection rewrite** (`Ctrl+Alt+R`) — highlight text in any app, hit the hotkey,
-  pick "fix typos" / "my voice" / free prompt, and the rewrite replaces the selection.
-- **Scratchpad** (`Ctrl+Alt+E`) — a quiet editor over your clipboard: dictate into it
-  (speech-to-text), edit, then save/copy/paste.
-- **Built-in screen capture** (`Ctrl+Alt+S`) — GNOME's own area/window/screen picker,
-  straight into history.
-- **Link intelligence** — copy a URL and the page gets fetched, summarized, and
-  indexed, so search finds *what the page was about*.
-- **Privacy posture** — password-manager copies are honored (`ConcealedType`,
-  KDE hints); secrets (keys, JWTs, high-entropy tokens) are detected at capture,
-  masked in the UI, and **never** indexed, enriched, or embedded. Semantic search
-  embeddings are computed locally (bge-small via ONNX) — clipboard text never leaves
-  the machine for indexing.
+- **History palette** (`Ctrl+Alt+V`) — search everything you've copied, by words or by
+  meaning ("that error from Tuesday"). Enter pastes it straight back into the app you
+  came from.
+- **Ask an assistant** — the palette opens on an ask row. Type a question, hit Enter,
+  and a persistent Claude session answers — it can read your clipboard and notes.
+  Press `↓` for plain history instead.
+- **Transform before pasting** — `Tab` on any item: type an instruction ("as CSV",
+  "translate to German", "make it polite") or hit a saved one-key action. Preview, then
+  paste the result.
+- **Rewrite what's on screen** (`Ctrl+Alt+R`) — highlight text in any app, hit the
+  hotkey, pick *fix typos* / *my voice* / your own prompt. The selection is replaced.
+- **Dictate** (hold `Ctrl+Alt+Space`) — hold, talk, release. The transcript is typed
+  into whatever you're using. Runs locally; no audio leaves the machine.
+- **Screenshots and images are searchable** — captured images are read (OCR) and
+  described, so search finds them. Convert, compress, or **auto-redact** sensitive text.
+- **Organizes itself** — every clip gets a title, tags and a type; related clips group
+  into named sessions; collections fill themselves.
+- **Notes** (`Ctrl+Alt+N`) — a real editor with `[[wikilinks]]`, sharing the same search.
+- **Links get read for you** — copy a URL and the page is fetched and summarized, so
+  search finds what the page was *about*.
+- **Private by default** — password-manager copies are ignored. Keys, tokens and other
+  secrets are detected as they're copied, masked in the app, and never indexed, sent to
+  AI, or embedded. Semantic search is computed locally.
 
-## AI: two lanes, one adapter
+---
 
-Every AI feature goes through a single ModelPort interface, routed per-feature in
-Settings:
+## Keyboard shortcuts
 
-- **Subscription lane** — Claude Agent SDK (rides your `claude` login) and Codex SDK
-  (rides your `codex` login). Zero marginal cost; used for background enrichment by
-  default. Both also accept `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
-- **API lane** — one OpenAI-compatible client covering OpenAI (GPT-5.6 Luna) and
-  Gemini. Sub-second; used for interactive transforms by default (~$0.20/month at
-  normal usage).
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Alt+V` | Clipboard palette |
+| `Ctrl+Alt+Space` | Dictate (hold to talk) |
+| `Ctrl+Alt+R` | Rewrite the selected text |
+| `Ctrl+Alt+S` | Screenshot into history |
+| `Ctrl+Alt+E` | Scratchpad |
+| `Ctrl+Alt+N` | Notes |
+| `Ctrl+Alt+A` | Agent inbox |
 
-## MCP server (agents ⇄ your clipboard)
+Inside the palette: `↵` ask / paste · `⇧↵` paste as plain text · `⌃↵` copy ·
+`⌃1–9` quick-paste · `Tab` transform · `⌃J` send to an agent · `⌃/` show all
+shortcuts · `Esc` close.
 
-A built-in stdio MCP server lets local agent sessions search and use your clipboard:
+**On macOS** these are `⌘⇧V / R / S / E / N / A`, and dictation is **hold 🌐 (Fn)**
+(`⌘⇧D` toggles as a fallback). If 🌐 already does something else, set System Settings →
+Keyboard → *"Press 🌐 key to"* → **Do Nothing**.
 
-```bash
-claude mcp add clipboard -- node /path/to/clipboard.md/out/main/mcp.mjs
-```
+**Changing them:** the dictation chord is in Settings → General → *Hold-to-talk chord* —
+click it and press the keys you want. On Linux the others are GNOME custom keybindings,
+editable in your system Settings → Keyboard → Custom Shortcuts.
+
+---
+
+## Agents and the MCP server
+
+Installing the app also gives your local agents access to your clipboard — it registers
+itself with Claude Code on first run, so there's nothing to install separately.
 
 Tools: `clipboard_search`, `clipboard_recent`, `clipboard_get`, `clipboard_sessions`,
-`clipboard_copy`. Secret-flagged clips are refused at the tool layer. Works even when
-the app isn't running (reads the same SQLite file; WAL keeps concurrent readers safe).
+`clipboard_copy`. Secret-flagged clips are refused at the tool layer. It works whether
+or not the app is running.
+
+To register it by hand (another agent, or a different machine):
+
+```bash
+claude mcp add --scope user clipboard -- /path/to/clipboard.md.AppImage --mcp
+```
+
+The app is also a two-way agent console: `⌃J` sends a clip into a running Claude Code
+session, or starts a new one with the clip as its prompt. Agents report progress, ask
+questions and save notes back into the app's inbox (`Ctrl+Alt+A`).
+
+---
+
+## AI setup
+
+It works out of the box if you're already signed in to `claude` or `codex` — it rides
+that subscription at no extra cost. Otherwise add an `OPENAI_API_KEY` or
+`GEMINI_API_KEY` in Settings → AI Providers.
+
+Two lanes, chosen per feature in Settings:
+
+- **Subscription** — Claude Agent SDK / Codex SDK, using your existing login. Free at
+  the margin, so it's the default for background work.
+- **API** — one OpenAI-compatible client covering OpenAI and Gemini. Faster, so it's the
+  default for interactive transforms (roughly $0.20/month at normal use).
+
+Defaults are the fast, cheap models (Haiku · GPT-5.6 Luna · Gemini Flash-Lite).
+
+---
+
+## If something isn't working
+
+```bash
+make doctor      # checks everything that commonly breaks, and says what's wrong
+make logs        # follow today's log
+```
+
+The most common causes:
+
+- **A shortcut does nothing** — another app already owns it. Check your system
+  Settings → Keyboard for a conflict.
+- **Dictation records but won't stop on release** — key repeat must be ON in Settings →
+  Keyboard. It's what tells the app you're still holding the keys.
+- **Text is copied but not pasted** — the remote-control permission was declined. On
+  Linux, dictate once more and accept the dialog; on macOS, enable Accessibility.
+- **Nothing is being captured** — make sure only one copy is running (`make doctor`
+  counts them), and that `xclip` is installed.
+
+---
 
 ## Development
 
 ```bash
 pnpm install
-pnpm dev          # run with HMR
-pnpm test         # store-layer tests
+pnpm dev            # run with hot reload
+pnpm test           # unit tests
 pnpm typecheck
-pnpm build:linux  # AppImage + deb
-pnpm build:mac    # dmg (run on macOS; see MACOS-VALIDATION.md)
+
+make run            # build and (re)start a single background instance
+make status         # running? which display backend? capture/dictation state
+make stop           # stop it, strays included
+make appimage       # build the downloadable artifacts into dist/
 ```
 
-## Keyboard shortcuts (Linux defaults)
+Do not start the binary by hand. The app depends on session state that is easy to get
+wrong, and each variation fails in a way that looks like a different bug — a missing
+`DISPLAY` silently disables clipboard capture and paste, and a stray second instance
+means two processes writing the same database.
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl+Alt+V` | Clipboard palette |
-| `Ctrl+Alt+R` | Rewrite the current selection |
-| `Ctrl+Alt+S` | Screenshot into history |
-| `Ctrl+Alt+E` | Scratchpad |
-| `Ctrl+Alt+Space` | Dictate (hold to talk) |
-| `Ctrl+Alt+N` | Notes |
-| `Ctrl+Alt+A` | Agent inbox |
+**Requirements:** Node 22+, pnpm. Linux also needs `xclip`, plus `ffmpeg` for local
+dictation. GNOME 48+ recommended.
 
-On macOS these are `⌘⇧V / R / S / E`, and dictation is **hold 🌐 (Fn) to talk**
-(`⌘⇧D` toggles as a fallback; if 🌐 triggers a system action, set Keyboard →
-"Press 🌐 key to" → Do Nothing). Linux shortcuts are registered as GNOME
-custom keybindings on first run (Electron's own global shortcuts don't work on GNOME
-Wayland), so they're editable in Settings → Keyboard. The app installs a login
-autostart entry so the shortcuts talk to an already-running instance.
+### Platform notes
 
-In the palette: `↵` ask the assistant (or paste, once an item is selected) · `⇧↵`
-paste as plain text · `⌃↵` copy · `⌃1–9` quick-paste · `Tab`/`⌃K` Action Mode ·
-`⌃J` send to agent · `⌃N` note from clip · `⌃E` scratchpad · `⌃⇧S` screenshot ·
-`⌃/` shortcut overlay · `Esc` dismiss. (macOS: same keys with `⌘`.)
-
-## Platform notes (honest edition)
-
-- **Linux/GNOME Wayland**: runs as a native Wayland app. Clipboard capture is
-  event-driven via XFixes on an independent X connection, and every read/write happens
-  in a helper process — the app never owns the X clipboard itself, because doing so can
-  freeze the whole GNOME session when the compositor blocks waiting on it. Global
-  hotkeys are GNOME custom keybindings. Auto-paste uses the XDG RemoteDesktop portal
-  (one permission dialog, once); screen capture uses the Screenshot portal.
-  Requires `xclip` (and `ffmpeg` for local dictation).
-- **macOS**: written but **not yet validated on hardware** — pasteboard polling plus a
-  small Swift helper (CGEvent paste, AX selected-text) that still needs building. See
-  `MACOS-VALIDATION.md`.
-- Architecture, measured platform ground truth, and the decision history (including the
-  wrong turns and why they were wrong): `DESIGN.md`.
-
-## Requirements
-
-- Node 22+, pnpm
-- Linux: `xclip`; `ffmpeg` for local transcription; GNOME 48+ recommended
-- AI: any of a Claude subscription (`claude` login), Codex subscription (`codex` login),
-  `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Fast models are the default
-  (Haiku / GPT-5.6 Luna / Gemini Flash-Lite) and are configurable per feature.
-
-## Running it on Linux
-
-Use the AppImage for daily use, and the Makefile for development. Do not start the
-binary by hand — the app depends on session state that is easy to get wrong, and each
-variation fails in a way that looks like a different bug.
-
-```
-make appimage          # build dist/clipboard.md-*.AppImage — double-clickable
-make install-appimage  # copy it to ~/.local/bin and use it as the login item
-make run               # build + (re)start from the checkout, for development
-make status            # running? which backend? capture and dictation state
-make doctor            # check the things that actually break on Linux
-make logs              # follow today's log
-make stop              # stop it, including strays
-```
-
-### Things that must be true
-
-- **`DISPLAY` must be set**, even on a Wayland session. Clipboard I/O is X11-based
-  (`xclip`, XFixes). With it unset, capture goes blind and dictation's clipboard write
-  fails silently — the paste then delivers whatever you copied previously.
-- **Only one instance may run.** Several all poll the clipboard and write the same
-  SQLite file. `make run` and `make stop` clear strays; `make doctor` counts them.
-- **Key repeat must be enabled** (Settings → Keyboard). It is the hold signal for
-  push-to-talk: GNOME keybindings only ever deliver key-down, so "still held" is
-  inferred from repeats and "released" from their absence. The timings are read from
-  the desktop, not assumed.
-- **Xwayland vs native Wayland is chosen for you.** Xwayland lets the app place its
-  own windows (the dictation HUD sits at the bottom instead of mid-screen), so it is
-  preferred — *except* when hardware acceleration is off. Software rendering cannot
-  present X11 windows on some setups: the app runs, the tray appears, and no window is
-  ever mapped. With the GPU disabled we use native Wayland and let the compositor
-  place the HUD.
-- **A crash-looping GPU disables itself.** After three GPU crashes the app writes
-  `~/.config/clipboard.md/force-software-gpu` and restarts software-rendered. Delete
-  that file to retry hardware acceleration.
-
-### The dictation shortcut
-
-`Ctrl+Alt+Space`, hold to talk. Change it in Settings → General → Hold-to-talk chord;
-it drives both the GNOME keybinding and the key codes that watch the hold, so the two
-cannot drift apart.
+- **Linux/GNOME** — clipboard I/O is X11-based (`xclip`, XFixes) on an independent
+  connection, and every read and write happens out of process: the app never owns the X
+  clipboard itself, because doing so can freeze the whole GNOME session. Global hotkeys
+  are GNOME custom keybindings, since Electron's own don't work on Wayland. Auto-paste
+  uses the XDG RemoteDesktop portal; screen capture uses the Screenshot portal. The app
+  runs under Xwayland when hardware acceleration is available (it can place its own
+  windows there) and native Wayland when it isn't.
+- **macOS** — a small Swift side-car handles paste, reading the selected text, the
+  frontmost app, and audio decoding. See `MACOS-VALIDATION.md` for what has been
+  verified on hardware.
+- `DESIGN.md` has the architecture, the measured platform ground truth, and the
+  decision history — including the wrong turns and why they were wrong.

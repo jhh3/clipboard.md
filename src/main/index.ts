@@ -2,6 +2,7 @@ import { app, powerMonitor, BrowserWindow, Notification } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, autostartIsStale, setAutostart } from './autostart'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { existsSync, writeFileSync } from 'fs'
 import { openDb, closeDb, maintainDb } from './store/db'
 import { applyRetention } from './store/items'
@@ -40,7 +41,7 @@ import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { unreadCount, prewarmAgents } from './agents'
 import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
 import { sweep } from './agentLifecycle'
-import { ensurePlugin } from './agentPlugin'
+import { ensurePlugin, ensureMcpServer } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
@@ -176,8 +177,56 @@ app.on('child-process-gone', (_e, details) => {
 
 hardenApp()
 
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) {
+/**
+ * Serve MCP over stdio from this process.
+ *
+ * stdout IS the transport, so anything else printed there corrupts the JSON-RPC
+ * framing and the agent drops the server with an unhelpful "connection closed".
+ * Chromium and our own logger both write to stdout, so console is redirected to
+ * stderr for the lifetime of this mode — stderr is free, and the agent shows it.
+ *
+ * The server is loaded from the sibling bundle by a computed path so it stays a
+ * separate entry (electron.vite.config) instead of being pulled into this one.
+ */
+async function startStdioServer(bundle: string): Promise<void> {
+  const toStderr = (...args: unknown[]): void => {
+    process.stderr.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n')
+  }
+  console.log = toStderr
+  console.info = toStderr
+  console.warn = toStderr
+  console.error = toStderr
+  try {
+    const entry = pathToFileURL(join(__dirname, bundle)).href
+    await import(/* @vite-ignore */ entry)
+  } catch (err) {
+    process.stderr.write(`[stdio] ${bundle} failed to start: ${String(err)}\n`)
+    app.exit(1)
+  }
+}
+
+/**
+ * `--mcp` turns this same binary into the stdio MCP server, so agents can search the
+ * clipboard without a separate install.
+ *
+ * It has to be the app's own binary rather than a script path. Registration is
+ * permanent (it lives in the agent's config) but every script path we could register
+ * is not: inside an AppImage everything sits in an ephemeral /tmp/.mount_XXXX that is
+ * gone the moment the app restarts, and a dev checkout's path changes with the pnpm
+ * store. The installed binary is the one stable, always-present address, so the flag
+ * lives here.
+ *
+ * The single-instance lock is skipped: this is a short-lived child of the agent, not
+ * a second copy of the app, and taking the lock would make it fight the running one.
+ */
+const MCP_MODE = process.argv.includes('--mcp')
+// --bridge is the per-session channel server (see agentPlugin), registered against
+// this binary for the same reason --mcp is: the path outlives the process.
+const BRIDGE_MODE = process.argv.includes('--bridge')
+const gotLock = MCP_MODE || BRIDGE_MODE || app.requestSingleInstanceLock()
+if (MCP_MODE || BRIDGE_MODE) {
+  void startStdioServer(MCP_MODE ? 'mcp.mjs' : 'bridge.mjs')
+} else if (!gotLock) {
   // Second instance exists only to wake the first (GNOME keybindings run `--<action>`).
   app.quit()
 } else {
@@ -548,6 +597,8 @@ if (!gotLock) {
     // back — see agentLifecycle.ts. A stale "running" row is worse than none: the
     // user sends a clip into it and nothing happens, silently.
     void ensurePlugin()
+    // One install should also give the user's agents clipboard search.
+    void ensureMcpServer()
     void sweep()
     setInterval(() => void sweep(), 5 * 60_000)
 

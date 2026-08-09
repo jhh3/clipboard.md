@@ -56,6 +56,33 @@ export function hookEnv(): Record<string, string> {
   }
 }
 
+/**
+ * The stable, always-present path to this app's binary.
+ *
+ * Anything we register with an agent outlives the process that registered it, so the
+ * command has to keep working across restarts and upgrades. process.execPath does not
+ * under an AppImage — it points into the ephemeral /tmp/.mount_XXXX — and in a dev
+ * checkout it moves whenever the pnpm store changes.
+ */
+function stableBinary(): string {
+  return process.env.APPIMAGE ?? process.execPath
+}
+
+/**
+ * Register the clipboard MCP server with Claude Code, so installing the app is all a
+ * user has to do to give their agents clipboard search.
+ *
+ * `mcp add` fails when the name is already registered, which is the normal case on
+ * every launch after the first — so a failure here is information, not an error.
+ */
+export async function ensureMcpServer(): Promise<void> {
+  const bin = stableBinary()
+  // --scope user: available in every project, not just whichever directory the app
+  // happened to be launched from.
+  const out = await run(['mcp', 'add', '--scope', 'user', 'clipboard', '--', bin, '--mcp'])
+  if (out !== null) console.log('[mcp] registered "clipboard" with Claude Code')
+}
+
 export function pluginRoot(): string {
   return join(app.getPath('userData'), 'plugin')
 }
@@ -115,20 +142,19 @@ export async function ensurePlugin(): Promise<boolean> {
     // instead; Electron-as-node resolves paths inside app.asar fine, which we
     // verified separately.
 
-    // ELECTRON_RUN_AS_NODE makes our own binary behave as plain node, which is the
-    // only Node we can be certain exists on the user's machine.
+    // Registered as `<app binary> --bridge`, not as a script path.
+    //
+    // This file is written once and read by claude for as long as the plugin is
+    // installed, so every path in it has to outlive the process that wrote it.
+    // process.execPath and the bridge.mjs path both point inside the AppImage's
+    // ephemeral /tmp/.mount_XXXX, which is gone after the next restart — observed
+    // exactly that: `claude mcp list` showed the bridge on a mount path that no
+    // longer existed. The installed binary is the one stable address, and it knows
+    // how to run the bridge itself.
     writeFileSync(
       join(pluginDir(), '.mcp.json'),
       JSON.stringify(
-        {
-          mcpServers: {
-            [PLUGIN]: {
-              command: process.execPath,
-              args: [bridge],
-              env: { ELECTRON_RUN_AS_NODE: '1' }
-            }
-          }
-        },
+        { mcpServers: { [PLUGIN]: { command: stableBinary(), args: ['--bridge'] } } },
         null,
         2
       )
