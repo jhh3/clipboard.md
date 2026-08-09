@@ -1292,7 +1292,7 @@ export default function Palette() {
         actions={
           <>
             <button
-              className={'icon-btn mic-btn ' + micState}
+              className={'icon-btn palette-mic ' + micState}
               title={
                 micState === 'recording'
                   ? 'Stop and ask (⌘D)'
