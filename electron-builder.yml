@@ -2,6 +2,11 @@ appId: md.clipboard.app
 productName: clipboard.md
 directories:
   output: dist
+# No auto-update feed. Without this, electron-builder infers a GitHub provider from
+# the git remote, tries to write autoupdate metadata beside the deb, and fails the
+# whole build with "GitHub Personal Access Token is not set" — after the artifacts
+# have already been produced, so `pnpm build:linux` exits 1 on a successful build.
+publish: null
 files:
   - out/**
   - package.json
@@ -43,8 +48,24 @@ asarUnpack:
 
 linux:
   # Keep only this platform's onnxruntime binding (~110MB per platform).
+  #
+  # The two positive patterns are REQUIRED and must match the top-level `files`.
+  # A platform `files:` list containing nothing but negations makes electron-builder
+  # fall back to the default `**/*`, which silently discards the top-level allowlist:
+  # the whole repo then ships inside app.asar — src/, DESIGN.md, and any stray file
+  # sitting in the working tree. Verified by A/B build: with a negation-only list the
+  # asar held 104 src/ entries; with these two lines restored it holds only
+  # node_modules, out and package.json.
   files:
+    - out/**
+    - package.json
     - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**'
+  # The bridge plugin scaffold, same as mac below. Without this the Linux package has
+  # no scaffold at all and agent sessions come up with tools but no channel — it only
+  # appeared to work while the allowlist bug was shipping the entire repo.
+  extraResources:
+    - from: resources/plugin
+      to: plugin
   syncDesktopName: true
   target:
     - AppImage
@@ -62,7 +83,10 @@ deb:
 
 mac:
   # Keep only this platform's onnxruntime binding — see the note in `files` above.
+  # The positive patterns are load-bearing for the same reason as linux's.
   files:
+    - out/**
+    - package.json
     - '!**/node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**'
   target:
     - dmg
