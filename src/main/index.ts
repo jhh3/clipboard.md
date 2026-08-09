@@ -410,7 +410,7 @@ if (!gotLock) {
     startMemorySchedule()
     setTimeout(() => void prewarmAgents(), 8000)
 
-    void createTray()
+    createTray()
 
     // Agents write to the inbox from OUTSIDE this process (the bridge and the Stop
     // hook insert into SQLite directly), so no IPC event fires when a reply lands.
