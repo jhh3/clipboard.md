@@ -123,7 +123,10 @@ function onChunk(chunk: Buffer, handlers: PttHandlers): void {
  *
  * There is no evdev here, and Electron's globalShortcut only ever fires on key-DOWN,
  * so without a second source of key-up the dictation hotkey can only be a toggle. The
- * helper watches for ⌘⇧D with a passive CGEventTap and writes "down"/"up".
+ * helper watches the Fn/🌐 key (flagsChanged, keycode 63) with a passive CGEventTap
+ * and writes "down"/"up". If the user has System Settings → Keyboard → "Press 🌐 key
+ * to" set to Dictation/Emoji, that system action fires too — "Do Nothing" is the
+ * clean configuration.
  *
  * NSEvent's global monitor would have been simpler and does not work: Cocoa withholds
  * keyUp from it while Command is held, so the release for a ⌘-chord never arrives and
@@ -136,7 +139,9 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
   const path = helperPath()
   if (!path) return false
   try {
-    const child = spawn(path, ['ptt'], { stdio: ['pipe', 'pipe', 'ignore'] })
+    // --fn: hold the Fn/🌐 key. A single held key beats a chord for push-to-talk,
+    // and it frees ⌘⇧D to stay as the toggle fallback.
+    const child = spawn(path, ['ptt', '--fn'], { stdio: ['pipe', 'pipe', 'ignore'] })
     macChild = child
     child.stdout.setEncoding('utf8')
     let buffered = ''

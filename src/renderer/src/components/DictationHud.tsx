@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, on } from '../lib/ipc'
+import { IS_MAC } from '../lib/keys'
 import { blobToB64, configuredMicDeviceId, openMicStream, preferredAudioMime } from '../lib/audio'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
@@ -44,8 +45,10 @@ export default function DictationHud() {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [elapsed, setElapsed] = useState(0)
 
-  // Long-lived audio graph: the stream and its analyser are requested once and
-  // reused for every dictation session (permission + warm-up paid one time).
+  // Audio graph for the CURRENT dictation only. It was originally cached across
+  // sessions to save warm-up, but an open stream keeps macOS's orange mic
+  // indicator lit — the app looked like it was listening forever after the
+  // first dictation. Trust beats ~200ms of warm-up: released in finish().
   const streamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
@@ -69,13 +72,26 @@ export default function DictationHud() {
 
   // ── finishing ─────────────────────────────────────────────────────────────
 
+  /** Release the microphone and its analyser graph — the OS mic-in-use
+   *  indicator must go dark the moment the flow ends. */
+  const releaseMic = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+    streamDeviceRef.current = ''
+    streamFellBackRef.current = false
+    void audioCtxRef.current?.close().catch(() => {})
+    audioCtxRef.current = null
+    analyserRef.current = null
+  }, [])
+
   /** Tell main the flow is over; it hides the window and resets its own state. */
   const finish = useCallback(() => {
     window.clearTimeout(timerRef.current)
+    releaseMic()
     setPhase({ kind: 'idle' })
     setElapsed(0)
     void invoke('dictation:done').catch(() => {})
-  }, [])
+  }, [releaseMic])
 
   const finishAfter = useCallback(
     (ms: number) => {
@@ -88,12 +104,10 @@ export default function DictationHud() {
   // ── microphone ────────────────────────────────────────────────────────────
 
   /**
-   * The shared stream, requesting (and re-wiring the analyser) only when needed.
-   *
-   * The cache is keyed on the configured deviceId, so picking a different mic in
-   * Settings takes effect on the next dictation without an app restart. A stream
-   * that fell back to the default is never reused either — that way a mic that
-   * gets plugged back in is picked up again.
+   * The stream for this dictation, re-wiring the analyser when needed. Within a
+   * session the cache is keyed on the configured deviceId (a Settings change
+   * takes effect immediately); across sessions there is no cache — finish()
+   * releases the mic so the OS indicator goes dark.
    */
   const acquireStream = useCallback(async (): Promise<{
     stream: MediaStream
@@ -331,7 +345,7 @@ export default function DictationHud() {
               <span className="hud-note">Chosen mic unavailable — using the system default</span>
             ) : (
               <>
-                Release <kbd>⌃⌥Space</kbd> to finish
+                Release <kbd>{IS_MAC ? '🌐' : '⌃⌥Space'}</kbd> to finish
               </>
             )}
           </div>

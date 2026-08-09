@@ -89,7 +89,9 @@ pnpm build:mac    # dmg (run on macOS; see MACOS-VALIDATION.md)
 | `Ctrl+Alt+N` | Notes |
 | `Ctrl+Alt+A` | Agent inbox |
 
-On macOS these are `⌘⇧V / R / S / E / D`. Linux shortcuts are registered as GNOME
+On macOS these are `⌘⇧V / R / S / E`, and dictation is **hold 🌐 (Fn) to talk**
+(`⌘⇧D` toggles as a fallback; if 🌐 triggers a system action, set Keyboard →
+"Press 🌐 key to" → Do Nothing). Linux shortcuts are registered as GNOME
 custom keybindings on first run (Electron's own global shortcuts don't work on GNOME
 Wayland), so they're editable in Settings → Keyboard. The app installs a login
 autostart entry so the shortcuts talk to an already-running instance.

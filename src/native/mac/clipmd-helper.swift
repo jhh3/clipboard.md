@@ -462,7 +462,7 @@ func cmdWatch(intervalMs: Int) {
 ///
 /// Releasing the modifier counts as a release too. Users let go of ⌘ and the letter
 /// together, and whichever the OS reports first should end the hold.
-func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags) {
+func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags, fnKey: Bool = false) {
   guard isTrusted(prompt: false) else {
     fail("accessibility permission not granted", code: 3)
   }
@@ -471,9 +471,11 @@ func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags) {
     var down = false
     let keyCode: CGKeyCode
     let modifiers: CGEventFlags
-    init(keyCode: CGKeyCode, modifiers: CGEventFlags) {
+    let fnKey: Bool
+    init(keyCode: CGKeyCode, modifiers: CGEventFlags, fnKey: Bool) {
       self.keyCode = keyCode
       self.modifiers = modifiers
+      self.fnKey = fnKey
     }
     func press() {
       guard !down else { return }  // key repeat, not a second press
@@ -486,7 +488,7 @@ func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags) {
       output("up\n")
     }
   }
-  let state = State(keyCode: keyCode, modifiers: modifiers)
+  let state = State(keyCode: keyCode, modifiers: modifiers, fnKey: fnKey)
 
   let callback: CGEventTapCallBack = { _, type, event, refcon in
     guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -496,11 +498,19 @@ func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags) {
 
     switch type {
     case .keyDown:
-      if code == state.keyCode, flags.contains(state.modifiers) { state.press() }
+      if !state.fnKey, code == state.keyCode, flags.contains(state.modifiers) { state.press() }
     case .keyUp:
-      if code == state.keyCode { state.release() }
+      if !state.fnKey, code == state.keyCode { state.release() }
     case .flagsChanged:
-      if !flags.contains(state.modifiers) { state.release() }
+      if state.fnKey {
+        // The Fn/🌐 key is a modifier: it never sends keyDown/keyUp, only
+        // flagsChanged with keycode 63 and .maskSecondaryFn set while held.
+        if code == 63 {
+          if flags.contains(.maskSecondaryFn) { state.press() } else { state.release() }
+        }
+      } else if !flags.contains(state.modifiers) {
+        state.release()
+      }
     case .tapDisabledByTimeout, .tapDisabledByUserInput:
       // The system disables a slow tap; ours does nothing but compare integers, so
       // this is recoverable — re-enable rather than going silently deaf.
@@ -586,10 +596,16 @@ case "watch":
   let index = rest.firstIndex(of: "--interval-ms").map { $0 + 1 }
   cmdWatch(intervalMs: index.flatMap { $0 < rest.count ? Int(rest[$0]) : nil } ?? 300)
 case "ptt":
-  // Defaults match the dictation shortcut, ⌘⇧D (0x02 is the 'D' key).
-  let keyIndex = rest.firstIndex(of: "--keycode").map { $0 + 1 }
-  let keyCode = CGKeyCode(keyIndex.flatMap { $0 < rest.count ? UInt16(rest[$0]) : nil } ?? 0x02)
-  cmdPtt(keyCode: keyCode, modifiers: [.maskCommand, .maskShift])
+  if rest.contains("--fn") {
+    // Hold the Fn/🌐 key to talk — a single physical key beats a chord for
+    // something you hold while speaking.
+    cmdPtt(keyCode: 63, modifiers: [], fnKey: true)
+  } else {
+    // Chord mode (legacy default ⌘⇧D; 0x02 is the 'D' key).
+    let keyIndex = rest.firstIndex(of: "--keycode").map { $0 + 1 }
+    let keyCode = CGKeyCode(keyIndex.flatMap { $0 < rest.count ? UInt16(rest[$0]) : nil } ?? 0x02)
+    cmdPtt(keyCode: keyCode, modifiers: [.maskCommand, .maskShift])
+  }
 case "trust":
   cmdTrust(prompt: rest.contains("--prompt"))
 case "decode-audio":

@@ -36,7 +36,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
       [`${GLOBAL_MOD}R`, 'rewrite selection'],
       [`${GLOBAL_MOD}S`, 'screenshot to history'],
       [`${GLOBAL_MOD}E`, 'scratchpad'],
-      [`${GLOBAL_MOD}${MOD === '⌘' ? 'D' : 'Space'}`, 'dictate (hold)'],
+      [MOD === '⌘' ? '🌐' : `${GLOBAL_MOD}Space`, 'dictate (hold to talk)'],
       [`${GLOBAL_MOD}N`, 'notes'],
       [`${GLOBAL_MOD}A`, 'agent inbox']
     ]

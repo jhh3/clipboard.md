@@ -812,8 +812,8 @@ export default function Settings() {
                 label="Global hotkeys"
                 sub={
                   IS_MAC
-                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · D dictate · N notes · A inbox. A combo owned by another app is skipped (see the log).'
-                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
+                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation: hold 🌐 (Fn) to talk, or ⌘⇧D to toggle. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
+                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts. Dictation: hold ⌃⌥Space to talk.'
                 }
               >
                 <kbd className="hotkey-kbd">{IS_MAC ? `${GLOBAL_MOD}V` : s.hotkeyHint}</kbd>
