@@ -953,12 +953,24 @@ export default function Settings() {
                   onCommit={(n) => patch({ maxItems: n })}
                 />
               </Row>
-              <Row
-                label="Smart paste"
-                sub="Adapt pastes to the destination app: plain text into terminals, code clips fenced into Slack/Discord."
-              >
-                <Toggle checked={s.smartPaste !== false} onChange={(v) => patch({ smartPaste: v })} />
-              </Row>
+              {/*
+                macOS only, and hidden rather than disabled elsewhere. The shaping in
+                paste.ts is gated on `process.platform === 'darwin'` because it needs
+                the frontmost app at paste time, which the helper supplies and Linux
+                has no equivalent for yet — the palette is focused by then, so xprop
+                would name us. A toggle that changes nothing is worse than no toggle.
+              */}
+              {IS_MAC && (
+                <Row
+                  label="Smart paste"
+                  sub="Adapt pastes to the destination app: plain text into terminals, code clips fenced into Slack/Discord."
+                >
+                  <Toggle
+                    checked={s.smartPaste !== false}
+                    onChange={(v) => patch({ smartPaste: v })}
+                  />
+                </Row>
+              )}
               <Row label="Theme">
                 <select
                   className="set-input"
