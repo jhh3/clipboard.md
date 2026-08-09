@@ -2829,3 +2829,22 @@ body.route-dictation #root {
 }
 .ask-view-agent { font-size: 12.5px; font-weight: 700; }
 .ask-view-sub { font-size: 11px; font-weight: 400; color: var(--text-faint); }
+
+/* @agent autocomplete under the search bar. */
+.mention-pop {
+  position: absolute; top: 52px; left: 14px; z-index: 30; min-width: 320px;
+  padding: 4px; background: var(--bg-raised);
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.mention-row {
+  display: flex; gap: 8px; align-items: center; width: 100%;
+  padding: 7px 9px; font: inherit; font-size: 13px; color: var(--text);
+  text-align: left; background: none; border: none; border-radius: 7px; cursor: pointer;
+}
+.mention-row.selected { background: var(--sel-bg); }
+.mention-name { flex: none; font-weight: 700; color: var(--accent-bright); }
+.mention-desc {
+  flex: 1; overflow: hidden; font-size: 11.5px; color: var(--text-faint);
+  text-overflow: ellipsis; white-space: nowrap;
+}

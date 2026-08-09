@@ -164,6 +164,25 @@ export default function Palette() {
     setAskTarget(persistentAgents[(idx + 1) % persistentAgents.length].name)
   }, [persistentAgents, targetAgent])
 
+  /** The @token still being typed (no space yet) — drives the autocomplete. */
+  const mentionTyping = useMemo(() => {
+    const m = /^@(\S*)$/.exec(query)
+    if (!m) return null
+    const frag = m[1].toLowerCase()
+    const candidates = persistentAgents.filter((d) => d.name.toLowerCase().startsWith(frag))
+    return candidates.length > 0 ? { frag, candidates } : null
+  }, [query, persistentAgents])
+  const [mentionHighlight, setMentionHighlight] = useState(0)
+  useEffect(() => setMentionHighlight(0), [query])
+
+  const completeMention = useCallback(
+    (def: AgentDef) => {
+      setQuery(`@${def.name} `)
+      searchInputRef.current?.focus()
+    },
+    []
+  )
+
   // ── search ────────────────────────────────────────────────────────────────
   const { items, total, searchMode, refresh } = useSearch(
     searchQuery,
@@ -753,7 +772,11 @@ export default function Palette() {
       const kind = item.kind === 'image' ? 'image' : 'text'
       const list = await invoke('actions:list', kind)
       const pseudo = PSEUDO_ACTIONS.filter((a) => a.appliesTo.includes(kind))
-      setActions([ASK_CLIP_ACTION, ...list, ...pseudo])
+      // For images, editing sits right under asking — the two headline verbs —
+      // not below a scroll of format converters.
+      const imgEdit = pseudo.filter((a) => a.id === 'x-img-edit')
+      const rest = pseudo.filter((a) => a.id !== 'x-img-edit')
+      setActions([ASK_CLIP_ACTION, ...imgEdit, ...list, ...rest])
     } catch {
       setActions([ASK_CLIP_ACTION, ...PSEUDO_ACTIONS])
     }
@@ -1205,6 +1228,26 @@ export default function Palette() {
     }
 
     // ── normal mode ──
+    // A half-typed @mention owns the navigation keys: the popup completes with
+    // Tab/Enter and moves with ↓↑, Raycast-style.
+    if (mentionTyping && !mod && !e.shiftKey) {
+      const picked = mentionTyping.candidates[mentionHighlight] ?? mentionTyping.candidates[0]
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionHighlight((h) => Math.min(h + 1, mentionTyping.candidates.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionHighlight((h) => Math.max(h - 1, 0))
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        completeMention(picked)
+        return
+      }
+    }
     // ⇧Tab retargets the ask row; Tab and ⌘K open the action panel (⌘K for the
     // Raycast/Linear reflex).
     if (e.key === 'Tab' && e.shiftKey) {
@@ -1524,6 +1567,22 @@ export default function Palette() {
           </>
         }
       />
+      {mode.name === 'normal' && mentionTyping && (
+        <div className="mention-pop">
+          {mentionTyping.candidates.map((d, i) => (
+            <button
+              key={d.name}
+              className={'mention-row' + (i === mentionHighlight ? ' selected' : '')}
+              onMouseEnter={() => setMentionHighlight(i)}
+              onClick={() => completeMention(d)}
+            >
+              <span className="mention-name">@{d.name}</span>
+              {d.description && <span className="mention-desc">{d.description}</span>}
+              <kbd>Tab</kbd>
+            </button>
+          ))}
+        </div>
+      )}
       {mode.name === 'ask' ? (
         <div className="ask-view">
           <div className="ask-view-head">
