@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type {
+  AgentDef,
   AppSettings,
   ProviderId,
   ProviderLane,
@@ -102,7 +103,7 @@ const SECTIONS = [
   ['general', 'General'],
   ['providers', 'AI Providers'],
   ['intelligence', 'Intelligence'],
-  ['assistant', 'Assistant'],
+  ['assistant', 'Agents'],
   ['privacy', 'Privacy'],
   ['voice', 'Voice'],
   ['actions', 'Actions']
@@ -368,6 +369,145 @@ function IdentityEditor({ value, onCommit }: { value: string; onCommit: (v: stri
   )
 }
 
+/**
+ * One agent definition. The first card is the PRIMARY — the palette's default
+ * ask target and the owner of the main memory file — so it can't be deleted.
+ */
+function AgentCard({
+  def,
+  isPrimary,
+  drafting,
+  restarting,
+  onPatch,
+  onDraft,
+  onRestart,
+  onRemove
+}: {
+  def: AgentDef
+  isPrimary: boolean
+  drafting: boolean
+  restarting: boolean
+  onPatch: (changes: Partial<AgentDef>) => void
+  onDraft: () => void
+  onRestart: () => void
+  onRemove: () => void
+}) {
+  const [newFile, setNewFile] = useState('')
+  const addFile = (): void => {
+    const path = newFile.trim()
+    const files = def.identityFiles ?? []
+    if (!path || files.includes(path)) return
+    onPatch({ identityFiles: [...files, path] })
+    setNewFile('')
+  }
+  return (
+    <div className="agent-card">
+      <div className="agent-card-head">
+        <span className="agent-card-name">@{def.name}</span>
+        {isPrimary ? (
+          <span className="agent-primary-badge">primary</span>
+        ) : (
+          <button className="icon-btn" title="Remove agent" onClick={onRemove}>
+            <TrashIcon size={13} />
+          </button>
+        )}
+      </div>
+      <label className="agent-field">
+        <span>Description</span>
+        <TextField
+          value={def.description ?? ''}
+          placeholder="What this agent is for — write it like routing rules"
+          onCommit={(v) => onPatch({ description: v || undefined })}
+        />
+      </label>
+      <label className="agent-field">
+        <span>Working directory</span>
+        <TextField
+          value={def.cwd}
+          placeholder="(home directory)"
+          onCommit={(v) => onPatch({ cwd: v })}
+        />
+      </label>
+      <div className="agent-field">
+        <span>Identity</span>
+        <IdentityEditor
+          value={def.identity ?? ''}
+          onCommit={(v) => onPatch({ identity: v || undefined })}
+        />
+        <div className="set-inline-actions">
+          <button className="btn" disabled={drafting} onClick={onDraft}>
+            <SparkIcon size={12} /> {drafting ? 'Drafting…' : 'Draft with AI'}
+          </button>
+        </div>
+      </div>
+      <div className="agent-field">
+        <span>Identity files</span>
+        <div className="list-editor">
+          {(def.identityFiles ?? []).map((file, i) => (
+            <div key={`${file}:${i}`} className="list-item-row">
+              <span className="list-item-text mono" title={file}>
+                {truncateMiddle(file)}
+              </span>
+              <button
+                className="icon-btn"
+                title="Remove"
+                onClick={() =>
+                  onPatch({ identityFiles: (def.identityFiles ?? []).filter((_, j) => j !== i) })
+                }
+              >
+                <TrashIcon size={13} />
+              </button>
+            </div>
+          ))}
+          <div className="list-add-row">
+            <input
+              className="set-input"
+              value={newFile}
+              placeholder="/absolute/path/to/identity.md"
+              spellCheck={false}
+              onChange={(e) => setNewFile(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addFile()
+              }}
+            />
+            <button className="btn" onClick={addFile}>
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="agent-card-row">
+        <label className="agent-inline">
+          Memory
+          <select
+            className="set-input"
+            value={def.memory ?? (isPrimary ? 'own' : 'off')}
+            onChange={(e) => onPatch({ memory: e.target.value as AgentDef['memory'] })}
+          >
+            <option value="own">Own file</option>
+            <option value="shared">Shared with primary</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label className="agent-inline">
+          Ask target
+          <Toggle
+            checked={def.persistent !== false}
+            onChange={(v) => onPatch({ persistent: v })}
+          />
+        </label>
+        <label className="agent-inline">
+          Pre-warm
+          <Toggle checked={def.prewarm === true} onChange={(v) => onPatch({ prewarm: v })} />
+        </label>
+        <button className="btn agent-restart" disabled={restarting} onClick={onRestart}>
+          {restarting ? 'Restarting…' : 'Restart session'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function VoiceSample({
   value,
   onCommit,
@@ -516,8 +656,12 @@ export default function Settings() {
   const flashTimer = useRef(0)
   const actionsInit = useRef(false)
   const [newIdentityFile, setNewIdentityFile] = useState('')
-  const [restarting, setRestarting] = useState(false)
+  const [restarting, setRestarting] = useState<string | null>(null)
   const [memory, setMemory] = useState<string | null>(null)
+  /** Which agent's memory file the viewer shows; undefined = the primary. */
+  const [memAgent, setMemAgent] = useState<string | undefined>(undefined)
+  const memAgentRef = useRef<string | undefined>(undefined)
+  memAgentRef.current = memAgent
   const [consolidating, setConsolidating] = useState(false)
   const memoryRef = useRef<HTMLTextAreaElement | null>(null)
   /** What the file held when we last loaded it — writes only happen on a real
@@ -527,7 +671,7 @@ export default function Settings() {
 
   const loadMemory = useCallback(async () => {
     try {
-      const text = await invoke('assistant:memory-get')
+      const text = await invoke('assistant:memory-get', memAgentRef.current)
       memoryLoadedRef.current = text
       setMemory(text)
     } catch {
@@ -537,6 +681,9 @@ export default function Settings() {
 
   useEffect(() => {
     void loadMemory()
+  }, [loadMemory, memAgent])
+
+  useEffect(() => {
     // The file changes underneath us (remember tool, consolidation) — re-read
     // whenever the window comes back, unless the user is mid-edit.
     const onVis = (): void => {
@@ -565,7 +712,7 @@ export default function Settings() {
       if (text === memoryLoadedRef.current) return
       setMemory(text)
       memoryLoadedRef.current = text
-      invoke('assistant:memory-set', text)
+      invoke('assistant:memory-set', text, memAgentRef.current)
         .then(flashSaved)
         .catch(() => addToast('Failed to save memory', 'error'))
     },
@@ -575,7 +722,7 @@ export default function Settings() {
   const consolidateNow = useCallback(async () => {
     setConsolidating(true)
     try {
-      const res = await invoke('assistant:consolidate')
+      const res = await invoke('assistant:consolidate', memAgentRef.current)
       if (!res.ok) addToast(res.error ?? 'Consolidation failed', 'error')
       else addToast(res.changed ? 'Memory consolidated' : 'Nothing new to fold in', 'success')
       await loadMemory()
@@ -584,46 +731,61 @@ export default function Settings() {
     } finally {
       setConsolidating(false)
     }
-  }, [addToast])
+  }, [addToast, loadMemory])
 
-  const [drafting, setDrafting] = useState(false)
+  /** Which agent card has a draft in flight (name), if any. */
+  const [drafting, setDrafting] = useState<string | null>(null)
 
-  /** Draft the identity from what the app already knows; lands in settings
+  /** Update one agent definition by name — always against the freshest settings,
+   *  since identity drafts take seconds. */
+  const patchAgent = useCallback(
+    async (name: string, changes: Partial<AgentDef>) => {
+      const cur = await invoke('settings:get')
+      const next = await invoke('settings:set', {
+        agents: cur.agents.map((a) => (a.name === name ? { ...a, ...changes } : a))
+      })
+      setSettings(next)
+      flashSaved()
+    },
+    [flashSaved]
+  )
+
+  /** Draft an identity from what the app already knows; lands in settings
    *  immediately (still fully editable) so the flow is one click, not two. */
-  const draftIdentity = useCallback(async () => {
-    setDrafting(true)
-    try {
-      const res = await invoke('assistant:generate-identity')
-      if (res.ok && res.text) {
-        // Re-read before writing: the draft took seconds and identity is nested,
-        // so patching over a stale snapshot could drop other assistant edits.
-        const cur = await invoke('settings:get')
-        const next = await invoke('settings:set', {
-          assistant: { ...cur.assistant, identity: res.text }
-        })
-        setSettings(next)
-        addToast('Draft written from your notes, memory and usage — edit away', 'success')
-      } else {
-        addToast(res.error ?? 'Could not draft an identity', 'error')
+  const draftIdentity = useCallback(
+    async (agentName: string) => {
+      setDrafting(agentName)
+      try {
+        const res = await invoke('assistant:generate-identity', agentName)
+        if (res.ok && res.text) {
+          await patchAgent(agentName, { identity: res.text })
+          addToast('Draft written from your notes, memory and usage — edit away', 'success')
+        } else {
+          addToast(res.error ?? 'Could not draft an identity', 'error')
+        }
+      } catch {
+        addToast('Could not draft an identity', 'error')
+      } finally {
+        setDrafting(null)
       }
-    } catch {
-      addToast('Could not draft an identity', 'error')
-    } finally {
-      setDrafting(false)
-    }
-  }, [addToast])
+    },
+    [addToast, patchAgent]
+  )
 
-  const restartAssistant = useCallback(async () => {
-    setRestarting(true)
-    try {
-      await invoke('agents:restart-assistant')
-      addToast('Assistant will relaunch with the new identity on your next ask', 'success')
-    } catch {
-      addToast('Could not restart the assistant', 'error')
-    } finally {
-      setRestarting(false)
-    }
-  }, [addToast])
+  const restartAgent = useCallback(
+    async (agentName: string) => {
+      setRestarting(agentName)
+      try {
+        await invoke('agents:restart-assistant', agentName)
+        addToast(`${agentName} will relaunch with fresh identity on the next ask`, 'success')
+      } catch {
+        addToast('Could not restart the agent', 'error')
+      } finally {
+        setRestarting(null)
+      }
+    },
+    [addToast]
+  )
 
   useEffect(() => {
     invoke('settings:get')
@@ -1060,102 +1222,78 @@ export default function Settings() {
 
           {section === 'assistant' && (
             <>
-              <h2 className="set-section-title">Assistant</h2>
+              <h2 className="set-section-title">Agents</h2>
               <p className="set-section-sub">
-                The personal assistant behind the palette&apos;s ask box (hit ↵ on what you type).
-                It runs as a Claude session with access to your clipboard history and notes.
-                Identity below is injected into its system prompt when it starts.
+                Each agent is a persistent Claude session with its own identity, working
+                directory, and (optionally) long-term memory. The first is the primary — the
+                palette&apos;s default ask target; ⇧Tab there cycles between the others, and
+                @name targets one directly. Identity changes apply on each agent&apos;s next
+                (re)start.
               </p>
-              <div className="set-block">
-                <div className="set-label">Identity</div>
-                <div className="set-sub">
-                  Who you are, preferences, standing context. Don&apos;t want to start from a blank
-                  box? Draft it from what the app already knows.
-                </div>
-                <IdentityEditor
-                  value={s.assistant.identity}
-                  onCommit={(v) => patch({ assistant: { ...s.assistant, identity: v } })}
+              {s.agents.map((a, i) => (
+                <AgentCard
+                  key={a.name}
+                  def={a}
+                  isPrimary={i === 0}
+                  drafting={drafting === a.name}
+                  restarting={restarting === a.name}
+                  onPatch={(changes) => void patchAgent(a.name, changes)}
+                  onDraft={() => void draftIdentity(a.name)}
+                  onRestart={() => void restartAgent(a.name)}
+                  onRemove={() => {
+                    patch({ agents: s.agents.filter((x) => x.name !== a.name) })
+                    if (memAgent === a.name) setMemAgent(undefined)
+                  }}
                 />
-                <div className="set-inline-actions">
-                  <button className="btn" disabled={drafting} onClick={() => void draftIdentity()}>
-                    <SparkIcon size={12} /> {drafting ? 'Drafting…' : 'Draft with AI'}
-                  </button>
-                </div>
-              </div>
-              <div className="set-block">
-                <div className="set-label">Identity files</div>
-                <div className="set-sub">
-                  Absolute paths to markdown/text files appended to the identity — a personal
-                  README, a projects list. Read fresh at each launch.
-                </div>
-                <div className="list-editor">
-                  {s.assistant.identityFiles.map((file, i) => (
-                    <div key={`${file}:${i}`} className="list-item-row">
-                      <span className="list-item-text mono" title={file}>
-                        {truncateMiddle(file)}
-                      </span>
-                      <button
-                        className="icon-btn"
-                        title="Remove"
-                        onClick={() =>
-                          patch({
-                            assistant: {
-                              ...s.assistant,
-                              identityFiles: s.assistant.identityFiles.filter((_, j) => j !== i)
-                            }
-                          })
-                        }
-                      >
-                        <TrashIcon size={13} />
-                      </button>
-                    </div>
-                  ))}
-                  <div className="list-add-row">
-                    <input
-                      className="set-input"
-                      value={newIdentityFile}
-                      placeholder="/absolute/path/to/identity.md"
-                      spellCheck={false}
-                      onChange={(e) => setNewIdentityFile(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return
-                        const path = newIdentityFile.trim()
-                        if (!path || s.assistant.identityFiles.includes(path)) return
-                        patch({
-                          assistant: {
-                            ...s.assistant,
-                            identityFiles: [...s.assistant.identityFiles, path]
-                          }
-                        })
-                        setNewIdentityFile('')
-                      }}
-                    />
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        const path = newIdentityFile.trim()
-                        if (!path || s.assistant.identityFiles.includes(path)) return
-                        patch({
-                          assistant: {
-                            ...s.assistant,
-                            identityFiles: [...s.assistant.identityFiles, path]
-                          }
-                        })
-                        setNewIdentityFile('')
-                      }}
-                    >
-                      Add
-                    </button>
-                  </div>
-                </div>
+              ))}
+              <div className="list-add-row">
+                <input
+                  className="set-input"
+                  value={newIdentityFile}
+                  placeholder="new agent name (letters/dashes)"
+                  spellCheck={false}
+                  onChange={(e) => setNewIdentityFile(e.target.value)}
+                />
+                <button
+                  className="btn primary"
+                  onClick={() => {
+                    const name = newIdentityFile.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+                    if (!name || s.agents.some((x) => x.name === name)) return
+                    patch({
+                      agents: [
+                        ...s.agents,
+                        { name, cwd: '', persistent: true, memory: 'off' as const, tmux: true }
+                      ]
+                    })
+                    setNewIdentityFile('')
+                  }}
+                >
+                  <PlusIcon size={12} /> Add agent
+                </button>
               </div>
               <div className="set-block">
                 <div className="set-label">Long-term memory</div>
                 <div className="set-sub">
-                  What the assistant has learned about you. It adds facts as you talk (the
-                  `remember` tool), and a background pass periodically folds recent conversations
-                  in — merging, deduping, dropping stale entries. Yours to edit or erase.
+                  What an agent has learned. Facts land as you talk (the `remember` tool); a
+                  background pass folds conversations in — merging, deduping, dropping stale
+                  entries. Yours to edit or erase.
                 </div>
+                <select
+                  className="set-input"
+                  value={memAgent ?? s.agents[0]?.name ?? ''}
+                  onChange={(e) =>
+                    setMemAgent(e.target.value === s.agents[0]?.name ? undefined : e.target.value)
+                  }
+                >
+                  {s.agents
+                    .filter((a, i) => (a.memory ?? (i === 0 ? 'own' : 'off')) !== 'off')
+                    .map((a) => (
+                      <option key={a.name} value={a.name}>
+                        @{a.name}
+                        {(a.memory ?? 'own') === 'shared' ? ' (shared with primary)' : ''}
+                      </option>
+                    ))}
+                </select>
                 <textarea
                   ref={memoryRef}
                   className="set-textarea identity-textarea"
@@ -1171,23 +1309,6 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
-              <Row
-                label="Pre-warm at launch"
-                sub="Start the assistant session when the app starts, so the first ask answers in seconds instead of a cold start."
-              >
-                <Toggle
-                  checked={s.assistant.prewarm !== false}
-                  onChange={(v) => patch({ assistant: { ...s.assistant, prewarm: v } })}
-                />
-              </Row>
-              <Row
-                label="Apply identity changes"
-                sub="Ends the current assistant session; the next ask starts a fresh one with the identity above. The conversation so far stays in the inbox."
-              >
-                <button className="btn" disabled={restarting} onClick={() => void restartAssistant()}>
-                  {restarting ? 'Restarting…' : 'Restart assistant'}
-                </button>
-              </Row>
             </>
           )}
 

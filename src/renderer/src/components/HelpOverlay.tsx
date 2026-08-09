@@ -12,9 +12,12 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
   [
     'Palette',
     [
-      ['↵', 'ask assistant (input) / paste (item selected)'],
-      ['↓ ↑', 'move between assistant and history'],
+      ['↵', 'ask agent (input) / paste (item selected)'],
+      ['↓ ↑', 'move between agent and history'],
+      ['⇧Tab', 'switch which agent you ask'],
+      ['@name', 'target an agent for one ask'],
       [`${MOD}D`, 'voice ask (toggle mic)'],
+      [MOD === '⌘' ? '🌐 (hold)' : '⌃⌥Space (hold)', 'dictate — asks the agent while open'],
       ['⇧↵', 'paste as plain text'],
       [`${MOD}↵`, 'copy without pasting'],
       [`${MOD}1–9`, 'quick-paste item 1–9'],

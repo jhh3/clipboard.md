@@ -30,7 +30,7 @@ import { setAiTransform } from './transforms'
 import { complete } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
-import { unreadCount, prewarmAssistant } from './agents'
+import { unreadCount, prewarmAgents } from './agents'
 import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
 import { sweep } from './agentLifecycle'
 import { ensurePlugin } from './agentPlugin'
@@ -408,7 +408,7 @@ if (!gotLock) {
     // Delayed so startup (capture, embeddings, plugin install) wins the CPU first.
     ensureMemoryFile()
     startMemorySchedule()
-    setTimeout(() => void prewarmAssistant(), 8000)
+    setTimeout(() => void prewarmAgents(), 8000)
 
     void createTray()
 

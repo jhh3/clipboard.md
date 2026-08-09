@@ -10,10 +10,11 @@ import {
   appendFileSync,
   copyFileSync
 } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { z } from 'zod'
 import { getDb } from './store/db'
 import { listNotes } from './store/notes'
+import { getSettings } from './settings'
 import { completeJson } from './modelport'
 import {
   MEMORY_CAP,
@@ -24,10 +25,11 @@ import {
   validateMemory,
   type MemoryOp
 } from './memoryOps'
+import type { AgentDef } from '@shared/types'
 
 /**
- * The assistant's long-term memory: one human-readable markdown file of dated,
- * one-line facts, injected whole into the session's system prompt.
+ * Long-term memory, per agent: one human-readable markdown file of dated,
+ * one-line facts, injected whole into the agent's system prompt.
  *
  * The design follows where mem0, Letta, Zep, ChatGPT memory and Anthropic's
  * memory tool all independently converged (researched 2026-08-08):
@@ -46,46 +48,107 @@ import {
  *  - guard-rails are mechanical: size cap, required sections, bounded deletes,
  *    a timestamped snapshot before every change, and a changelog line per pass
  *    so nothing mutates invisibly (the core documented failure of ChatGPT memory)
+ *
+ * MULTI-AGENT: each agent definition chooses memory 'own' (a private file),
+ * 'shared' (the primary's file), or 'off'. The primary keeps the original
+ * assistant-memory.md; other 'own' agents get memory-agent-<name>.md. All
+ * sidecars (meta, snapshots, changelog) derive from the file path, so the
+ * primary's legacy sidecars keep working.
  */
 
 const SNAPSHOTS_KEPT = 10
 
-export function memoryFile(): string {
-  return join(app.getPath('userData'), 'assistant-memory.md')
+// ── agent resolution ────────────────────────────────────────────────────────
+
+function defs(): AgentDef[] {
+  return getSettings().agents
 }
 
-function metaFile(): string {
-  return join(app.getPath('userData'), 'assistant-memory.meta.json')
+export function primaryAgent(): AgentDef | undefined {
+  return defs()[0]
+}
+
+export function agentByName(name?: string): AgentDef | undefined {
+  return name ? defs().find((a) => a.name === name) : primaryAgent()
+}
+
+/**
+ * The singleton-session title for an agent. The primary keeps the historical
+ * 'Assistant' title so pre-multi-agent sessions (and their message history)
+ * stay attached to it.
+ */
+export function sessionTitleFor(def: AgentDef): string {
+  return def.name === primaryAgent()?.name ? 'Assistant' : `@${def.name}`
+}
+
+/** Effective memory mode: primary defaults to 'own', everyone else to 'off'. */
+function memoryMode(def: AgentDef): 'own' | 'shared' | 'off' {
+  return def.memory ?? (def.name === primaryAgent()?.name ? 'own' : 'off')
+}
+
+/**
+ * The memory file an agent reads/writes, or null when it has none. 'shared'
+ * resolves to the primary's file — cross-agent knowledge on purpose.
+ */
+export function memoryFile(agentName?: string): string | null {
+  const def = agentByName(agentName)
+  if (!def) return null
+  const primary = primaryAgent()
+  const mode = memoryMode(def)
+  if (mode === 'off') return null
+  if (mode === 'shared' && primary && primary.name !== def.name) {
+    return memoryFile(primary.name)
+  }
+  return def.name === primary?.name
+    ? join(app.getPath('userData'), 'assistant-memory.md')
+    : join(app.getPath('userData'), `memory-agent-${def.name}.md`)
+}
+
+/** Agents that OWN a memory file (consolidation runs once per owned file). */
+function memoryOwners(): AgentDef[] {
+  const primary = primaryAgent()
+  return defs().filter(
+    (d) => memoryMode(d) === 'own' || (memoryMode(d) === 'shared' && d.name === primary?.name)
+  )
+}
+
+function metaFile(file: string): string {
+  return file.replace(/\.md$/, '') + '.meta.json'
+}
+
+function changelogFile(file: string): string {
+  return file.replace(/\.md$/, '') + '.log'
 }
 
 function snapshotDir(): string {
   return join(app.getPath('userData'), 'memory-snapshots')
 }
 
-function changelogFile(): string {
-  return join(app.getPath('userData'), 'assistant-memory.log')
-}
+// ── file primitives ─────────────────────────────────────────────────────────
 
 /**
  * The FULL file, untruncated. Consolidation must see everything: the Recent
  * section is the tail, so truncating here would hand the reconciler a file
  * missing the newest entries — which the write-back would then destroy.
  */
-export function readMemory(): string {
+export function readMemory(agentName?: string): string {
+  const file = memoryFile(agentName)
+  if (!file) return ''
   try {
-    return readFileSync(memoryFile(), 'utf8')
+    return readFileSync(file, 'utf8')
   } catch {
     return ''
   }
 }
 
 /** Bounded view for system-prompt injection only. */
-export function promptMemory(): string {
-  return readMemory().slice(0, MEMORY_CAP)
+export function promptMemory(agentName?: string): string {
+  return readMemory(agentName).slice(0, MEMORY_CAP)
 }
 
-export function writeMemory(text: string): void {
-  const file = memoryFile()
+export function writeMemory(text: string, agentName?: string): void {
+  const file = memoryFile(agentName)
+  if (!file) return
   const tmp = `${file}.tmp`
   writeFileSync(tmp, text)
   renameSync(tmp, file)
@@ -97,10 +160,12 @@ export function writeMemory(text: string): void {
  * `remember` blind-appends, and a file ending mid-line silently welded the next
  * remembered fact onto the last line, corrupting both.
  */
-export function saveMemoryEdit(text: string): void {
-  snapshot()
-  writeMemory(text.trim() ? text.replace(/\n*$/, '\n') : '')
-  ensureMemoryFile()
+export function saveMemoryEdit(text: string, agentName?: string): void {
+  const file = memoryFile(agentName)
+  if (!file) return
+  snapshot(file)
+  writeMemory(text.trim() ? text.replace(/\n*$/, '\n') : '', agentName)
+  ensureMemoryFile(agentName)
 }
 
 /**
@@ -109,12 +174,14 @@ export function saveMemoryEdit(text: string): void {
  * every consolidation forever (nothing to put sections back). Recent is kept
  * LAST so the bridge's blind append always lands inside it.
  */
-export function ensureMemoryFile(): void {
-  const current = readMemory()
+export function ensureMemoryFile(agentName?: string): void {
+  const file = memoryFile(agentName)
+  if (!file) return
+  const current = readMemory(agentName)
   const missing = SECTION_NAMES.filter((s) => !current.includes(`## ${s}`))
-  if (existsSync(memoryFile()) && missing.length === 0) return
+  if (existsSync(file) && missing.length === 0) return
   if (!current.trim()) {
-    writeMemory(SECTION_NAMES.map((s) => `## ${s}\n`).join('\n') + '\n')
+    writeMemory(SECTION_NAMES.map((s) => `## ${s}\n`).join('\n') + '\n', agentName)
     return
   }
   const recentHeader = `## ${RECENT}`
@@ -126,18 +193,22 @@ export function ensureMemoryFile(): void {
     .map((s) => `## ${s}\n`)
     .join('\n')
   writeMemory(
-    [body.trimEnd(), added.trimEnd(), recentBlock.trimEnd()].filter(Boolean).join('\n\n') + '\n'
+    [body.trimEnd(), added.trimEnd(), recentBlock.trimEnd()].filter(Boolean).join('\n\n') + '\n',
+    agentName
   )
 }
 
 /** Timestamped copy before any machine edit; humans get undo for free. */
-function snapshot(): void {
+function snapshot(file: string): void {
   try {
-    if (!existsSync(memoryFile())) return
+    if (!existsSync(file)) return
     mkdirSync(snapshotDir(), { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    copyFileSync(memoryFile(), join(snapshotDir(), `memory-${stamp}.md`))
-    const old = readdirSync(snapshotDir()).filter((f) => f.startsWith('memory-')).sort()
+    const prefix = basename(file).replace(/\.md$/, '')
+    copyFileSync(file, join(snapshotDir(), `${prefix}-${stamp}.md`))
+    const old = readdirSync(snapshotDir())
+      .filter((f) => f.startsWith(`${prefix}-`))
+      .sort()
     for (const f of old.slice(0, Math.max(0, old.length - SNAPSHOTS_KEPT))) {
       rmSync(join(snapshotDir(), f), { force: true })
     }
@@ -146,34 +217,38 @@ function snapshot(): void {
   }
 }
 
+// ── consolidation ───────────────────────────────────────────────────────────
+
 interface MemoryMeta {
   lastRunAt: number
   /** High-water mark into agent_messages, so each run only sees what's new. */
   lastMessageId: number
 }
 
-function readMeta(): MemoryMeta {
+function readMeta(file: string): MemoryMeta {
   try {
-    return JSON.parse(readFileSync(metaFile(), 'utf8')) as MemoryMeta
+    return JSON.parse(readFileSync(metaFile(file), 'utf8')) as MemoryMeta
   } catch {
     return { lastRunAt: 0, lastMessageId: 0 }
   }
 }
 
-function writeMeta(meta: MemoryMeta): void {
-  writeFileSync(metaFile(), JSON.stringify(meta))
+function writeMeta(file: string, meta: MemoryMeta): void {
+  writeFileSync(metaFile(file), JSON.stringify(meta))
 }
 
-/** Conversation since the last consolidation, oldest first, bounded. */
-function newMaterial(sinceId: number): { text: string; maxId: number } {
+/** Conversation since the last consolidation, oldest first, bounded. `titles`
+ *  scopes to the sessions whose conversation feeds this memory file. */
+function newMaterial(sinceId: number, titles: string[]): { text: string; maxId: number } {
+  const placeholders = titles.map(() => '?').join(', ')
   const rows = getDb()
     .prepare(
       `SELECT m.id, m.direction, m.kind, m.body FROM agent_messages m
        JOIN agent_sessions s ON s.key = m.session_key
-       WHERE m.id > ? AND s.title = 'Assistant'
+       WHERE m.id > ? AND s.title IN (${placeholders})
        ORDER BY m.id ASC LIMIT 200`
     )
-    .all(sinceId) as Array<{ id: number; direction: string; kind: string; body: string }>
+    .all(sinceId, ...titles) as Array<{ id: number; direction: string; kind: string; body: string }>
   if (rows.length === 0) return { text: '', maxId: sinceId }
   const text = rows
     .map((r) => `${r.direction === 'inbound' ? 'USER' : 'ASSISTANT'}: ${r.body.slice(0, 1500)}`)
@@ -181,7 +256,14 @@ function newMaterial(sinceId: number): { text: string; maxId: number } {
   return { text: text.slice(0, 24_000), maxId: rows[rows.length - 1].id }
 }
 
-// ── phase 1: extract candidate facts ────────────────────────────────────────
+/** Session titles whose conversations feed an agent's memory file — the agent's
+ *  own, plus every agent sharing that file. */
+function feedingTitles(owner: AgentDef): string[] {
+  const file = memoryFile(owner.name)
+  return defs()
+    .filter((d) => memoryFile(d.name) === file)
+    .map((d) => sessionTitleFor(d))
+}
 
 const FactsSchema = z.object({ facts: z.array(z.string()) })
 
@@ -198,8 +280,6 @@ const EXTRACT_SYSTEM = [
   'If the user asked to forget something, express it as a fact: "Asked to',
   'forget: ...". Return {"facts": []} when nothing qualifies.'
 ].join('\n')
-
-// ── phase 2: reconcile into the numbered file ───────────────────────────────
 
 const OpSchema = z.object({
   op: z.enum(['add', 'update', 'delete']),
@@ -240,18 +320,21 @@ export interface ConsolidateResult {
   error?: string
 }
 
-let running = false
+const running = new Set<string>()
 
-export async function consolidateMemory(force = false): Promise<ConsolidateResult> {
-  if (running) return { ok: true, changed: false }
-  const meta = readMeta()
-  const material = newMaterial(meta.lastMessageId)
-  ensureMemoryFile()
-  const current = readMemory()
+export async function consolidateMemory(force = false, agentName?: string): Promise<ConsolidateResult> {
+  const def = agentByName(agentName)
+  const file = def ? memoryFile(def.name) : null
+  if (!def || !file) return { ok: true, changed: false }
+  if (running.has(file)) return { ok: true, changed: false }
+  const meta = readMeta(file)
+  const material = newMaterial(meta.lastMessageId, feedingTitles(def))
+  ensureMemoryFile(def.name)
+  const current = readMemory(def.name)
   const pendingRecent = recentEntryCount(current)
   if (!material.text && pendingRecent === 0 && !force) return { ok: true, changed: false }
 
-  running = true
+  running.add(file)
   try {
     // Phase 1: candidates from new conversation (skipped when there is none —
     // a run can exist purely to fold the Recent tail upward).
@@ -273,7 +356,7 @@ export async function consolidateMemory(force = false): Promise<ConsolidateResul
       facts = res.facts.slice(0, 25)
     }
     if (facts.length === 0 && pendingRecent === 0 && !force) {
-      writeMeta({ lastRunAt: Date.now(), lastMessageId: material.maxId })
+      writeMeta(file, { lastRunAt: Date.now(), lastMessageId: material.maxId })
       return { ok: true, changed: false }
     }
 
@@ -303,24 +386,24 @@ export async function consolidateMemory(force = false): Promise<ConsolidateResul
     )
 
     if (ops.length === 0) {
-      writeMeta({ lastRunAt: Date.now(), lastMessageId: material.maxId })
+      writeMeta(file, { lastRunAt: Date.now(), lastMessageId: material.maxId })
       return { ok: true, changed: false }
     }
 
     let next = applyOps(current, ops as MemoryOp[])
     const problem = validateMemory(next, current, ops as MemoryOp[])
     if (problem) {
-      console.error(`[memory] consolidation rejected: ${problem}`)
+      console.error(`[memory] consolidation rejected (${basename(file)}): ${problem}`)
       return { ok: false, changed: false, error: `rejected: ${problem}` }
     }
 
     // The two LLM round-trips above take tens of seconds, and consolidation is
-    // triggered by fresh conversation — exactly when the assistant is calling
+    // triggered by fresh conversation — exactly when the agent is calling
     // `remember`. Pure appends (the only thing the bridge does) are carried over;
     // ANY other concurrent change means a human edited the file, and their edit
     // outranks ours — abort without writing rather than resurrect what they
     // deleted. The next scheduled pass re-reads and reconciles from scratch.
-    const fresh = readMemory()
+    const fresh = readMemory(def.name)
     if (fresh !== current) {
       if (!fresh.startsWith(current)) {
         console.log('[memory] file was edited mid-consolidation; keeping the edit, not our pass')
@@ -337,32 +420,39 @@ export async function consolidateMemory(force = false): Promise<ConsolidateResul
       }
     }
 
-    snapshot()
-    writeMemory(next)
-    writeMeta({ lastRunAt: Date.now(), lastMessageId: material.maxId })
+    snapshot(file)
+    writeMemory(next, def.name)
+    writeMeta(file, { lastRunAt: Date.now(), lastMessageId: material.maxId })
     try {
-      appendFileSync(changelogFile(), `${new Date().toISOString()} ${changelog}\n`)
+      appendFileSync(changelogFile(file), `${new Date().toISOString()} ${changelog}\n`)
     } catch {
       /* the changelog is best-effort */
     }
-    console.log(`[memory] consolidated: ${changelog} (${ops.length} ops)`)
+    console.log(`[memory] consolidated ${basename(file)}: ${changelog} (${ops.length} ops)`)
     return { ok: true, changed: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[memory] consolidation failed:', msg)
     return { ok: false, changed: false, error: msg }
   } finally {
-    running = false
+    running.delete(file)
+  }
+}
+
+/** Consolidate every owned memory file (scheduled path). */
+async function consolidateAll(): Promise<void> {
+  for (const def of memoryOwners()) {
+    await consolidateMemory(false, def.name)
   }
 }
 
 /**
- * Draft an identity for Settings, from what the app already knows — the user
+ * Identity drafting for Settings, from what the app already knows — the user
  * shouldn't have to face a blank textarea. Sources: current identity (a redraft
- * keeps their words), long-term memory, note titles, and which apps they copy
+ * keeps their words), the agent's memory, note titles, and which apps they copy
  * from. Marked guesses stay guesses; the user edits before it matters.
  */
-export async function generateIdentity(currentIdentity: string): Promise<string> {
+export async function generateIdentity(currentIdentity: string, agentName?: string): Promise<string> {
   const apps = getDb()
     .prepare(
       `SELECT source_app, COUNT(*) c FROM items
@@ -374,6 +464,7 @@ export async function generateIdentity(currentIdentity: string): Promise<string>
     .slice(0, 12)
     .map((n) => `- ${n.title || 'Untitled'}`)
     .join('\n')
+  const def = agentByName(agentName)
   const draft = await completeJson(
     'enrichment',
     {
@@ -386,11 +477,14 @@ export async function generateIdentity(currentIdentity: string): Promise<string>
         'Return {"identity": "..."}.'
       ].join('\n'),
       prompt: [
+        `# Agent this identity is for`,
+        def ? `${def.name}${def.description ? ` — ${def.description}` : ''}` : '(primary)',
+        '',
         '# Existing identity (rewrite/extend, keep their voice)',
         currentIdentity.trim() || '(none yet)',
         '',
         '# Long-term memory',
-        promptMemory().trim() || '(empty)',
+        promptMemory(agentName).trim() || '(empty)',
         '',
         '# Recent note titles',
         notes || '(none)',
@@ -411,12 +505,14 @@ export async function generateIdentity(currentIdentity: string): Promise<string>
  * of schedule (Generative-Agents-style trigger, without importance bookkeeping).
  */
 export function startMemorySchedule(): void {
-  setTimeout(() => void consolidateMemory(), 2 * 60_000)
-  setInterval(() => void consolidateMemory(), 12 * 60 * 60_000)
+  setTimeout(() => void consolidateAll(), 2 * 60_000)
+  setInterval(() => void consolidateAll(), 12 * 60 * 60_000)
   setInterval(() => {
-    const text = readMemory()
-    if (recentEntryCount(text) > 15 || text.length > MEMORY_CAP * 0.8) {
-      void consolidateMemory()
+    for (const def of memoryOwners()) {
+      const text = readMemory(def.name)
+      if (recentEntryCount(text) > 15 || text.length > MEMORY_CAP * 0.8) {
+        void consolidateMemory(false, def.name)
+      }
     }
   }, 30 * 60_000)
 }

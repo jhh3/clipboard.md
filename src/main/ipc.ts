@@ -21,6 +21,7 @@ import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import {
   hidePalette,
+  getPalette,
   sendToPalette,
   broadcast,
   openSettingsWindow,
@@ -38,10 +39,10 @@ import {
   markRead,
   unreadCount,
   endSession,
-  askAssistant,
+  askAgent,
   sendClip,
   launchWithClip,
-  restartAssistant
+  restartAgent
 } from './agents'
 import { readMemory, saveMemoryEdit, consolidateMemory, generateIdentity } from './assistantMemory'
 import {
@@ -96,6 +97,7 @@ export function registerIpc(
 
   // ── agent sessions ───────────────────────────────────────────────────────
   handle('agents:profiles', () => profiles())
+  handle('agents:defs', () => profiles())
   handle('agents:sessions', (_e, includeEnded?: boolean) => listSessions(!!includeEnded))
   handle('agents:launch', async (_e, opts: { profile: string; prompt?: string; title?: string }) => {
     const key = await launchSession(opts)
@@ -115,8 +117,8 @@ export function registerIpc(
     await endSession(key)
     broadcast('agents:changed', { unread: unreadCount() })
   })
-  handle('agents:ask', async (_e, text: string) => {
-    const res = await askAssistant(text)
+  handle('agents:ask', async (_e, text: string, agent?: string) => {
+    const res = await askAgent(text, agent)
     broadcast('agents:changed', { unread: unreadCount() })
     return res
   })
@@ -126,13 +128,14 @@ export function registerIpc(
     broadcast('agents:changed', { unread: unreadCount() })
     return key
   })
-  handle('agents:restart-assistant', () => restartAssistant())
-  handle('assistant:memory-get', () => readMemory())
-  handle('assistant:memory-set', (_e, text: string) => saveMemoryEdit(text))
-  handle('assistant:consolidate', () => consolidateMemory(true))
-  handle('assistant:generate-identity', async () => {
+  handle('agents:restart-assistant', (_e, agent?: string) => restartAgent(agent))
+  handle('assistant:memory-get', (_e, agent?: string) => readMemory(agent))
+  handle('assistant:memory-set', (_e, text: string, agent?: string) => saveMemoryEdit(text, agent))
+  handle('assistant:consolidate', (_e, agent?: string) => consolidateMemory(true, agent))
+  handle('assistant:generate-identity', async (_e, agent?: string) => {
     try {
-      return { ok: true, text: await generateIdentity(getSettings().assistant.identity) }
+      const def = getSettings().agents.find((a) => a.name === agent) ?? getSettings().agents[0]
+      return { ok: true, text: await generateIdentity(def?.identity ?? '', agent) }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -312,6 +315,15 @@ export function registerIpc(
         })
         updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
         sendToPalette('items:changed', { reason: 'captured' })
+
+        // Context-aware destination: dictating with the palette OPEN means the
+        // words were for an agent, not the app underneath — route the transcript
+        // into the ask flow instead of injecting a paste keystroke.
+        const pal = getPalette()
+        if (pal && !pal.isDestroyed() && pal.isVisible()) {
+          pal.webContents.send('palette:dictation', { text })
+          return { ok: true, text, id, pasted: false }
+        }
 
         if (getSettings().dictation.autoPaste) {
           const outcome = await paste.pasteRaw(text, 'text')

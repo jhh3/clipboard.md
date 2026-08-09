@@ -54,8 +54,9 @@ function settingsFile(): string {
 
 export function getSettings(): AppSettings {
   if (cached) return cached
+  let raw: Record<string, unknown> | null = null
   try {
-    const raw = JSON.parse(readFileSync(settingsFile(), 'utf8'))
+    raw = JSON.parse(readFileSync(settingsFile(), 'utf8'))
     cached = { ...DEFAULT_SETTINGS, ...raw }
   } catch (err) {
     const file = settingsFile()
@@ -86,7 +87,38 @@ export function getSettings(): AppSettings {
     ]
   }
   if (cached!.smartCollections.length === 0) cached!.smartCollections = DEFAULT_COLLECTIONS
+  migrateAgents(cached!, raw)
   return cached!
+}
+
+/**
+ * Pre-multi-agent settings had spawn recipes in `agentProfiles` and the primary's
+ * persona in `assistant`. Fold both into `agents` once; afterwards `agents` is
+ * canonical and the legacy fields are ignored (left in place for rollback).
+ */
+function migrateAgents(s: AppSettings, raw: Record<string, unknown> | null): void {
+  if (raw && 'agents' in raw) return // already migrated (or fresh install writing it)
+  const legacy = (raw?.agentProfiles as AppSettings['agents'] | undefined) ?? []
+  const base = legacy.length > 0 ? legacy : DEFAULT_SETTINGS.agents
+  s.agents = base.map((p, i) => {
+    // Name-matched defaults backfill what old profiles never stored — several
+    // installs carry studio with an empty cwd from before the default existed.
+    const dflt = DEFAULT_SETTINGS.agents.find((d) => d.name === p.name)
+    return {
+      persistent: true,
+      memory: i === 0 ? ('own' as const) : ('off' as const),
+      description: dflt?.description,
+      ...(i === 0
+        ? {
+            prewarm: s.assistant.prewarm !== false,
+            identity: s.assistant.identity,
+            identityFiles: s.assistant.identityFiles
+          }
+        : {}),
+      ...p,
+      cwd: p.cwd || dflt?.cwd || ''
+    }
+  })
 }
 
 let flushTimer: ReturnType<typeof setTimeout> | null = null

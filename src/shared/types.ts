@@ -17,10 +17,13 @@ export interface Note {
 }
 
 /**
- * A spawn recipe for an agent session. Deliberately carries no model: sessions
- * inherit the CLI default so profiles don't drift as that default changes.
+ * An agent definition: spawn recipe + persona. Deliberately carries no model:
+ * sessions inherit the CLI default so definitions don't drift as it changes.
+ *
+ * The first definition in the list is the PRIMARY — the palette's default ask
+ * target, and the owner of the main memory file.
  */
-export interface AgentProfile {
+export interface AgentDef {
   name: string
   /** Where the session runs. Empty means the home directory. */
   cwd: string
@@ -31,7 +34,23 @@ export interface AgentProfile {
   /** Default true when tmux is installed, so the TUI stays attachable. */
   tmux?: boolean
   appendSystemPrompt?: string
+  /** What this agent is for. Shown in pickers — and the signal a future
+   *  auto-router will classify ask text against. Write it like routing rules. */
+  description?: string
+  /** Persona injected into the session's system prompt (with identityFiles). */
+  identity?: string
+  identityFiles?: string[]
+  /** 'own' = private memory file · 'shared' = read/write the primary's file ·
+   *  'off' (default for non-primary) = no long-term memory. */
+  memory?: 'own' | 'shared' | 'off'
+  /** Keep a named singleton session the ask row can target (default true). */
+  persistent?: boolean
+  /** Launch the singleton at app start so the first ask is instant. */
+  prewarm?: boolean
 }
+
+/** Back-compat alias — the spawn-recipe subset predates personas. */
+export type AgentProfile = AgentDef
 
 export interface AgentSession {
   key: string
@@ -271,9 +290,11 @@ export interface AppSettings {
   }
   voiceSamples: string[]
   /**
-   * The primary personal-assistant session: identity text and files injected into its
-   * system prompt at launch. Editing these takes effect on the next (re)start.
+   * Agent definitions; agents[0] is the primary. Canonical home for identity —
+   * the legacy `assistant` block below migrates into agents[0] on first load.
    */
+  agents: AgentDef[]
+  /** LEGACY (pre-multi-agent): folded into agents[0] by getSettings(). */
   assistant: {
     identity: string
     /** Absolute paths to markdown/text files appended to the identity. */
@@ -311,22 +332,23 @@ export interface IpcInvokeMap {
   'agents:inbox': () => AgentMessage[]
   'agents:mark-read': (key?: string) => void
   'agents:end': (key: string) => void
-  /** Ask the personal assistant. Ensures the singleton session exists; delivery is
-   *  retried in the background, so this returns as soon as the session is known. */
-  'agents:ask': (text: string) => { key: string }
+  /** Ask a defined agent (default: the primary). Ensures its singleton session
+   *  exists; delivery retries in the background, so this returns immediately. */
+  'agents:ask': (text: string, agent?: string) => { key: string }
   /** Send a clip's content into a running session (formats text/image consistently). */
   'agents:send-clip': (key: string, itemId: number) => boolean
   /** Start a new session whose opening prompt is the clip's content. */
   'agents:launch-with-clip': (opts: { profile: string; itemId: number }) => string
-  /** End the assistant session so the next ask relaunches it with fresh identity. */
-  'agents:restart-assistant': () => void
-  /** The assistant's long-term memory file (markdown). */
-  'assistant:memory-get': () => string
-  'assistant:memory-set': (text: string) => void
+  /** End an agent's singleton session so the next ask relaunches it with fresh
+   *  identity/memory (default: the primary). */
+  'agents:restart-assistant': (agent?: string) => void
+  /** An agent's long-term memory file (markdown); default = the primary's. */
+  'assistant:memory-get': (agent?: string) => string
+  'assistant:memory-set': (text: string, agent?: string) => void
   /** Distill recent conversations/notes into the memory file now. */
-  'assistant:consolidate': () => { ok: boolean; changed: boolean; error?: string }
+  'assistant:consolidate': (agent?: string) => { ok: boolean; changed: boolean; error?: string }
   /** Draft an identity from what the app already knows (memory, notes, usage). */
-  'assistant:generate-identity': () => { ok: boolean; text?: string; error?: string }
+  'assistant:generate-identity': (agent?: string) => { ok: boolean; text?: string; error?: string }
   'notes:list': (opts: { q?: string }) => NoteSummary[]
   'notes:get': (id: number) => Note | null
   'notes:create': (input?: { title?: string; content?: string }) => number
@@ -379,6 +401,7 @@ export interface IpcInvokeMap {
   'window:hide': () => void
   /** Dictation HUD tells main it finished (transcript delivered or aborted). */
   'dictation:done': () => void
+  'agents:defs': () => AgentDef[]
   'window:open-settings': () => void
   'window:open-scratchpad': (itemId?: number) => void
   'window:open-notes': (noteId?: number) => void
@@ -399,6 +422,9 @@ export interface IpcEventMap {
   'notes:open': { id?: number }
   'dictation:start': Record<string, never>
   'dictation:stop': Record<string, never>
+  /** A dictation finished while the palette was open — its transcript becomes an
+   *  ask instead of a paste. */
+  'palette:dictation': { text: string }
   'toast': { message: string; kind: 'info' | 'error' | 'success' }
   /** Broadcast after any settings change so every window/service picks it up live. */
   'settings:changed': { settings: AppSettings }
@@ -421,6 +447,25 @@ export const DEFAULT_SETTINGS: AppSettings = {
   models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
   dictation: { autoPaste: true, keepAudio: true },
   voiceSamples: [],
+  agents: [
+    {
+      name: 'personal',
+      cwd: '',
+      description: 'General personal assistant: questions, quick tasks, anything not code-specific.',
+      memory: 'own',
+      persistent: true,
+      prewarm: true,
+      tmux: true
+    },
+    {
+      name: 'studio',
+      cwd: '/Users/jhh3/Documents/work-code/2025/nullframe-studio',
+      description: 'The nullframe-studio codebase: bugs, features, questions about that repo.',
+      memory: 'off',
+      persistent: true,
+      tmux: true
+    }
+  ],
   assistant: { identity: '', identityFiles: [], prewarm: true },
   smartPaste: true,
   savedActions: [],

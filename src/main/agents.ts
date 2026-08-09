@@ -8,7 +8,7 @@ import { getDb } from './store/db'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { resumable } from './agentLifecycle'
-import { memoryFile, promptMemory } from './assistantMemory'
+import { agentByName, memoryFile, promptMemory, sessionTitleFor } from './assistantMemory'
 import { CHANNEL_REF, hookEnv } from './agentPlugin'
 import type { AgentProfile, AgentSession, AgentMessage, ClipItem } from '@shared/types'
 
@@ -43,7 +43,7 @@ function dbPath(): string {
 // ── profiles ────────────────────────────────────────────────────────────────
 
 export function profiles(): AgentProfile[] {
-  return getSettings().agentProfiles
+  return getSettings().agents
 }
 
 export function profile(name: string): AgentProfile | undefined {
@@ -81,18 +81,21 @@ function claudeArgs(p: AgentProfile, key: string, prompt?: string, systemPrompt?
  * they go into the tmux session's environment and the MCP server inherits them
  * through claude. Same approach as mobot.
  */
-function sessionEnv(key: string): Record<string, string> {
-  return {
+function sessionEnv(key: string, def?: AgentProfile): Record<string, string> {
+  const env: Record<string, string> = {
     CLIPMD_SESSION_KEY: key,
     CLIPMD_DB: dbPath(),
     CLIPMD_BRIDGE_FILE: discoveryFile(key),
     CLIPMD_BRIDGE_TOKEN: randomBytes(16).toString('hex'),
-    // Where the bridge's `remember` tool appends observations.
-    CLIPMD_MEMORY_FILE: memoryFile(),
     // ELECTRON_RUN_AS_NODE so the Stop hook can invoke our binary as plain node.
     ELECTRON_RUN_AS_NODE: '1',
     ...hookEnv()
   }
+  // Where the bridge's `remember` tool appends observations — per agent; an
+  // agent with memory 'off' simply gets no file (the tool reports unavailable).
+  const mem = memoryFile(def?.name)
+  if (mem) env.CLIPMD_MEMORY_FILE = mem
+  return env
 }
 
 async function tmuxAvailable(): Promise<boolean> {
@@ -259,13 +262,13 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
   try {
     if (useTmux) {
       // -d so launching never steals the user's terminal; they attach when they want.
-      const env = sessionEnv(key)
+      const env = sessionEnv(key, p)
       const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
       await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', cwd, ...envFlags, 'claude', ...args])
     } else {
       const child = await spawnDetached('claude', args, {
         cwd,
-        env: { ...process.env, ...sessionEnv(key) }
+        env: { ...process.env, ...sessionEnv(key, p) }
       })
       db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
     }
@@ -357,17 +360,18 @@ export async function reviveSession(key: string): Promise<boolean> {
   if (!row || !p) return false
 
   try {
-    // The assistant's identity is not part of the persisted conversation — reapply it
+    // An agent's identity is not part of the persisted conversation — reapply it
     // on every revive or the woken session forgets who it is.
-    const sys = row.title === ASSISTANT_TITLE ? assistantSystemPrompt() : undefined
+    const def = defForTitle(row.title)
+    const sys = def ? agentSystemPrompt(def) : undefined
     const args = ['--resume', sessionId, ...claudeArgs(p, key, undefined, sys)]
     if (p.tmux !== false && (await tmuxAvailable())) {
-      const envFlags = Object.entries(sessionEnv(key)).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+      const envFlags = Object.entries(sessionEnv(key, p)).flatMap(([k, v]) => ['-e', `${k}=${v}`])
       await execFileP('tmux', ['new-session', '-d', '-s', key, '-c', row.cwd, ...envFlags, 'claude', ...args])
     } else {
       const child = await spawnDetached('claude', args, {
         cwd: row.cwd,
-        env: { ...process.env, ...sessionEnv(key) }
+        env: { ...process.env, ...sessionEnv(key, p) }
       })
       db.prepare('UPDATE agent_sessions SET pid = ? WHERE key = ?').run(child.pid ?? null, key)
     }
@@ -385,37 +389,48 @@ export async function reviveSession(key: string): Promise<boolean> {
   }
 }
 
-// ── the personal assistant ──────────────────────────────────────────────────
+// ── defined agents & their singleton sessions ───────────────────────────────
 
 /**
- * The assistant is a SINGLETON personal session, marked by this title. One, because
- * "ask my assistant" must have exactly one answerer — a new session per question
- * would mean a stranger with no memory every time.
+ * Every persistent agent DEFINITION owns one singleton session, marked by its
+ * title (sessionTitleFor — the primary keeps the historical 'Assistant').
+ * One session per agent, because "ask X" must have exactly one answerer with
+ * continuity — a new session per question would be a stranger every time.
  */
-export const ASSISTANT_TITLE = 'Assistant'
+
+/** The definition behind a session title, for revive-time prompt reapplication. */
+function defForTitle(title: string | null): AgentProfile | undefined {
+  if (!title) return undefined
+  return profiles().find((d) => sessionTitleFor(d) === title)
+}
 
 /**
  * Identity + role preamble injected via --append-system-prompt.
  *
  * Read fresh on every (re)launch rather than cached: the whole point of putting
- * identity in Settings is that editing it changes the assistant.
+ * identity in Settings is that editing it changes the agent.
  */
-export function assistantSystemPrompt(): string {
-  const a = getSettings().assistant
+export function agentSystemPrompt(def: AgentProfile): string {
+  const hasMemory = memoryFile(def.name) !== null
   const parts = [
     [
-      "You are the user's personal assistant, running inside clipboard.md (their",
-      'clipboard manager). Questions arrive as <channel> messages. Answer in plain',
-      'text — replies are mirrored to an inbox panel, so keep them short and direct.',
+      `You are the user's "${def.name}" agent, running inside clipboard.md (their`,
+      'clipboard manager).',
+      def.description ? `Your role: ${def.description}` : '',
+      'Questions arrive as <channel> messages. Answer in plain text — replies are',
+      'mirrored to an inbox panel, so keep them short and direct.',
       'The clipmd tools give you their clipboard history (search_clipboard,',
       'recent_clips, get_clip) and their notes (save_note); when a question refers to',
-      '"this" or something they copied, look at recent clips first. When you learn a',
-      'durable fact about the user (a preference, a project, a decision), record it',
-      'with the remember tool.'
-    ].join('\n')
+      '"this" or something they copied, look at recent clips first.',
+      hasMemory
+        ? 'When you learn a durable fact about the user (a preference, a project, a decision), record it with the remember tool.'
+        : ''
+    ]
+      .filter(Boolean)
+      .join('\n')
   ]
-  if (a.identity.trim()) parts.push(a.identity.trim())
-  const memory = promptMemory().trim()
+  if (def.identity?.trim()) parts.push(def.identity.trim())
+  const memory = promptMemory(def.name).trim()
   if (memory) {
     parts.push(
       [
@@ -428,7 +443,7 @@ export function assistantSystemPrompt(): string {
       ].join('\n')
     )
   }
-  for (const file of a.identityFiles) {
+  for (const file of def.identityFiles ?? []) {
     try {
       // Cap per file: a runaway path (a log, a database) must not eat the prompt.
       const text = readFileSync(file, 'utf8').slice(0, 32_768).trim()
@@ -440,7 +455,7 @@ export function assistantSystemPrompt(): string {
   return parts.join('\n\n')
 }
 
-function liveAssistant(): string | null {
+function liveAgent(def: AgentProfile): string | null {
   // 'starting' counts only while a launch could plausibly still be in flight; an
   // old 'starting' row is a corpse from a failed spawn, and adopting it would
   // swallow every ask until the sweep buries it.
@@ -454,17 +469,17 @@ function liveAssistant(): string | null {
        )
        ORDER BY created_at DESC`
     )
-    .all(ASSISTANT_TITLE, Date.now() - 3 * 60_000) as Array<{ key: string; status: string }>
+    .all(sessionTitleFor(def), Date.now() - 3 * 60_000) as Array<{ key: string; status: string }>
   for (const row of rows) {
     // A dormant session whose Claude session id was never learned CANNOT be
     // revived — adopting it would blackhole every ask until the 7-day teardown.
-    // Bury it now and fall through to launching a fresh assistant.
+    // Bury it now and fall through to launching a fresh one.
     if (row.status === 'dormant' && !resumable(row.key)) {
       db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(
         Date.now(),
         row.key
       )
-      console.log(`[agents] buried unresumable dormant assistant ${row.key}`)
+      console.log(`[agents] buried unresumable dormant session for ${def.name}: ${row.key}`)
       continue
     }
     return row.key
@@ -472,42 +487,41 @@ function liveAssistant(): string | null {
   return null
 }
 
-/** The profile the assistant runs under: 'personal' by convention, else the first. */
-function assistantProfile(): AgentProfile | undefined {
-  return profile('personal') ?? profiles()[0]
-}
-
 /**
- * Ask the personal assistant, starting it if needed. Returns the session key
- * immediately; delivery happens in the background because a cold session takes
- * many seconds to reach chat, and the palette must not hang on that.
+ * Ask a defined agent (default: the primary), starting its singleton if needed.
+ * Returns the session key immediately; delivery happens in the background
+ * because a cold session takes many seconds to reach chat, and the palette
+ * must not hang on that.
  */
-/** In-flight launch, so two rapid asks share one assistant instead of spawning two. */
-let assistantLaunch: Promise<string> | null = null
+/** In-flight launches per agent, so rapid asks share one session, not spawn two. */
+const agentLaunches = new Map<string, Promise<string>>()
 
-export async function askAssistant(text: string): Promise<{ key: string }> {
-  if (assistantLaunch) {
+export async function askAgent(text: string, agentName?: string): Promise<{ key: string }> {
+  const def = agentByName(agentName)
+  if (!def) throw new Error(agentName ? `unknown agent: ${agentName}` : 'no agents configured')
+
+  const inFlight = agentLaunches.get(def.name)
+  if (inFlight) {
     // A launch is already under way — join it and deliver once the bridge is up.
-    const key = await assistantLaunch
+    const key = await inFlight
     void deliverWithRetry(key, text, 'message')
     return { key }
   }
-  const existing = liveAssistant()
+  const existing = liveAgent(def)
   if (!existing) {
-    const p = assistantProfile()
-    if (!p) throw new Error('no agent profiles configured')
     // A fresh session takes the question as its opening CLI prompt — no bridge
     // wait, and the question cannot be lost in the startup window.
-    assistantLaunch = launchSession({
-      profile: p.name,
-      title: ASSISTANT_TITLE,
+    const launch = launchSession({
+      profile: def.name,
+      title: sessionTitleFor(def),
       prompt: text,
-      systemPrompt: assistantSystemPrompt()
+      systemPrompt: agentSystemPrompt(def)
     })
+    agentLaunches.set(def.name, launch)
     try {
-      return { key: await assistantLaunch }
+      return { key: await launch }
     } finally {
-      assistantLaunch = null
+      agentLaunches.delete(def.name)
     }
   }
   void deliverWithRetry(existing, text, 'message')
@@ -554,35 +568,39 @@ async function deliverWithRetry(key: string, text: string, kind: string): Promis
   }
 }
 
-/** End the assistant so the next ask relaunches it with fresh identity/settings. */
-export async function restartAssistant(): Promise<void> {
-  const key = liveAssistant()
+/** End an agent's singleton (default: the primary) so the next ask relaunches
+ *  it with fresh identity/memory/settings. */
+export async function restartAgent(agentName?: string): Promise<void> {
+  const def = agentByName(agentName)
+  if (!def) return
+  const key = liveAgent(def)
   if (key) await endSession(key)
 }
 
 /**
- * Start the assistant at app launch so the first ask doesn't eat a cold start
- * (10-30s of claude booting + menus). An idle session costs nothing until spoken
- * to, and the lifecycle sweep will put it to sleep if it stays unused.
+ * Start prewarm-flagged agents at app launch so their first ask doesn't eat a
+ * cold start (10-30s of claude booting + menus). An idle session costs nothing
+ * until spoken to, and the lifecycle sweep puts it to sleep if unused.
  */
-export async function prewarmAssistant(): Promise<void> {
-  if (getSettings().assistant.prewarm === false) return
-  if (liveAssistant() || assistantLaunch) return
-  const p = assistantProfile()
-  if (!p) return
-  try {
-    assistantLaunch = launchSession({
-      profile: p.name,
-      title: ASSISTANT_TITLE,
-      systemPrompt: assistantSystemPrompt()
-    })
-    await assistantLaunch
-    console.log('[agents] assistant pre-warmed')
-  } catch (err) {
-    // Missing claude/tmux at launch is fine — the first real ask will report it.
-    console.error('[agents] could not pre-warm the assistant:', err)
-  } finally {
-    assistantLaunch = null
+export async function prewarmAgents(): Promise<void> {
+  for (const def of profiles()) {
+    if (def.prewarm !== true || def.persistent === false) continue
+    if (liveAgent(def) || agentLaunches.has(def.name)) continue
+    try {
+      const launch = launchSession({
+        profile: def.name,
+        title: sessionTitleFor(def),
+        systemPrompt: agentSystemPrompt(def)
+      })
+      agentLaunches.set(def.name, launch)
+      await launch
+      console.log(`[agents] ${def.name} pre-warmed`)
+    } catch (err) {
+      // Missing claude/tmux at launch is fine — the first real ask will report it.
+      console.error(`[agents] could not pre-warm ${def.name}:`, err)
+    } finally {
+      agentLaunches.delete(def.name)
+    }
   }
 }
 

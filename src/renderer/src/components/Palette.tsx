@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentDef,
   AgentMessage,
   AgentSession,
   ClipItem,
@@ -81,6 +82,9 @@ export default function Palette() {
   const [agentInput, setAgentInput] = useState('')
   const [agentHighlight, setAgentHighlight] = useState(0)
   const [askThread, setAskThread] = useState<AgentMessage[]>([])
+  const [agentDefs, setAgentDefs] = useState<AgentDef[]>([])
+  /** Sticky ask target (⇧Tab cycles it); null = the primary. */
+  const [askTarget, setAskTarget] = useState<string | null>(null)
   const [micState, setMicState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [showHelp, setShowHelp] = useState(false)
   const [running, setRunning] = useState(false)
@@ -121,9 +125,44 @@ export default function Palette() {
   const allChips = useMemo(() => [...chips, ...sessionChips], [chips, sessionChips])
   const activeChip = allChips.find((c) => c.id === activeChipId) ?? allChips[0]
 
+  // ── ask target: sticky (⇧Tab) or @mention for one ask ─────────────────────
+  const persistentAgents = useMemo(
+    () => agentDefs.filter((d) => d.persistent !== false),
+    [agentDefs]
+  )
+  /** `@stu how do I…` targets the studio agent for this ask; the prefix is
+   *  stripped from both the search and the sent text. */
+  const mention = useMemo(() => {
+    const m = /^@(\S*)(?:\s+([\s\S]*))?$/.exec(query)
+    if (!m) return null
+    const frag = m[1].toLowerCase()
+    const def =
+      persistentAgents.find((d) => d.name.toLowerCase() === frag) ??
+      persistentAgents.find((d) => frag.length > 0 && d.name.toLowerCase().startsWith(frag)) ??
+      null
+    return def ? { def, text: (m[2] ?? '').trim() } : null
+  }, [query, persistentAgents])
+
+  const targetAgent: AgentDef | null =
+    mention?.def ??
+    persistentAgents.find((d) => d.name === askTarget) ??
+    persistentAgents[0] ??
+    null
+  /** What would actually be asked (mention prefix stripped). */
+  const askText = (mention ? mention.text : query).trim()
+  /** What the list should filter by — a mention prefix is not a search term. */
+  const searchQuery = mention ? mention.text : query
+
+  const cycleAgent = useCallback(() => {
+    if (persistentAgents.length < 2) return
+    const current = targetAgent?.name
+    const idx = persistentAgents.findIndex((d) => d.name === current)
+    setAskTarget(persistentAgents[(idx + 1) % persistentAgents.length].name)
+  }, [persistentAgents, targetAgent])
+
   // ── search ────────────────────────────────────────────────────────────────
   const { items, total, searchMode, refresh } = useSearch(
-    query,
+    searchQuery,
     activeChip.kind ?? 'all',
     activeChip.collection
   )
@@ -154,6 +193,9 @@ export default function Palette() {
       .catch(() => {})
     invoke('sessions:list')
       .then(setSessions)
+      .catch(() => {})
+    invoke('agents:defs')
+      .then(setAgentDefs)
       .catch(() => {})
   }, [])
 
@@ -304,7 +346,7 @@ export default function Palette() {
 
   const askAssistant = useCallback(
     async (textArg?: string) => {
-      const text = (textArg ?? query).trim()
+      const text = (textArg ?? askText).trim()
       if (!text || runningRef.current) return
       runningRef.current = true
       setRunning(true)
@@ -314,7 +356,7 @@ export default function Palette() {
           // retry when the session is still waking, so false means truly gone.
           const ok = await invoke('agents:send', mode.sessionKey, text, 'message')
           if (!ok) {
-            addToast('That assistant session has ended — Esc and ask again', 'error')
+            addToast('That agent session has ended — Esc and ask again', 'error')
             return
           }
           setAskThread((t) => [...t, localMsg(mode.sessionKey, text)])
@@ -324,19 +366,19 @@ export default function Palette() {
           // the question, and this stamp is what scopes the thread — a lookback
           // window here once showed the PREVIOUS answer as the new one.
           const askedAt = Date.now()
-          const res = await invoke('agents:ask', text)
+          const res = await invoke('agents:ask', text, targetAgent?.name)
           setAskThread([localMsg(res.key, text)])
           setMode({ name: 'ask', sessionKey: res.key, askedAt })
           setQuery('')
         }
       } catch (err) {
-        addToast(err instanceof Error ? err.message : 'Could not reach the assistant', 'error')
+        addToast(err instanceof Error ? err.message : 'Could not reach the agent', 'error')
       } finally {
         runningRef.current = false
         setRunning(false)
       }
     },
-    [query, mode, addToast]
+    [askText, targetAgent, mode, addToast]
   )
 
   // Poll the conversation while ask mode is up. The reply is written to SQLite by
@@ -521,6 +563,15 @@ export default function Palette() {
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [cancelMic])
+
+  // Hold-to-talk finished while the palette was open: the transcript is an ask
+  // for the current target, not a paste (main routes it here — see ipc.ts).
+  useEffect(() => {
+    return on('palette:dictation', (p) => {
+      const text = p.text.trim()
+      if (text) void askRef.current(text)
+    })
+  }, [])
 
   // ── send to agent ─────────────────────────────────────────────────────────
   // `explicit` pins the clip (the action panel passes its mode.item): the visible
@@ -1038,7 +1089,13 @@ export default function Palette() {
     }
 
     // ── normal mode ──
-    // Tab and ⌘K both open the action panel (⌘K for the Raycast/Linear reflex).
+    // ⇧Tab retargets the ask row; Tab and ⌘K open the action panel (⌘K for the
+    // Raycast/Linear reflex).
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault()
+      cycleAgent()
+      return
+    }
     if (e.key === 'Tab' || (mod && e.key.toLowerCase() === 'k')) {
       e.preventDefault()
       void enterActionMode()
@@ -1068,15 +1125,17 @@ export default function Palette() {
     if (e.key === 'Enter') {
       e.preventDefault()
       if (sel < 0) {
-        // The ask row: Enter hands the typed text to the personal assistant.
-        // With nothing typed there is nothing to ask — fall through to the
-        // first item, honouring the same modifiers as an explicit selection
+        // The ask row: Enter hands the typed text to the targeted agent.
+        // A bare "@name" (mention, no text yet) does nothing. With nothing
+        // typed at all there is nothing to ask — fall through to the first
+        // item, honouring the same modifiers as an explicit selection
         // (mod+Enter must still COPY; regressing it to paste injected keys
         // into whatever app had focus).
-        if (query.trim()) {
+        if (askText) {
           void askAssistant()
           return
         }
+        if (mention) return
         if (!visible[0]) return
         if (mod) void copyItem(visible[0])
         else void pasteItem(visible[0], e.shiftKey)
@@ -1151,7 +1210,8 @@ export default function Palette() {
     mode.name === 'normal'
       ? sel < 0
         ? [
-            ['↵', query.trim() ? 'ask assistant' : 'paste latest'],
+            ['↵', askText ? `ask ${targetAgent?.name ?? 'assistant'}` : 'paste latest'],
+            ...(persistentAgents.length > 1 ? ([['⇧Tab', 'agent']] as Array<[string, string]>) : []),
             ['↓', 'history'],
             ['Tab', 'actions'],
             [`${MOD}1-9`, 'quick paste'],
@@ -1403,18 +1463,26 @@ export default function Palette() {
           <button
             className={'ask-row' + (sel < 0 && mode.name === 'normal' ? ' selected' : '')}
             onClick={() => {
-              if (query.trim()) void askAssistant()
+              if (askText) void askAssistant()
               else searchInputRef.current?.focus()
             }}
             tabIndex={-1}
           >
             <SparkIcon className="ask-spark" size={14} />
-            {query.trim() ? (
+            {askText ? (
               <span className="ask-text">
-                Ask assistant: <em>“{query.trim()}”</em>
+                Ask {targetAgent?.name ?? 'assistant'}: <em>“{askText}”</em>
               </span>
             ) : (
-              <span className="ask-text dim">Ask your assistant — type, then ↵</span>
+              <span className="ask-text dim">
+                Ask {targetAgent?.name ?? 'your assistant'} — type, then ↵
+              </span>
+            )}
+            {persistentAgents.length > 1 && (
+              <span className="ask-agent" title={targetAgent?.description ?? ''}>
+                @{targetAgent?.name}
+                <kbd>⇧Tab</kbd>
+              </span>
             )}
             <kbd>↵</kbd>
           </button>
