@@ -407,7 +407,22 @@ if (!gotLock) {
         void drainEnrichment()
       }
     })
-    const paste = new PasteService(capture, hidePalette)
+    // Hide EVERY surface of ours before a paste is injected, not just the palette.
+    //
+    // The injected Ctrl+V goes to whatever the compositor considers focused. Passing
+    // only hidePalette left the dictation HUD on screen — it is still showing the
+    // transcript when the keystroke fires — so dictation "pasted" into the HUD and
+    // the user saw the text reach the clipboard and nowhere else. The portal even
+    // reported success, because injection genuinely happened; it just landed on us.
+    //
+    // This is the same failure the palette had (a focusable window eating its own
+    // paste). focusable:false plus showInactive() fixed it under Xwayland, but those
+    // are hints a Wayland compositor is free to ignore, so the reliable answer is to
+    // not be on screen at all when the key is sent.
+    const paste = new PasteService(capture, () => {
+      hidePalette()
+      hideDictationHud()
+    })
 
     // AI transforms: the "my voice" system context rides along when samples exist.
     setAiTransform(async (prompt, content, imagePath, provider) => {
