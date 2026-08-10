@@ -298,6 +298,13 @@ export interface AppSettings {
      * Post-recognition on purpose — see src/main/dictionary.ts for why not hotwords.
      */
     dictionary?: string
+    /**
+     * Strip hesitation sounds ("um", "uh") and repair the punctuation left behind.
+     * Undefined means on: this is meant to work without being configured.
+     */
+    cleanup?: boolean
+    /** Output formatting. Undefined = 'as-spoken'. */
+    style?: 'as-spoken' | 'casual'
   }
   voiceSamples: string[]
   /**

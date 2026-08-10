@@ -308,7 +308,11 @@ export function registerIpc(
         cleanup()
         // Applied to both lanes: the scratchpad mic and the dictation HUD produce the
         // same transcripts and want the same jargon spelled the same way.
-        const text = correctTranscript(raw, getSettings().dictation.dictionary)
+        const text = correctTranscript(raw, {
+          dictionary: getSettings().dictation.dictionary,
+          cleanup: getSettings().dictation.cleanup,
+          style: getSettings().dictation.style
+        })
         if (!payload.dictation) return { ok: true, text }
         if (!text) return { ok: false, error: 'Nothing was transcribed' }
 

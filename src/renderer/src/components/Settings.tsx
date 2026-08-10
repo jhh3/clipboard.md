@@ -1418,6 +1418,35 @@ export default function Settings() {
                 />
               </Row>
               <Row
+                label="Style"
+                sub="How the transcript is formatted. Casual lowercases sentence openers and drops the final full stop, the way people type in chat — proper nouns, acronyms and “I” are left alone."
+              >
+                <select
+                  className="set-input"
+                  value={s.dictation.style ?? 'as-spoken'}
+                  onChange={(e) =>
+                    patch({
+                      dictation: {
+                        ...s.dictation,
+                        style: e.target.value as 'as-spoken' | 'casual'
+                      }
+                    })
+                  }
+                >
+                  <option value="as-spoken">As spoken</option>
+                  <option value="casual">Casual (lowercase)</option>
+                </select>
+              </Row>
+              <Row
+                label="Clean up transcripts"
+                sub={'Remove "um" and "uh" and tidy the punctuation left behind. Runs offline. Ambiguous fillers like "like" and "you know" are left alone — only a model can tell those from ordinary words.'}
+              >
+                <Toggle
+                  checked={s.dictation.cleanup !== false}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, cleanup: v } })}
+                />
+              </Row>
+              <Row
                 label="Dictation dictionary"
                 sub="Fix names and jargon the recogniser gets wrong. One rule per line: heard => written, or a bare word to fix its spelling. Applied offline, after transcription."
               >

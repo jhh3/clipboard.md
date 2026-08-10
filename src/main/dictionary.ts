@@ -70,8 +70,113 @@ export function applyDictionary(text: string, rules: DictRule[]): string {
   return out
 }
 
-/** Convenience: parse and apply in one call. */
-export function correctTranscript(text: string, dictionary: string | undefined): string {
-  const rules = parseDictionary(dictionary)
-  return rules.length ? applyDictionary(text, rules) : text
+/**
+ * Hesitation sounds, removed by default.
+ *
+ * Only unambiguous ones. The tempting additions — "like", "you know", "I mean",
+ * "basically", "actually", "right" — are discourse markers that are also ordinary
+ * English ("I like this"), and a find-and-replace cannot tell the two apart. Deleting
+ * a real word is invisible to the user and unrecoverable, so those belong to a model
+ * that can read the sentence, or to the user's own dictionary. Every tool surveyed
+ * that strips them does it with an LLM, not a wordlist.
+ *
+ * Specific exclusions, each for a reason:
+ *  - `mm` would eat the unit in "5 mm wide"
+ *  - bare `ah` is plausibly deliberate ("ah, right"), so only `ahh`+ counts
+ *  - `mhm` and `uh-huh` mean *yes*; removing them inverts the sentence
+ */
+const FILLER_RE = /\b(?:u[mh]+|erm|er+|hm+|ahh+|ahem)\b/gi
+
+/**
+ * Repair what deletion leaves behind.
+ *
+ * Parakeet emits punctuation, so removing a word from the middle of a clause leaves
+ * orphaned commas and doubled spaces: "So, um, I think" becomes "So, , I think"
+ * without this. Only the first character is re-capitalised — doing it after every
+ * sentence end would also rewrite "vs. the" into "vs. The".
+ */
+function tidy(text: string): string {
+  const out = text
+    .replace(/[ \t]+/g, ' ')
+    // Orphaned separators left where a filler used to be.
+    .replace(/([,;:])(\s*[,;:])+/g, '$1')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    // A clause that now starts with its own separator: ", I think" -> "I think".
+    .replace(/(^|[.!?]\s)\s*[,;:]\s*/g, '$1')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+    .trim()
+  return out.charAt(0).toUpperCase() + out.slice(1)
+}
+
+/** Strip hesitation sounds. Punctuation and spacing repair happens in tidy(). */
+export function stripFillers(text: string): string {
+  return text.replace(FILLER_RE, '')
+}
+
+/**
+ * Output style. Only styles that can be produced deterministically live here.
+ *
+ * 'casual' is real formatting, not a rewrite: it lowercases sentence openers and
+ * drops a lone trailing full stop, which is how people actually type in chat. A
+ * 'formal'/'professional' style is deliberately absent — genuine formality means
+ * rewording, which needs a model, and faking it with regex would produce text that
+ * is neither the user's words nor good prose.
+ */
+export type TranscriptStyle = 'as-spoken' | 'casual'
+
+/**
+ * Words that are safe to decapitalise at the start of a sentence.
+ *
+ * An allowlist, not a blanket `toLowerCase()`, because a sentence can begin with a
+ * proper noun: "John said yes" must not become "john said yes". Lowercasing is only
+ * applied when the opening word is one of these ordinary function words, so a name,
+ * an acronym, or any word we don't recognise is left exactly as recognised.
+ */
+const SAFE_STARTERS = new Set([
+  'a', 'an', 'the', 'and', 'but', 'or', 'so', 'if', 'when', 'while', 'because',
+  'we', 'you', 'they', 'he', 'she', 'it', 'this', 'that', 'these', 'those', 'there',
+  'here', 'what', 'why', 'how', 'who', 'which', 'is', 'are', 'was', 'were', 'do',
+  'does', 'did', 'can', 'could', 'would', 'should', 'will', 'let', 'please', 'hey',
+  'hi', 'ok', 'okay', 'yeah', 'yes', 'no', 'maybe', 'just', 'also', 'my', 'our',
+  'your', 'their', 'not', 'need', 'want', 'got', 'have', 'has', 'had', 'going',
+  'thanks', 'sorry', 'sure', 'looks', 'seems', 'think', 'trying', 'still'
+])
+
+export function applyStyle(text: string, style: TranscriptStyle): string {
+  if (style !== 'casual' || !text) return text
+  // Lowercase the opener of each sentence, but only for words on the allowlist.
+  const lowered = text.replace(/(^|[.!?]\s+)([A-Za-z']+)/g, (m, lead: string, word: string) => {
+    // "I" and its contractions stay capitalised; so does anything shouted or unknown.
+    if (word === 'I' || word.startsWith("I'")) return m
+    if (word.toUpperCase() === word && word.length > 1) return m // acronym
+    return SAFE_STARTERS.has(word.toLowerCase()) ? `${lead}${word.toLowerCase()}` : m
+  })
+  // One sentence, ending in a full stop: chat messages don't carry one. '?' and '!'
+  // are meaningful, and multi-sentence text still wants its punctuation.
+  const sentences = lowered.match(/[.!?](\s|$)/g)?.length ?? 0
+  return sentences === 1 && lowered.endsWith('.') ? lowered.slice(0, -1) : lowered
+}
+
+export interface CorrectionOptions {
+  dictionary?: string
+  /** Remove hesitation sounds and repair the punctuation left behind. */
+  cleanup?: boolean
+  /** Output formatting. Defaults to 'as-spoken'. */
+  style?: TranscriptStyle
+}
+
+/** The full post-recognition pass: fillers, then user rules, then repair. */
+export function correctTranscript(text: string, opts: CorrectionOptions = {}): string {
+  const rules = parseDictionary(opts.dictionary)
+  // Default ON: this is meant to work without anyone configuring it.
+  const cleanup = opts.cleanup !== false
+  let out = text
+  if (cleanup) out = stripFillers(out)
+  // User rules run after, so they act on the cleaned text and can still delete.
+  if (rules.length) out = applyDictionary(out, rules)
+  if (cleanup || rules.length) out = tidy(out)
+  // Style last: tidy() re-capitalises the first character, which would undo it.
+  if (opts.style && opts.style !== 'as-spoken') out = applyStyle(out, opts.style)
+  return out
 }

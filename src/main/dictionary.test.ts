@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { parseDictionary, applyDictionary, correctTranscript } from './dictionary'
+import {
+  parseDictionary,
+  applyDictionary,
+  applyStyle,
+  correctTranscript,
+  stripFillers
+} from './dictionary'
 
 describe('parseDictionary', () => {
   it('reads substitutions and bare canonical terms', () => {
@@ -54,9 +60,92 @@ describe('applyDictionary', () => {
   })
 })
 
+describe('stripFillers', () => {
+  it('removes hesitation sounds and their lengthened forms', () => {
+    expect(stripFillers('um I think uhh maybe ummm yes').replace(/\s+/g, ' ').trim()).toBe(
+      'I think maybe yes'
+    )
+    expect(stripFillers('hmm erm err ahh ahem ok').replace(/\s+/g, ' ').trim()).toBe('ok')
+  })
+
+  it('leaves words that merely contain a filler', () => {
+    expect(stripFillers('the umbrella hummed')).toBe('the umbrella hummed')
+  })
+
+  it('keeps units and affirmations that a looser list would eat', () => {
+    // 'mm' is a unit; 'mhm' and 'uh-huh' mean yes — deleting them inverts meaning.
+    expect(stripFillers('cut it 5 mm wide')).toBe('cut it 5 mm wide')
+    expect(stripFillers('mhm, exactly')).toBe('mhm, exactly')
+    // Bare 'ah' is plausibly deliberate, so it survives.
+    expect(stripFillers('ah, right')).toBe('ah, right')
+  })
+})
+
+describe('applyStyle casual', () => {
+  const casual = (t: string): string => applyStyle(t, 'casual')
+
+  it('lowercases ordinary sentence openers', () => {
+    expect(casual('Can you check that?')).toBe('can you check that?')
+    expect(casual('The build is green. We can ship.')).toBe('the build is green. we can ship.')
+  })
+
+  it('never decapitalises a proper noun', () => {
+    // The whole reason this is an allowlist and not toLowerCase().
+    expect(casual('John said yes')).toBe('John said yes')
+    expect(casual('Parakeet is fast. We like it.')).toBe('Parakeet is fast. we like it.')
+  })
+
+  it('leaves "I" and acronyms alone', () => {
+    expect(casual('I think so')).toBe('I think so')
+    expect(casual("I'm on it")).toBe("I'm on it")
+    expect(casual('API is down')).toBe('API is down')
+  })
+
+  it('drops a lone trailing full stop but keeps ? and !', () => {
+    expect(casual('We should ship it.')).toBe('we should ship it')
+    expect(casual('Are you sure?')).toBe('are you sure?')
+    expect(casual('The build is green. We can ship.')).toBe('the build is green. we can ship.')
+  })
+
+  it('is a no-op for as-spoken', () => {
+    expect(applyStyle('Can you check that?', 'as-spoken')).toBe('Can you check that?')
+  })
+})
+
 describe('correctTranscript', () => {
-  it('is a no-op without a dictionary', () => {
-    expect(correctTranscript('hello there', undefined)).toBe('hello there')
-    expect(correctTranscript('hello there', '   ')).toBe('hello there')
+  it('cleans up by default, with no configuration at all', () => {
+    expect(correctTranscript('um, so I think we should ship it')).toBe(
+      'So I think we should ship it'
+    )
+  })
+
+  it('repairs the punctuation that deletion leaves behind', () => {
+    // Without repair this is "So, , I think" — the reason a naive wordlist is unsafe.
+    expect(correctTranscript('So, um, I think so')).toBe('So, I think so')
+    expect(correctTranscript('it is, uh, fine')).toBe('It is, fine')
+  })
+
+  it('capitalises the first word when the filler was the sentence opener', () => {
+    expect(correctTranscript('uh hello there')).toBe('Hello there')
+  })
+
+  it('does not recapitalise after abbreviations', () => {
+    expect(correctTranscript('compare vs. the other one')).toBe('Compare vs. the other one')
+  })
+
+  it('can be turned off', () => {
+    expect(correctTranscript('um, so I think', { cleanup: false })).toBe('um, so I think')
+  })
+
+  it('applies cleanup and the dictionary together', () => {
+    expect(
+      correctTranscript('um, open clipboard dot md', {
+        dictionary: 'clipboard dot md => clipboard.md'
+      })
+    ).toBe('Open clipboard.md')
+  })
+
+  it('leaves clean text alone', () => {
+    expect(correctTranscript('The quick brown fox.')).toBe('The quick brown fox.')
   })
 })
