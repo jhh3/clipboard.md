@@ -1193,7 +1193,7 @@ export default function Settings() {
               <h2 className="set-section-title">AI Providers</h2>
               <Row
                 label="OpenAI API key"
-                sub="Stored in your settings file. Leave empty to use OPENAI_API_KEY from the environment — note that an app started by your desktop session does not see keys exported in a shell profile."
+                sub="Stored in your settings file. If OPENAI_API_KEY is exported in your shell, it is copied in here once at startup — after that this field is the only source, so edits here always win."
               >
                 <TextField
                   value={s.apiKeys?.openai ?? ''}
@@ -1206,7 +1206,7 @@ export default function Settings() {
               </Row>
               <Row
                 label="Gemini API key"
-                sub="Leave empty to use GEMINI_API_KEY from the environment."
+                sub="Copied once from GEMINI_API_KEY at startup if this is empty. After that, this field is the only source."
               >
                 <TextField
                   value={s.apiKeys?.gemini ?? ''}

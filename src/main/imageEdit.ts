@@ -38,7 +38,7 @@ export async function editImage(imagePath: string, prompt: string): Promise<stri
 
 async function editWithGemini(imagePath: string, prompt: string, model: string): Promise<string> {
   const key = apiKeyFor('gemini')
-  if (!key) throw new Error('no Gemini key in Settings or GEMINI_API_KEY')
+  if (!key) throw new Error('no Gemini key — add one in Settings')
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
@@ -76,7 +76,7 @@ async function editWithGemini(imagePath: string, prompt: string, model: string):
 
 async function editWithOpenAI(imagePath: string, prompt: string, model: string): Promise<string> {
   const key = apiKeyFor('openai')
-  if (!key) throw new Error('no OpenAI key in Settings or OPENAI_API_KEY')
+  if (!key) throw new Error('no OpenAI key — add one in Settings')
   const form = new FormData()
   form.append('model', model)
   form.append('prompt', prompt)

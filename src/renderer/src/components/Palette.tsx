@@ -539,9 +539,43 @@ export default function Palette() {
    * chance to fix it. Appends after anything already typed, so "@studio " +
    * dictation composes naturally.
    */
+  /**
+   * Put a transcript where the user is actually typing.
+   *
+   * This used to append to `query` and pull focus to the search box unconditionally,
+   * so dictating into any OTHER field in the palette — the image-edit prompt, an
+   * action's input — silently delivered the words to the launcher instead, and moved
+   * the caret out of the field you were in.
+   *
+   * The focused element is the honest answer to "where should this go". Writing to a
+   * React-controlled input needs the native value setter plus an input event, or the
+   * component's state never learns about the change and the text vanishes on the next
+   * render.
+   */
   const insertTranscript = useCallback((text: string) => {
     const t = text.trim()
     if (!t) return
+    const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+    const editable =
+      !!el &&
+      (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+      !el.readOnly &&
+      !el.disabled &&
+      el !== searchInputRef.current
+    if (editable) {
+      const start = el.selectionStart ?? el.value.length
+      const end = el.selectionEnd ?? start
+      const before = el.value.slice(0, start)
+      const pad = before && !/\s$/.test(before) ? ' ' : ''
+      const next = before + pad + t + el.value.slice(end)
+      const proto =
+        el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, next)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      const caret = start + pad.length + t.length
+      el.setSelectionRange(caret, caret)
+      return
+    }
     setQuery((q) => (q.trim() ? `${q.trimEnd()} ${t}` : t))
     searchInputRef.current?.focus()
   }, [])

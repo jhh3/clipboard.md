@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
-import { apiKeyFor } from './keys'
+import { apiKeyFor, apiKeySource } from './keys'
 import { audioExtension, baseMime } from '../audioFormat'
 
 /**
@@ -29,14 +29,10 @@ const CONFIGS: Record<'openai' | 'gemini', CompatConfig> = {
 }
 
 export function openaiCompatAvailable(provider: 'openai' | 'gemini'): { ok: boolean; detail: string } {
-  const fromSettings = !!getSettings().apiKeys?.[provider]?.trim()
   const key = apiKeyFor(provider)
   return key
-    ? {
-        ok: true,
-        detail: `${CONFIGS[provider].model} via ${fromSettings ? 'Settings' : CONFIGS[provider].keyEnv}`
-      }
-    : { ok: false, detail: `no key in Settings or ${CONFIGS[provider].keyEnv}` }
+    ? { ok: true, detail: `${getSettings().models[provider] ?? CONFIGS[provider].model} via ${apiKeySource(provider)}` }
+    : { ok: false, detail: apiKeySource(provider) }
 }
 
 export async function openaiCompatComplete(
@@ -45,7 +41,7 @@ export async function openaiCompatComplete(
 ): Promise<string> {
   const cfg = CONFIGS[provider]
   const key = apiKeyFor(provider)
-  if (!key) throw new Error(`no ${provider} key in Settings or ${cfg.keyEnv}`)
+  if (!key) throw new Error(`no ${provider} key — add one in Settings`)
 
   type ContentPart =
     | { type: 'text'; text: string }
@@ -101,7 +97,7 @@ export async function openaiTranscribe(audio: Buffer, mime: string): Promise<str
   // was missed and stayed environment-only, so cloud transcription would fail with
   // "OPENAI_API_KEY not set" for a user whose key was sitting in Settings.
   const key = apiKeyFor('openai')
-  if (!key) throw new Error('no OpenAI key in Settings or OPENAI_API_KEY')
+  if (!key) throw new Error('no OpenAI key — add one in Settings')
   const form = new FormData()
   // The API identifies the container by FILE EXTENSION, so this must match the actual
   // bytes — sending mp4 as `audio.wav` is a 400, not a guess it recovers from.

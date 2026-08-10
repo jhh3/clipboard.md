@@ -18,18 +18,22 @@ const execFileP = promisify(execFile)
  * untouched. Best-effort and bounded: a slow or broken rc must not delay startup,
  * so we time out and move on.
  *
- * Linux launches through the systemd user session (see the Makefile), which
- * already carries the session environment, so this is darwin-only.
+ * Linux has exactly the same problem and this used to skip it, on the assumption
+ * that the systemd user session carries the environment. It carries the SESSION
+ * environment — DISPLAY, WAYLAND_DISPLAY, XAUTHORITY — and not one thing exported
+ * from a shell rc, so an autostarted app saw no API keys at all. Verified directly:
+ * `systemctl --user show-environment` lists neither key while the same shell prints
+ * both.
  */
 
 const WANTED = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'E2B_API_KEY']
 
 export async function importShellEnv(): Promise<void> {
-  if (process.platform !== 'darwin') return
+  if (process.platform === 'win32') return
   // Already have everything? Don't spawn a shell for nothing.
   if (WANTED.every((k) => process.env[k])) return
 
-  const shell = process.env.SHELL || '/bin/zsh'
+  const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash')
   try {
     // -ilc: interactive login shell so rc files run. A unique delimiter frames the
     // env dump so shell banners/rc chatter around it can't corrupt the parse.
