@@ -253,7 +253,13 @@ function TextField({
  */
 function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [recording, setRecording] = useState(false)
-  const [note, setNote] = useState<string | null>(null)
+  /**
+   * Derived from the stored value, not remembered from the last capture, so the
+   * caution is still there when Settings is reopened. A warning that only appears in
+   * the moment is one the user has already dismissed by the time it matters.
+   */
+  const parsed = parseChord(value)
+  const note = parsed ? chordWarning(parsed) : null
 
   /**
    * Browser key code → our canonical key name.
@@ -280,7 +286,6 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
     e.stopPropagation()
     if (e.key === 'Escape') {
       setRecording(false)
-      setNote(null)
       return
     }
     const key = codeToKey(e.code)
@@ -294,8 +299,6 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
     const chord = parseChord(parts.join('+'))
     if (!chord) return
     setRecording(false)
-    // A bare typing key is allowed but worth flagging; a keypad button is not.
-    setNote(chordWarning(chord))
     onCommit(formatChord(chord))
   }
 
@@ -306,10 +309,7 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
         <button
           type="button"
           className={'set-input chord-capture' + (recording ? ' recording' : '')}
-          onClick={() => {
-            setRecording(true)
-            setNote(null)
-          }}
+          onClick={() => setRecording(true)}
           /*
            * No onBlur cancel. Pressing a chord that is ALREADY a global binding fires
            * that action too — the dictation HUD appears and takes focus — and a blur
@@ -325,7 +325,6 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
             type="button"
             className="linkish"
             onClick={() => {
-              setNote(null)
               setRecording(false)
               onCommit(DEFAULT_DICTATE_CHORD)
             }}
