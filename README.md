@@ -22,13 +22,16 @@ or handed to an agent — all on your own machine, on your existing Claude subsc
 > once, and it's fine forever after.
 
 **Option B — build it (no warning at all).** A locally-built app skips the whole
-Gatekeeper dance:
+Gatekeeper dance. Two commands:
 
 ```bash
-corepack enable && xcode-select --install      # one-time setup
 git clone https://github.com/jhh3/clipboard.md && cd clipboard.md
-pnpm install && make mac-install
+make mac-install
 ```
+
+`make mac-install` handles the rest — dependencies, the build, and copying it to
+Applications. You just need [Node 22+](https://nodejs.org) installed first (it'll prompt
+you to approve Xcode's command-line tools if they're missing).
 
 Either way: it starts at login, adds a menu-bar icon, and asks for **Accessibility** the
 first time (that's what lets it paste — grant it). Then press **`⌘⇧V`** and start typing.
@@ -91,7 +94,9 @@ red", back in ~3s).
 
 Dictation is hold-to-talk on the `🌐` (Fn) key: hold, speak, release, and the transcript
 lands in whatever app you're using — or in the palette's ask box if it's open. It runs
-**on-device** by default; no audio leaves your machine.
+**on-device** by default; no audio leaves your machine. A built-in tech vocabulary spells
+the proper nouns right — "open ai" → OpenAI, "get hub" → GitHub, "cuber netes" →
+Kubernetes — and you can add your own terms in Settings.
 
 Everything organizes itself — every clip gets an AI title, tags, and a type; links get
 fetched and summarized; screenshots get OCR'd — so search finds things by what they
@@ -121,8 +126,10 @@ Sensible out of the box — you only open Settings if you want to change somethi
   and *API* (faster, default for interactive transforms — ~$0.20/month at normal use).
   If you've no API key, transforms fall back to your subscription rather than failing.
   Default models are the fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
-- **Dictation** — transcription is **OpenAI by default**, or switch to fully-offline
-  **local Parakeet** (a ~490MB one-time download, then no audio ever leaves the machine).
+- **Dictation** — transcription runs on **fully-offline local Parakeet by default** (a
+  ~490MB model downloads on first use, then no audio ever leaves the machine). Switch to
+  **OpenAI** in Settings to skip the download. A built-in tech vocabulary fixes proper
+  nouns either way; add your own terms and per-app styles in Settings.
   The hold-to-talk key is rebindable in Settings → General.
 - **Image editing** — **Nano Banana 2 Lite** by default (fast, cheap); GPT Image 2 and
   the bigger Nano Banana models are selectable.

@@ -305,6 +305,11 @@ export interface AppSettings {
      */
     dictionary?: string
     /**
+     * Built-in tech proper-noun vocabulary (OpenAI, GitHub, Kubernetes…) applied on
+     * top of the dictionary above. Undefined means on. Your own rules override it.
+     */
+    builtinVocabulary?: boolean
+    /**
      * Strip hesitation sounds ("um", "uh") and repair the punctuation left behind.
      * Undefined means on: this is meant to work without being configured.
      */
@@ -500,7 +505,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // transforms.
   transforms: { provider: 'openai' },
   embeddings: { enabled: true },
-  transcription: { provider: 'openai' },
+  // Local Parakeet by default: fully offline, no audio ever leaves the machine, free.
+  // First dictation downloads the ~490MB model once; switch to OpenAI in Settings to
+  // skip the download at the cost of sending audio to their API.
+  transcription: { provider: 'local' },
   linkEnrichment: true,
   sessionsEnabled: true,
   // Fast-by-default: haiku on the Claude lane, Luna on OpenAI, flash-lite on Gemini.

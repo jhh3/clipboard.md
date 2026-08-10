@@ -75,6 +75,10 @@ help:
 # (`xcode-select --install`) for the Swift helper. First run: `pnpm install`.
 mac:
 	@[ "$$(uname)" = "Darwin" ] || { echo "make mac is macOS-only"; exit 1; }
+	@command -v node >/dev/null || { echo "Install Node 22+ first (https://nodejs.org), then re-run."; exit 1; }
+	@xcode-select -p >/dev/null 2>&1 || { echo "Approve the Xcode command-line tools dialog, then re-run 'make mac-install'."; xcode-select --install >/dev/null 2>&1 || true; exit 1; }
+	@corepack enable >/dev/null 2>&1 || true
+	@[ -d node_modules ] || { echo "Installing dependencies…"; pnpm install; }
 	pnpm build:mac:adhoc
 	@echo
 	@echo "Built dist/mac-arm64/clipboard.md.app — 'make mac-install' to install it."
