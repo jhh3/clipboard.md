@@ -77,8 +77,13 @@ appimage:
 # the pnpm store path changes on reinstall and the entry silently rots.
 install-appimage: appimage
 	@mkdir -p $(HOME)/.local/bin
-	@cp dist/clipboard.md-*.AppImage $(HOME)/.local/bin/clipboard.md.AppImage
-	@chmod +x $(HOME)/.local/bin/clipboard.md.AppImage
+# Write-then-rename, because a plain cp fails with "Text file busy": the MCP and
+# bridge servers registered with Claude ARE this binary, so agents keep long-lived
+# processes running it. rename() swaps the directory entry and leaves the old inode
+# alive for them, so an upgrade never has to kill the user's agent sessions.
+	@cp dist/clipboard.md-*.AppImage $(HOME)/.local/bin/.clipboard.md.AppImage.new
+	@chmod +x $(HOME)/.local/bin/.clipboard.md.AppImage.new
+	@mv -f $(HOME)/.local/bin/.clipboard.md.AppImage.new $(HOME)/.local/bin/clipboard.md.AppImage
 	@echo "installed $(HOME)/.local/bin/clipboard.md.AppImage"
 	@echo "run it once and it registers its own autostart entry"
 
