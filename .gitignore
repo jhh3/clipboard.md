@@ -6,3 +6,8 @@ dist/
 *.local
 .env
 resources/mac/clipmd-helper
+
+# vendored/downloaded packages — not source
+*.deb
+*.AppImage
+*.dmg

@@ -119,6 +119,7 @@ Sensible out of the box — you only open Settings if you want to change somethi
   **Settings → AI Providers** (which always wins). Existing values are never overwritten.
   Two lanes, per feature: *subscription* (free at the margin, default for background work)
   and *API* (faster, default for interactive transforms — ~$0.20/month at normal use).
+  If you've no API key, transforms fall back to your subscription rather than failing.
   Default models are the fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
 - **Dictation** — transcription is **OpenAI by default**, or switch to fully-offline
   **local Parakeet** (a ~490MB one-time download, then no audio ever leaves the machine).

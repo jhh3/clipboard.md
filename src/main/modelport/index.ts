@@ -99,11 +99,23 @@ export async function complete(
   const primary = providerOverride ?? routed.primary
   const lane = providerOverride ? laneOf(providerOverride) : routed.lane
   const order = [primary, ...fallbacksFor(primary)]
+  // Graceful last resort, ONE direction only. An api-lane feature (transforms
+  // default to OpenAI) with no API key configured falls back to the user's OWN
+  // subscription login rather than dying — a subscription-only user shouldn't have
+  // dead transforms. The reverse is deliberately never done: a subscription setting
+  // must not spill clipboard content to a third-party API the user didn't pick
+  // (the fallbacksFor privacy rule). So we only ever ADD the subscription lane.
+  if (lane === 'api') order.push(...SUBSCRIPTION_LANE.filter((p) => !order.includes(p)))
   let lastErr: unknown = null
+  let crossed = false
   for (const provider of order) {
     try {
       const avail = await isAvailable(provider)
       if (!avail) continue
+      if (laneOf(provider) !== lane && !crossed) {
+        crossed = true
+        console.log(`[modelport] ${feature}: no ${lane}-lane provider available; using ${provider}`)
+      }
       return await BACKENDS[provider](req)
     } catch (err) {
       lastErr = err
@@ -111,7 +123,7 @@ export async function complete(
     }
   }
   throw new Error(
-    `No ${lane}-lane provider succeeded (${String(lastErr ?? 'none available')}). ` +
+    `No provider succeeded for ${feature} (${String(lastErr ?? 'none available')}). ` +
       'Check Settings → AI Providers.'
   )
 }

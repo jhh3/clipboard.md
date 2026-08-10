@@ -494,6 +494,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   retentionDays: 365,
   maxItems: 50000,
   enrichment: { enabled: true, lane: 'subscription', provider: 'claude-agent' },
+  // OpenAI for interactive transforms: a direct API call is snappier than the Agent
+  // SDK for a one-shot. It falls back to the subscription lane when no API key is
+  // configured (see complete()), so a subscription-only user isn't left with dead
+  // transforms.
   transforms: { provider: 'openai' },
   embeddings: { enabled: true },
   transcription: { provider: 'openai' },
@@ -512,15 +516,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
       persistent: true,
       prewarm: true,
       tmux: true
-    },
-    {
-      name: 'studio',
-      cwd: '/Users/jhh3/Documents/work-code/2025/nullframe-studio',
-      description: 'The nullframe-studio codebase: bugs, features, questions about that repo.',
-      memory: 'off',
-      persistent: true,
-      tmux: true
     }
+    // Add project agents in Settings → Agents, each pointed at its own working
+    // directory. (Shipping no personal paths here keeps the default portable.)
   ],
   assistant: { identity: '', identityFiles: [], prewarm: true },
   smartPaste: true,
@@ -529,9 +527,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   savedActions: [],
   smartCollections: [],
   agentProfiles: [
-    // cwd '' means the home directory.
-    { name: 'personal', cwd: '', tmux: true },
-    { name: 'studio', cwd: '/Users/jhh3/Documents/work-code/2025/nullframe-studio', tmux: true }
+    // cwd '' means the home directory. (Legacy field; `agents` above is canonical.)
+    { name: 'personal', cwd: '', tmux: true }
   ],
   hotkeyHint: 'Ctrl+Alt+V',
   dictateChord: DEFAULT_DICTATE_CHORD,
