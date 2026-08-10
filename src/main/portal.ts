@@ -127,25 +127,71 @@ async function key(rd: dbus.ClientInterface, session: string, code: number, down
   await rd.NotifyKeyboardKeycode(session, {}, code, down ? 1 : 0)
 }
 
-/** Inject Ctrl+V into the focused window. Returns false on any failure. */
-export async function portalPaste(): Promise<boolean> {
+type Attempt =
+  /** Ctrl+V was delivered. */
+  | 'ok'
+  /** Never got a session at all — retrying immediately would fail the same way. */
+  | 'no-session'
+  /** The session was stale and nothing was injected: safe to retry on a fresh one. */
+  | 'stale'
+  /** Some keys landed before the failure — retrying could paste twice. */
+  | 'partial'
+
+async function attemptPaste(): Promise<Attempt> {
+  if (!(await ensureSession())) return 'no-session'
+  const b = await getBus()
+  const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
+  const rd = obj.getInterface('org.freedesktop.portal.RemoteDesktop')
+  const s = sessionHandle!
+  // Which keystrokes actually reached the compositor decides whether a retry is
+  // safe, so it has to be counted rather than inferred from the error.
+  let sent = 0
   try {
-    if (!(await ensureSession())) return false
-    const b = await getBus()
-    const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
-    const rd = obj.getInterface('org.freedesktop.portal.RemoteDesktop')
-    const s = sessionHandle!
     await key(rd, s, KEY_LEFTCTRL, true)
+    sent++
     await key(rd, s, KEY_V, true)
+    sent++
     await key(rd, s, KEY_V, false)
+    sent++
     await key(rd, s, KEY_LEFTCTRL, false)
-    return true
+    sent++
+    return 'ok'
   } catch (err) {
     console.error('[portal] paste injection failed:', err)
     // Session may have died (compositor restart, revoked permission) — rebuild next time.
     sessionHandle = null
-    return false
+    if (sent > 0) {
+      // Ctrl went down and never came back up. On a session that still works that
+      // leaves the modifier latched, and the user's next keystroke is a shortcut.
+      try {
+        await key(rd, s, KEY_LEFTCTRL, false)
+      } catch {
+        /* the session is gone; the compositor drops its keys with it */
+      }
+      return 'partial'
+    }
+    return 'stale'
   }
+}
+
+/**
+ * Inject Ctrl+V into the focused window. Returns false on any failure.
+ *
+ * GNOME drops our RemoteDesktop session after a single use, so pastes alternated
+ * between working and `DBusError: Invalid session` (measured: eight consecutive
+ * dictations, every other one lost). Clearing the handle on failure meant the NEXT
+ * paste rebuilt the session and succeeded — the discovery was paid for with the
+ * user's paste, which silently degraded to "it's on your clipboard".
+ *
+ * A dead session is therefore a retry, not a failure. Bounded to one extra attempt,
+ * and only when nothing was injected, so a mid-sequence failure can't paste twice.
+ */
+export async function portalPaste(): Promise<boolean> {
+  const first = await attemptPaste()
+  if (first === 'ok') return true
+  if (first !== 'stale') return false
+  console.log('[portal] session was stale; retrying on a fresh one')
+  return (await attemptPaste()) === 'ok'
 }
 
 /** Warm up the session (triggers the one-time permission dialog at a moment of our choosing). */

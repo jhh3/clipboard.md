@@ -151,6 +151,13 @@ export default function DictationHud() {
     const mime = rec?.mimeType || preferredAudioMime()
     const blob = new Blob(chunksRef.current, { type: mime })
     chunksRef.current = []
+    // Let go of the mic HERE, not in finish(). MediaRecorder has already flushed
+    // every chunk by the time onstop fires, so the stream has no job left — but
+    // finish() only runs after transcription returns, which held the mic open for
+    // the whole round-trip. The OS recording indicator therefore stayed lit for as
+    // long as the transcript took (so: longer for longer dictations), and stayed lit
+    // forever if the request never settled. Nothing is listening; say so immediately.
+    releaseMic()
     if (blob.size === 0) {
       finish()
       return
@@ -178,7 +185,7 @@ export default function DictationHud() {
       })
       finishAfter(ERROR_MS)
     }
-  }, [finish, finishAfter])
+  }, [finish, finishAfter, releaseMic])
 
   // MediaRecorder.onstop fires long after it was assigned — always call the latest closure.
   const deliverRef = useRef(deliver)
@@ -230,7 +237,8 @@ export default function DictationHud() {
     if (stoppingRef.current) return
     stoppingRef.current = true
     const rec = recRef.current
-    // The stream itself is deliberately left running — it is reused next time.
+    // The stream is released by deliver(), on the onstop this triggers — not here,
+    // because the recorder still has to flush its final chunk into chunksRef.
     if (rec && rec.state !== 'inactive') rec.stop()
   }, [])
 

@@ -13,7 +13,11 @@ APPDIR := $(CURDIR)
 UNIT := clipboard-md
 LOG := $(HOME)/.config/clipboard.md/logs/main-$(shell date +%F).log
 
-.PHONY: help build run stop restart status logs appimage install-appimage clean-instances doctor
+APP := $(HOME)/.local/bin/clipboard.md.AppImage
+APP_UNIT := clipboard-md-app
+
+.PHONY: help build run stop restart status logs appimage install-appimage clean-instances doctor \
+        app-run app-stop app-restart deploy
 
 help:
 	@echo "clipboard.md"
@@ -25,6 +29,10 @@ help:
 	@echo "  make logs         Follow today's log"
 	@echo "  make appimage     Build a double-clickable AppImage into dist/"
 	@echo "  make doctor       Check the things that actually break on Linux"
+	@echo
+	@echo "  make deploy       Build, install and relaunch the AppImage  <- ship a fix"
+	@echo "  make app-restart  Relaunch the installed AppImage"
+	@echo "  make app-stop     Stop the installed AppImage"
 	@echo
 	@echo "Daily use is the AppImage. 'make run' is for working on the code."
 
@@ -84,8 +92,44 @@ install-appimage: appimage
 	@cp dist/clipboard.md-*.AppImage $(HOME)/.local/bin/.clipboard.md.AppImage.new
 	@chmod +x $(HOME)/.local/bin/.clipboard.md.AppImage.new
 	@mv -f $(HOME)/.local/bin/.clipboard.md.AppImage.new $(HOME)/.local/bin/clipboard.md.AppImage
-	@echo "installed $(HOME)/.local/bin/clipboard.md.AppImage"
+	@echo "installed $(APP)"
 	@echo "run it once and it registers its own autostart entry"
+
+# Installing does not replace the copy already running — that was the missing step
+# every time a fix "didn't work": the new binary was on disk and the old one was
+# still on screen. This is the whole loop, so there is nothing left to remember.
+deploy: install-appimage app-restart
+
+# Every process that IS the app. An AppImage execs its payload out of a FUSE mount,
+# so the running program is /tmp/.mount_clipboXXXXXX/clipboard-md and NOT the path you
+# launched. Matching only the launcher killed a wrapper and left the app up; the next
+# launch then lost the single-instance lock to it and exited in under a second, so a
+# "restart" reported failure while the old build stayed on screen.
+#
+# --type= are Electron's own child processes (they go when the main one does).
+# --mcp / --bridge are this same binary serving live agent sessions: never touch those.
+APP_PIDS = $$(ps -eo pid,args --no-headers \
+	| grep -E '(clipboard\.md\.AppImage|/tmp/\.mount_clipbo[^ ]*/clipboard-md)' \
+	| grep -vE -- '--type=|--mcp|--bridge' \
+	| awk '{print $$1}')
+
+# Same transient-unit treatment as `run`, for the same reason: the real session
+# environment, and never an overridden DISPLAY.
+app-run:
+	@systemd-run --user --collect --unit=$(APP_UNIT) "$(APP)" --background >/dev/null
+	@sleep 4
+	@pid=$$(echo "$(APP_PIDS)" | head -1); \
+	if [ -n "$$pid" ]; then echo "running        pid $$pid"; \
+	else echo "FAILED to start — make logs"; exit 1; fi
+
+app-stop:
+	@systemctl --user stop $(APP_UNIT) 2>/dev/null || true
+	@systemctl --user reset-failed $(APP_UNIT) 2>/dev/null || true
+	@pids=$$(echo "$(APP_PIDS)"); \
+	if [ -n "$$pids" ]; then kill $$pids 2>/dev/null || true; sleep 2; kill -9 $$pids 2>/dev/null || true; fi
+	@echo "stopped        $(APP)"
+
+app-restart: app-stop app-run
 
 # The Linux-specific things that have actually broken, each checked directly.
 doctor:
