@@ -1,4 +1,6 @@
 import { complete } from './modelport'
+import { getSettings } from './settings'
+import type { EnhancePreset } from '@shared/types'
 
 /**
  * The AI half of dictation cleanup — the corrections a regex provably cannot make.
@@ -18,7 +20,7 @@ import { complete } from './modelport'
  * will summarise or "improve" dictation into something the user did not say, and the
  * failure is invisible: the text reads well, it just isn't theirs.
  */
-const SYSTEM = [
+const BASE = [
   'You clean up dictated speech. Apply only these changes:',
   '- remove filler words and false starts',
   '- when the speaker corrects themselves, keep only the corrected version',
@@ -28,11 +30,46 @@ const SYSTEM = [
   '  lead-in on its own line ending with a colon, then one item per line numbered',
   '  "1." "2." "3." (or "- " for unnumbered ones). Use the speaker\'s own words for',
   '  each item and drop the spoken number word itself.',
-  'Never add, remove, summarise, reorder or reword anything else.',
-  'Do not invent a list where the speaker did not enumerate one.',
-  'Preserve the speaker\'s wording, tone and register exactly.',
+  'Do not invent a list where the speaker did not enumerate one.'
+]
+
+const CLOSING = [
   'Return only the cleaned text, with no preamble, quotes or explanation.'
-].join('\n')
+]
+
+/**
+ * The cleanup presets, chosen in Settings.
+ *
+ * 'standard' is the conservative pass: mechanics only, never a reword. 'positive'
+ * adds ONE conditional rewrite on top, and the condition matters as much as the
+ * rewrite — a preset that warms up every sentence would quietly restyle ordinary
+ * speech into something the user did not say. Neutral text must come back exactly as
+ * 'standard' would have produced it, so the preset costs nothing when it is not
+ * needed and only earns its keep on the message you would regret sending.
+ */
+const PROMPTS: Record<EnhancePreset, string> = {
+  standard: [
+    ...BASE,
+    'Never add, remove, summarise, reorder or reword anything else.',
+    "Preserve the speaker's wording, tone and register exactly.",
+    ...CLOSING
+  ].join('\n'),
+
+  positive: [
+    ...BASE,
+    'Then judge the tone. If the text is harsh, insulting, contemptuous, hostile or',
+    'venting frustration at a person, rewrite it to be constructive and warm:',
+    '- keep every fact, request, question and decision exactly as stated',
+    '- keep the substance of any criticism — soften how it is said, never whether it',
+    '  is said, and never turn a real objection into agreement',
+    '- drop insults, blame and sarcasm; address the work or the problem, not a person',
+    '- stay in first person and keep it the length of a message, not an essay',
+    'If the text is NOT harsh — neutral, factual, already friendly, or merely direct —',
+    'change nothing about its tone or wording beyond the cleanup rules above. Being',
+    'blunt or disagreeing is not harshness. Most text needs no rewrite at all.',
+    ...CLOSING
+  ].join('\n')
+}
 
 /**
  * Longest transcript worth sending. Past this it is a monologue rather than a
@@ -44,11 +81,13 @@ const MAX_CHARS = 4000
 export async function enhanceTranscript(text: string): Promise<string> {
   const trimmed = text.trim()
   if (!trimmed || trimmed.length > MAX_CHARS) return text
-  const out = await complete('transforms', { prompt: trimmed, system: SYSTEM })
+  const preset: EnhancePreset = getSettings().dictation.enhancePreset ?? 'standard'
+  const out = await complete('transforms', { prompt: trimmed, system: PROMPTS[preset] })
   const cleaned = out.trim()
   // A model that returns nothing, or answers the text instead of cleaning it, must not
   // replace the user's words. Length is a crude but effective guard against both.
-  if (!cleaned || cleaned.length > trimmed.length * 2) {
+  const maxGrowth = preset === 'positive' ? 2.5 : 2
+  if (!cleaned || cleaned.length > trimmed.length * maxGrowth) {
     console.error('[dictate] AI cleanup returned an implausible result; keeping the original')
     return text
   }

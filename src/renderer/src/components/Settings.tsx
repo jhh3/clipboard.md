@@ -1174,6 +1174,26 @@ export default function Settings() {
                   />
                 </Row>
               )}
+              <Row
+                label="AI cleanup style"
+                sub="What the AI cleanup key does with a transcript. Only used by that key — plain dictation stays offline and untouched."
+              >
+                <select
+                  className="set-input"
+                  value={s.dictation.enhancePreset ?? 'standard'}
+                  onChange={(e) =>
+                    patch({
+                      dictation: {
+                        ...s.dictation,
+                        enhancePreset: e.target.value as 'standard' | 'positive'
+                      }
+                    })
+                  }
+                >
+                  <option value="standard">Standard — fix mechanics, keep my words</option>
+                  <option value="positive">Positive — soften harsh wording, otherwise standard</option>
+                </select>
+              </Row>
               {!IS_MAC && (
                 <Row
                   label="Hold-to-talk chord (AI cleanup)"

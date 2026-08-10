@@ -220,6 +220,13 @@ export interface TransformResult {
   error?: string
 }
 
+/**
+ * How the AI cleanup key rewrites a transcript. 'standard' fixes mechanics only;
+ * 'positive' additionally rewrites genuinely harsh text to be constructive, and
+ * leaves everything else alone.
+ */
+export type EnhancePreset = 'standard' | 'positive'
+
 export type ProviderLane = 'subscription' | 'api'
 export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini'
 
@@ -314,6 +321,8 @@ export interface AppSettings {
      * Undefined means on: this is meant to work without being configured.
      */
     cleanup?: boolean
+    /** Which AI cleanup preset the enhance key uses. Undefined = 'standard'. */
+    enhancePreset?: EnhancePreset
     /** Output formatting. Undefined = 'as-spoken'. */
     style?: 'as-spoken' | 'casual'
     /** Spoken numbers to numerals ("twenty items" -> "20 items"). Undefined = on. */
