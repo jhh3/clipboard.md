@@ -144,10 +144,20 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
         if (!fds.includes(fd)) return // torn down by stopPushToTalk
         fsRead(fd, buf, 0, buf.length, null, (err, bytes) => {
           if (err) {
+            // Drop the descriptor rather than abandoning it mid-list: leaving it in
+            // `fds` keeps isPushToTalkActive() reporting a device that is gone (an
+            // unplugged keyboard), which suppresses the key-repeat fallback and takes
+            // dictation down with no way back.
             console.error(`[ptt] ${path} read failed: ${(err as NodeJS.ErrnoException).code}`)
+            fds = fds.filter((f) => f !== fd)
+            try {
+              closeSync(fd)
+            } catch {
+              /* already gone */
+            }
             return
           }
-          if (bytes > 0) onChunk(buf.subarray(0, bytes), handlers, path)
+          if (bytes > 0) onChunk(buf.subarray(0, bytes), handlers)
           pump()
         })
       }
@@ -173,7 +183,7 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   return true
 }
 
-function onChunk(chunk: Buffer, handlers: PttHandlers, _path = '?'): void {
+function onChunk(chunk: Buffer, handlers: PttHandlers): void {
   const c = chord
   if (!c) return
   for (let off = 0; off + EVENT_SIZE <= chunk.length; off += EVENT_SIZE) {

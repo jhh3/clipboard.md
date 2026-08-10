@@ -91,6 +91,9 @@ let dictationTarget: string | null = null
 
 export function noteDictationTarget(): void {
   dictationTarget = null
+  // xprop exists only under X11/Xwayland. On macOS this spawned a process that could
+  // never succeed, once per dictation, purely to throw it away.
+  if (process.platform !== 'linux') return
   void focusedWmClass().then((c) => {
     dictationTarget = c
   })
