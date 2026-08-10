@@ -173,6 +173,34 @@ function Row({
   )
 }
 
+/**
+ * Dictation dictionary editor. Commits on blur rather than per keystroke: this writes
+ * the settings file, and the main process re-reads it on change.
+ */
+function DictionaryField({
+  value,
+  onCommit
+}: {
+  value: string
+  onCommit: (v: string) => void
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  const [draft, setDraft] = useSyncedDraft(value, ref)
+  return (
+    <textarea
+      ref={ref}
+      className="set-textarea identity-textarea"
+      spellCheck={false}
+      placeholder={'clipboard dot md => clipboard.md\nParakeet\nsherpa => sherpa-onnx'}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft !== value) onCommit(draft)
+      }}
+    />
+  )
+}
+
 function NumberField({
   value,
   min,
@@ -1387,6 +1415,17 @@ export default function Settings() {
                 <Toggle
                   checked={s.dictation.keepAudio}
                   onChange={(v) => patch({ dictation: { ...s.dictation, keepAudio: v } })}
+                />
+              </Row>
+              <Row
+                label="Dictation dictionary"
+                sub="Fix names and jargon the recogniser gets wrong. One rule per line: heard => written, or a bare word to fix its spelling. Applied offline, after transcription."
+              >
+                <DictionaryField
+                  value={s.dictation.dictionary ?? ''}
+                  onCommit={(v) =>
+                    patch({ dictation: { ...s.dictation, dictionary: v || undefined } })
+                  }
                 />
               </Row>
             </>

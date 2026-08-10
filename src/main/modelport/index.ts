@@ -39,6 +39,17 @@ function laneOf(p: ProviderId): ProviderLane {
   return SUBSCRIPTION_LANE.includes(p) ? 'subscription' : 'api'
 }
 
+/** The first provider we would try in a lane, when the configured one is unusable. */
+const LANE_DEFAULT: Record<ProviderLane, ProviderId> = {
+  subscription: 'claude-agent',
+  api: 'openai'
+}
+
+/** A provider we actually have a backend for. Stored settings are not typed at runtime. */
+function isProviderId(v: unknown): v is ProviderId {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(BACKENDS, v)
+}
+
 /**
  * Fallback stays inside the lane the user chose. Silently crossing from the
  * subscription lane to third-party APIs would ship clipboard content to a provider
@@ -49,9 +60,34 @@ function fallbacksFor(primary: ProviderId): ProviderId[] {
   return lane.filter((p) => p !== primary)
 }
 
-function routedProvider(feature: Feature): ProviderId {
+/**
+ * The provider to start from, and the lane the fallback chain must stay inside.
+ *
+ * An id we have no backend for must NOT be treated as an api-lane provider. laneOf()
+ * answers "is it in SUBSCRIPTION_LANE", so anything unrecognised — a typo, or an id
+ * retired by a rename — silently answered "api". A real install carried
+ * `{ lane: 'subscription', provider: 'claude-cli' }` from before claude-agent was
+ * renamed, and every enrichment call was routed to the api lane and failed there,
+ * logging `No api-lane provider succeeded` every 15s against a subscription setting.
+ *
+ * That failure was loud but harmless only because no API keys were present. With one
+ * configured it would have quietly sent clipboard content to a third party — exactly
+ * the crossing fallbacksFor() promises never to make. So an unknown id recovers inside
+ * the lane the user chose, and says so.
+ */
+function route(feature: Feature): { primary: ProviderId; lane: ProviderLane } {
   const s = getSettings()
-  return feature === 'enrichment' ? s.enrichment.provider : s.transforms.provider
+  const configured = feature === 'enrichment' ? s.enrichment.provider : s.transforms.provider
+  if (isProviderId(configured)) return { primary: configured, lane: laneOf(configured) }
+  // transforms has no stored lane; its providers are api-lane by nature.
+  const lane: ProviderLane =
+    feature === 'enrichment' && s.enrichment.lane === 'subscription' ? 'subscription' : 'api'
+  const primary = LANE_DEFAULT[lane]
+  console.error(
+    `[modelport] ${feature}: unknown provider ${JSON.stringify(configured)}; ` +
+      `falling back to ${primary} inside the ${lane} lane. Fix it in Settings → AI Providers.`
+  )
+  return { primary, lane }
 }
 
 export async function complete(
@@ -59,7 +95,9 @@ export async function complete(
   req: PortRequest,
   providerOverride?: ProviderId
 ): Promise<string> {
-  const primary = providerOverride ?? routedProvider(feature)
+  const routed = route(feature)
+  const primary = providerOverride ?? routed.primary
+  const lane = providerOverride ? laneOf(providerOverride) : routed.lane
   const order = [primary, ...fallbacksFor(primary)]
   let lastErr: unknown = null
   for (const provider of order) {
@@ -73,7 +111,7 @@ export async function complete(
     }
   }
   throw new Error(
-    `No ${laneOf(primary)}-lane provider succeeded (${String(lastErr ?? 'none available')}). ` +
+    `No ${lane}-lane provider succeeded (${String(lastErr ?? 'none available')}). ` +
       'Check Settings → AI Providers.'
   )
 }

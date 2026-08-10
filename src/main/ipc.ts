@@ -16,6 +16,7 @@ import {
   exportAll
 } from './store/items'
 import { saveRecording, transcribeFile } from './transcribe'
+import { correctTranscript } from './dictionary'
 import { detectSecret } from './capture/filters'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
@@ -303,8 +304,11 @@ export function registerIpc(
         }
       }
       try {
-        const text = await transcribeFile(path, audio, payload.mime)
+        const raw = await transcribeFile(path, audio, payload.mime)
         cleanup()
+        // Applied to both lanes: the scratchpad mic and the dictation HUD produce the
+        // same transcripts and want the same jargon spelled the same way.
+        const text = correctTranscript(raw, getSettings().dictation.dictionary)
         if (!payload.dictation) return { ok: true, text }
         if (!text) return { ok: false, error: 'Nothing was transcribed' }
 

@@ -100,6 +100,13 @@ export function createPaletteWindow(): BrowserWindow {
   // focused, which would hide the palette the instant the hotkey summoned it.
   palette.on('blur', () => {
     if (Date.now() - lastPaletteShow < 500) return
+    // Dictating INTO the palette must not dismiss it. Showing the HUD makes the
+    // compositor blur the palette even though the HUD is focusable:false, so the
+    // launcher vanished the moment the hotkey was pressed — and because the
+    // "palette is open, route the transcript to the ask flow" branch in ipc.ts tests
+    // isVisible(), it was always false by the time the transcript arrived, and the
+    // words were pasted into whatever was behind instead.
+    if (dictationActive) return
     hidePalette()
   })
 
@@ -278,7 +285,14 @@ export function getDictationWindow(): BrowserWindow | null {
   return dictationWin && !dictationWin.isDestroyed() ? dictationWin : null
 }
 
+/**
+ * True from the moment the HUD is shown until it is hidden again. Read by the
+ * palette's blur handler so a dictation started from the launcher keeps it open.
+ */
+let dictationActive = false
+
 export function showDictationHud(): void {
+  dictationActive = true
   // Deliberately small: on Wayland the compositor decides where this lands (our
   // setBounds x/y is a no-op), so it will be centred no matter what we ask for.
   // A compact pill is far less obtrusive there than a panel, and the bottom
@@ -341,7 +355,13 @@ export function stopDictation(): void {
 }
 
 export function hideDictationHud(): void {
+  dictationActive = false
   getDictationWindow()?.hide()
+  // The palette was held open through the dictation by the blur guard above. If focus
+  // never came back to it, it would now be a stuck, unfocused window the user has to
+  // dismiss by hand — so re-focus it and let the normal blur rule apply again.
+  const pal = getPalette()
+  if (pal && !pal.isDestroyed() && pal.isVisible()) pal.focus()
 }
 
 /**

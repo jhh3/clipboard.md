@@ -72,17 +72,40 @@ function isDeviceGone(err: unknown): boolean {
  * rather than failing the recording — losing the audio is far worse than
  * recording it on the wrong mic.
  */
+/**
+ * What we ask the capture stack for, beyond "a microphone".
+ *
+ * These were absent — the request was a bare `audio: true` — which left Chromium's
+ * defaults to decide. Naming them matters for speech:
+ *  - the recogniser runs at 16 kHz mono, so asking for that avoids a resample and
+ *    stops us encoding stereo 48 kHz audio we immediately throw half of away
+ *  - autoGainControl is the big one for dictation: it evens out how close you are
+ *    to the mic between takes, which is the difference the model actually hears
+ *  - noiseSuppression and echoCancellation keep keyboard noise and speaker
+ *    bleed out of the transcript
+ *
+ * All are advisory (not `exact`), so a device that cannot honour one still opens
+ * rather than throwing OverconstrainedError and losing the recording.
+ */
+const SPEECH_CONSTRAINTS: MediaTrackConstraints = {
+  channelCount: 1,
+  sampleRate: 16000,
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true
+}
+
 export async function openMicStream(deviceId: string): Promise<MicStreamResult> {
   if (deviceId) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: deviceId } }
+        audio: { ...SPEECH_CONSTRAINTS, deviceId: { exact: deviceId } }
       })
       return { stream, fellBack: false }
     } catch (err) {
       if (!isDeviceGone(err)) throw err
     }
   }
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { ...SPEECH_CONSTRAINTS } })
   return { stream, fellBack: deviceId !== '' }
 }

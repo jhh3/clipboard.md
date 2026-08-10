@@ -1,7 +1,13 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
-import { DEFAULT_SETTINGS, type AppSettings, type SavedAction, type SmartCollection } from '@shared/types'
+import {
+  DEFAULT_SETTINGS,
+  type AppSettings,
+  type ProviderId,
+  type SavedAction,
+  type SmartCollection
+} from '@shared/types'
 
 let cached: AppSettings | null = null
 let filePath: string | null = null
@@ -88,7 +94,40 @@ export function getSettings(): AppSettings {
   }
   if (cached!.smartCollections.length === 0) cached!.smartCollections = DEFAULT_COLLECTIONS
   migrateAgents(cached!, raw)
+  migrateProviderIds(cached!)
   return cached!
+}
+
+/**
+ * Repair provider ids that no longer exist.
+ *
+ * `claude-cli` was renamed to `claude-agent`, and installs that had selected it kept
+ * the dead id — which nothing validated, so every completion was routed to whichever
+ * lane the unknown id happened to fall into (the api one) and failed there forever.
+ * modelport recovers from this at call time too; fixing it here stops the settings
+ * file from carrying a value the UI cannot render as a selected option.
+ */
+function migrateProviderIds(s: AppSettings): void {
+  const RENAMED: Record<string, ProviderId> = { 'claude-cli': 'claude-agent', claude: 'claude-agent' }
+  const VALID: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini']
+  let changed = false
+  const fix = (id: ProviderId, fallback: ProviderId): ProviderId => {
+    if (VALID.includes(id)) return id
+    const next = RENAMED[id as string] ?? fallback
+    console.log(`[settings] provider ${JSON.stringify(id)} is retired; using ${next}`)
+    changed = true
+    return next
+  }
+  s.enrichment.provider = fix(
+    s.enrichment.provider,
+    s.enrichment.lane === 'subscription' ? 'claude-agent' : 'openai'
+  )
+  s.transforms.provider = fix(s.transforms.provider, 'openai')
+  // Write it back, or the file keeps the dead id: we would re-migrate on every launch
+  // and the Settings dropdown would have no matching option to show as selected.
+  // Scheduled rather than written inline — flushSettings serialises `cached`, which is
+  // still being assembled by the load() call we are inside.
+  if (changed) scheduleFlush()
 }
 
 /**
@@ -140,8 +179,7 @@ export function onSettingsChanged(fn: SettingsListener): () => void {
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   const next = { ...getSettings(), ...patch }
   cached = next
-  if (flushTimer) clearTimeout(flushTimer)
-  flushTimer = setTimeout(flushSettings, 250)
+  scheduleFlush()
   for (const fn of listeners) {
     try {
       fn(next)
@@ -150,6 +188,12 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     }
   }
   return next
+}
+
+/** Coalesce writes: settings change in bursts as the user types in a field. */
+function scheduleFlush(): void {
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushSettings, 250)
 }
 
 export function flushSettings(): void {

@@ -292,6 +292,12 @@ export interface AppSettings {
     deviceId?: string
     /** Human-readable label of the chosen mic, for display when it's unplugged. */
     deviceLabel?: string
+    /**
+     * Corrections applied to every transcript, one rule per line:
+     * `heard => written`, or a bare term to fix its spelling and casing.
+     * Post-recognition on purpose — see src/main/dictionary.ts for why not hotwords.
+     */
+    dictionary?: string
   }
   voiceSamples: string[]
   /**
