@@ -12,6 +12,7 @@ import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { portalPaste } from './portal'
+import { focusedWmClass, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
 
 /**
@@ -192,8 +193,13 @@ export class PasteService {
     if (getSettings().pasteInjection === 'portal') {
       this.hideWindow()
       await sleep(FOCUS_SETTLE_MS)
-      if (await portalPaste()) {
-        console.log('[paste] injected via portal')
+      // Asked only AFTER hiding and settling: before that the focused window is still
+      // ours, and we would be shaping the keystroke for the palette instead of for
+      // whatever the user is actually typing into.
+      const dest = await focusedWmClass()
+      const shift = isTerminalClass(dest)
+      if (await portalPaste(shift)) {
+        console.log(`[paste] injected via portal (${shift ? 'Ctrl+Shift+V' : 'Ctrl+V'}${dest ? ` → ${dest}` : ''})`)
         return { method: 'injected' }
       }
       // Previously this still reported 'injected', so a failed paste looked

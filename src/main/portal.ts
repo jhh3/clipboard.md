@@ -14,6 +14,7 @@ import { MOD_CODES } from '@shared/chord'
 const PORTAL_BUS = 'org.freedesktop.portal.Desktop'
 const PORTAL_PATH = '/org/freedesktop/portal/desktop'
 const KEY_LEFTCTRL = 29
+const KEY_LEFTSHIFT = 42
 const KEY_V = 47
 
 /**
@@ -157,7 +158,7 @@ type Attempt =
   /** Some keys landed before the failure — retrying could paste twice. */
   | 'partial'
 
-async function attemptPaste(): Promise<Attempt> {
+async function attemptPaste(shift: boolean): Promise<Attempt> {
   if (!(await ensureSession())) return 'no-session'
   const b = await getBus()
   const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
@@ -179,10 +180,12 @@ async function attemptPaste(): Promise<Attempt> {
     for (const code of STRAY_MODIFIERS) await key(rd, s, code, false)
     await key(rd, s, KEY_LEFTCTRL, true)
     sent++
+    if (shift) await key(rd, s, KEY_LEFTSHIFT, true)
     await key(rd, s, KEY_V, true)
     sent++
     await key(rd, s, KEY_V, false)
     sent++
+    if (shift) await key(rd, s, KEY_LEFTSHIFT, false)
     await key(rd, s, KEY_LEFTCTRL, false)
     sent++
     return 'ok'
@@ -249,8 +252,8 @@ function releaseSession(): void {
  * a session that dies between Start and the first keystroke — bounded to one extra
  * attempt, and only when nothing was injected, so it can't ever paste twice.
  */
-export async function portalPaste(): Promise<boolean> {
-  const first = await attemptPaste()
+export async function portalPaste(shift = false): Promise<boolean> {
+  const first = await attemptPaste(shift)
   if (first === 'ok') {
     releaseSession()
     return true
@@ -260,7 +263,7 @@ export async function portalPaste(): Promise<boolean> {
     return false
   }
   console.log('[portal] session was stale; retrying on a fresh one')
-  const ok = (await attemptPaste()) === 'ok'
+  const ok = (await attemptPaste(shift)) === 'ok'
   releaseSession()
   return ok
 }
