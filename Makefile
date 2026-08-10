@@ -66,20 +66,38 @@ help:
 # ── macOS: build from source ──────────────────────────────────────────────────
 #
 # Building it yourself is the way to run this on macOS WITHOUT a notarized release.
-# electron-builder ad-hoc-signs the app when no identity is given, and an app you
-# built locally carries no `com.apple.quarantine` flag (that is added only on
-# *download*), so Gatekeeper never shows the "damaged / unidentified developer"
+# An app you built locally carries no `com.apple.quarantine` flag (that is added only
+# on *download*), so Gatekeeper never shows the "damaged / unidentified developer"
 # dialog the downloaded dmg triggers. It just runs.
+#
+# Signing: if you have an Apple Development or Developer ID identity in your keychain
+# (every Xcode / free Apple Developer account has one), we sign with it. That matters
+# for more than tidiness — macOS ties permission grants (Accessibility, Input
+# Monitoring, Microphone) to the app's code signature. A *stable* identity keeps those
+# grants across rebuilds; ad-hoc signing changes the signature every build, so macOS
+# silently drops the grants and re-asks (and worse, still shows the old entry as
+# "on"). With no identity at all we fall back to ad-hoc — it runs, you just re-grant
+# Accessibility after each rebuild.
 #
 # Prereqs: Node 22+, pnpm (`corepack enable`), and Xcode command-line tools
 # (`xcode-select --install`) for the Swift helper. First run: `pnpm install`.
+MAC_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -oE '"(Developer ID Application|Apple Development)[^"]*"' | head -1 | sed 's/^"//;s/"$$//')
+
 mac:
 	@[ "$$(uname)" = "Darwin" ] || { echo "make mac is macOS-only"; exit 1; }
 	@command -v node >/dev/null || { echo "Install Node 22+ first (https://nodejs.org), then re-run."; exit 1; }
 	@xcode-select -p >/dev/null 2>&1 || { echo "Approve the Xcode command-line tools dialog, then re-run 'make mac-install'."; xcode-select --install >/dev/null 2>&1 || true; exit 1; }
 	@corepack enable >/dev/null 2>&1 || true
 	@[ -d node_modules ] || { echo "Installing dependencies…"; pnpm install; }
-	pnpm build:mac:adhoc
+	@if [ -n "$(MAC_IDENTITY)" ]; then \
+		echo "Signing with: $(MAC_IDENTITY)"; \
+		echo "(Permission grants — Accessibility, Mic — persist across rebuilds.)"; \
+		CLIPMD_SIGN_IDENTITY="$(MAC_IDENTITY)" pnpm build:mac:local; \
+	else \
+		echo "No Developer identity in keychain — ad-hoc signing."; \
+		echo "(macOS will re-ask for Accessibility after each rebuild.)"; \
+		pnpm build:mac:adhoc; \
+	fi
 	@echo
 	@echo "Built dist/mac-arm64/clipboard.md.app — 'make mac-install' to install it."
 
