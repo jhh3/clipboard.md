@@ -144,9 +144,16 @@ app-run:
 	@pid=$$(echo "$(APP_PIDS)" | head -1); \
 	if [ -z "$$pid" ]; then echo "FAILED to start — make logs"; exit 1; fi; \
 	echo "running        pid $$pid"; \
-	tr '\0' '\n' < /proc/$$pid/environ | grep -q '^DISPLAY=' \
-		&& echo "display        ok (clipboard I/O can reach X)" \
-		|| { echo "display        MISSING — clipboard and paste will not work"; exit 1; }
+	echo "build          $$(stat -c %y $(APP) | cut -d. -f1)"
+# Verify DISPLAY on the AppImage LAUNCHER, never on the Electron process: Chromium
+# overwrites its own argv/environ block to set process titles, so /proc/PID/environ
+# for the main process is shredded (it reported ~1994 junk entries against the
+# launcher's 52) and reading it produces a confident, wrong answer.
+	@lp=$$(pgrep -f '^$(APP)' | head -1); \
+	if [ -z "$$lp" ]; then echo "display        (launcher gone; skipped)"; \
+	elif tr '\0' '\n' < /proc/$$lp/environ | grep -q '^DISPLAY='; then \
+		echo "display        ok (clipboard I/O can reach X)"; \
+	else echo "display        MISSING — clipboard and paste will not work"; exit 1; fi
 
 app-stop:
 	@systemctl --user stop $(APP_UNIT) 2>/dev/null || true
