@@ -2,7 +2,7 @@ import { closeSync, openSync, read as fsRead, readFileSync } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
 import { getSettings } from './settings'
-import { formatChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from '@shared/chord'
+import { formatChord, parseChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from '@shared/chord'
 
 /**
  * Real push-to-talk, from evdev key events.
@@ -24,26 +24,41 @@ import { formatChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from 
 const EV_KEY = 1
 
 /**
- * The chord to watch, derived from settings.dictateChord via shared/chord.ts — the
- * same definition that produces the GNOME binding, so the trigger and the observer
- * cannot disagree. Null until startPushToTalk runs.
+ * Every chord we watch, derived from settings via shared/chord.ts — the same
+ * definitions that produce the GNOME bindings, so trigger and observer cannot
+ * disagree.
+ *
+ * All THREE dictation keys, not just the first. Watching only settings.dictateChord
+ * meant evdev reported press and release for the plain key while the AI-polish and
+ * agent keys had no observer at all — and once evdev is live the key-repeat fallback
+ * is deliberately disabled, so those two started recording with nothing left to stop
+ * them. They never stopped listening.
  */
-let chord: EvdevChord | null = null
-/** Which of the chord's modifier groups are currently held, by group index. */
-let modsHeld: boolean[] = []
-let keyHeld = false
+interface WatchedChord {
+  mode: PttMode
+  chord: EvdevChord
+  /** Which of this chord's modifier groups are currently held, by group index. */
+  modsHeld: boolean[]
+  keyHeld: boolean
+  active: boolean
+}
+
+let watched: WatchedChord[] = []
 
 // struct input_event on 64-bit: __kernel_ulong_t sec, usec (8+8), __u16 type,
 // __u16 code, __s32 value.
 const EVENT_SIZE = 24
 
+/** Which dictation key was pressed — they record identically and differ only in
+ *  what happens to the transcript. */
+export type PttMode = 'paste' | 'enhance' | 'agent'
+
 export interface PttHandlers {
-  onPress: () => void
-  onRelease: () => void
+  onPress: (mode: PttMode) => void
+  onRelease: (mode: PttMode) => void
 }
 
 let fds: number[] = []
-let chordActive = false
 
 /**
  * Every event node the kernel exposes with a `kbd` handler.
@@ -106,14 +121,36 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   stopPushToTalk()
   if (process.platform === 'darwin') return startMacPushToTalk(handlers)
 
-  const parsed = parseChordOrDefault(getSettings().dictateChord)
-  chord = toEvdevChord(parsed)
-  if (!chord) {
-    console.error(`[ptt] chord "${formatChord(parsed)}" has no evdev mapping; hold-to-talk off`)
+  const s = getSettings()
+  // The primary chord always has a value; the other two are opt-in and empty by
+  // default, so an unconfigured install watches exactly one.
+  const wanted: Array<{ mode: PttMode; raw: string | undefined; required: boolean }> = [
+    { mode: 'paste', raw: s.dictateChord, required: true },
+    { mode: 'enhance', raw: s.dictateEnhanceChord, required: false },
+    { mode: 'agent', raw: s.dictateAgentChord, required: false }
+  ]
+  watched = []
+  for (const w of wanted) {
+    const text = w.raw?.trim()
+    if (!text && !w.required) continue
+    const parsed = w.required ? parseChordOrDefault(text) : parseChord(text ?? '')
+    const evdev = parsed && toEvdevChord(parsed)
+    if (!evdev) {
+      console.error(`[ptt] ${w.mode} chord "${text ?? ''}" has no evdev mapping; not watched`)
+      continue
+    }
+    watched.push({
+      mode: w.mode,
+      chord: evdev,
+      modsHeld: evdev.modifierGroups.map(() => false),
+      keyHeld: false,
+      active: false
+    })
+  }
+  if (watched.length === 0) {
+    console.error('[ptt] no usable dictation chord; hold-to-talk off')
     return false
   }
-  modsHeld = chord.modifierGroups.map(() => false)
-  keyHeld = false
 
   // Count devices we can actually READ, not ones we attempted to open.
   //
@@ -133,7 +170,7 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   // logged, and every isolated probe "worked" only because it opened fewer than four
   // devices. Filtering to devices that advertise the chord's own keycode keeps this
   // to the two or three real keyboards, and the pool bump below covers the rest.
-  const devices = keyboardDevices().filter((d) => d.keys.has(chord!.key))
+  const devices = keyboardDevices().filter((d) => watched.some((w) => d.keys.has(w.chord.key)))
   let failed = 0
   for (const { path } of devices) {
     try {
@@ -178,39 +215,40 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
     return false
   }
   console.log(
-    `[ptt] hold-to-talk armed on ${fds.length} keyboard device(s); chord ${formatChord(parsed)}`
+    `[ptt] hold-to-talk armed on ${fds.length} device(s); chords ${watched.map((w) => `${w.mode}=${formatChord(parseChordOrDefault(w.mode === 'paste' ? s.dictateChord : w.mode === 'enhance' ? s.dictateEnhanceChord : s.dictateAgentChord))}`).join(' ')}`
   )
   return true
 }
 
 function onChunk(chunk: Buffer, handlers: PttHandlers): void {
-  const c = chord
-  if (!c) return
+  if (watched.length === 0) return
   for (let off = 0; off + EVENT_SIZE <= chunk.length; off += EVENT_SIZE) {
     const type = chunk.readUInt16LE(off + 16)
     if (type !== EV_KEY) continue
     const code = chunk.readUInt16LE(off + 18)
-    if (!c.watched.has(code)) continue // never inspect any other key
     const value = chunk.readInt32LE(off + 20)
     if (value === 2) continue // auto-repeat: the key is already down
-
     const down = value === 1
-    if (code === c.key) keyHeld = down
-    // A modifier may appear in only one group, but check them all rather than
-    // assuming: left and right variants both satisfy their group.
-    c.modifierGroups.forEach((group, i) => {
-      if (group.includes(code)) modsHeld[i] = down
-    })
 
-    const complete = keyHeld && modsHeld.every(Boolean)
-    if (complete && !chordActive) {
-      chordActive = true
-      console.log('[ptt] chord PRESS from evdev')
-      handlers.onPress()
-    } else if (!complete && chordActive) {
-      chordActive = false
-      console.log('[ptt] chord RELEASE from evdev')
-      handlers.onRelease()
+    for (const w of watched) {
+      if (!w.chord.watched.has(code)) continue // never inspect any other key
+      if (code === w.chord.key) w.keyHeld = down
+      // A modifier may appear in only one group, but check them all rather than
+      // assuming: left and right variants both satisfy their group.
+      w.chord.modifierGroups.forEach((group, i) => {
+        if (group.includes(code)) w.modsHeld[i] = down
+      })
+
+      const complete = w.keyHeld && w.modsHeld.every(Boolean)
+      if (complete && !w.active) {
+        w.active = true
+        console.log(`[ptt] chord PRESS from evdev (${w.mode})`)
+        handlers.onPress(w.mode)
+      } else if (!complete && w.active) {
+        w.active = false
+        console.log(`[ptt] chord RELEASE from evdev (${w.mode})`)
+        handlers.onRelease(w.mode)
+      }
     }
   }
 }
@@ -247,8 +285,10 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
       const lines = buffered.split('\n')
       buffered = lines.pop() ?? ''
       for (const line of lines) {
-        if (line.trim() === 'down') handlers.onPress()
-        else if (line.trim() === 'up') handlers.onRelease()
+        // macOS watches the Fn key only, which is the plain dictation mode. The
+        // AI-polish and agent keys are Linux-only for now (see hotkeys.ts).
+        if (line.trim() === 'down') handlers.onPress('paste')
+        else if (line.trim() === 'up') handlers.onRelease('paste')
       }
     })
     child.on('error', () => {
@@ -280,9 +320,7 @@ export function stopPushToTalk(): void {
       /* already gone */
     }
   }
-  modsHeld = modsHeld.map(() => false)
-  keyHeld = false
-  chordActive = false
+  watched = []
   if (macChild) {
     macChild.kill()
     macChild = null

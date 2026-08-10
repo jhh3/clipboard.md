@@ -317,8 +317,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
 
   const pttHandlers = {
-    onPress: () => beginDictation(),
-    onRelease: () => {
+    onPress: (mode: DictateMode) => beginDictation(mode),
+    onRelease: (_mode: DictateMode) => {
       // macOS keeps tap-to-latch: the Fn tap has always behaved that way there and it
       // works well, so it is left exactly as it was.
       //
