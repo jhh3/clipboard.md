@@ -247,7 +247,19 @@ const MCP_MODE = process.argv.includes('--mcp')
 // this binary for the same reason --mcp is: the path outlives the process.
 const BRIDGE_MODE = process.argv.includes('--bridge')
 const gotLock = MCP_MODE || BRIDGE_MODE || app.requestSingleInstanceLock()
-if (MCP_MODE || BRIDGE_MODE) {
+if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
+  // The bridge is a CHANNEL into a session clipboard.md launched — it has nothing to
+  // do for anyone else. But it is declared by a plugin, and installing a plugin
+  // enables it globally, so every Claude Code session on the machine was spawning
+  // one: 25 live sessions were holding ~19 bridges that could never be used,
+  // ~3GB of Electron doing nothing.
+  //
+  // Same guard, same variable, as the Stop hook in the plugin's hooks.json — that
+  // hook was noisy in foreign sessions for exactly this reason. agents.ts injects
+  // CLIPMD_SESSION_KEY into our own sessions only, so its absence means "not ours".
+  process.stderr.write('[bridge] no CLIPMD_SESSION_KEY: not a clipboard.md session; exiting\n')
+  app.exit(0)
+} else if (MCP_MODE || BRIDGE_MODE) {
   void startStdioServer(MCP_MODE ? 'mcp.mjs' : 'bridge.mjs')
 } else if (!gotLock) {
   // Second instance exists only to wake the first (GNOME keybindings run `--<action>`).
