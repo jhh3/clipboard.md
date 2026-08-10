@@ -199,6 +199,26 @@ async function startStdioServer(bundle: string): Promise<void> {
   console.info = toStderr
   console.warn = toStderr
   console.error = toStderr
+  // A stdio server's lifetime IS its stdin. Nothing else will ever tell it to stop:
+  // Electron keeps the event loop alive forever, and this process is reparented to
+  // init the moment the AppImage runtime execs it (measured: ppid=1 while the agent
+  // that spawned it was still running), so watching the parent is not an option
+  // either. Every agent session therefore left two Electron processes behind for
+  // good — 88 of them, 6.3GB resident, before this was found.
+  //
+  // Listeners only: do NOT resume() the stream. The MCP transport is about to attach
+  // to the same stdin, and consuming bytes here would eat its first request.
+  const exitWithParent = (why: string): void => {
+    process.stderr.write(`[stdio] ${why}; exiting\n`)
+    app.exit(0)
+  }
+  process.stdin.on('end', () => exitWithParent('stdin closed'))
+  process.stdin.on('close', () => exitWithParent('stdin closed'))
+  process.stdin.on('error', () => exitWithParent('stdin errored'))
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) {
+    process.on(sig, () => exitWithParent(sig))
+  }
+
   try {
     const entry = pathToFileURL(join(__dirname, bundle)).href
     await import(/* @vite-ignore */ entry)

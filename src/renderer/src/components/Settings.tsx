@@ -39,7 +39,11 @@ const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
 const MODEL_CHOICES: Record<ProviderId, string[]> = {
   'claude-agent': ['haiku', 'sonnet', 'opus'],
   codex: [],
-  openai: ['gpt-5.6-luna', 'gpt-5.6', 'gpt-5.1', 'gpt-5'],
+  // gpt-4.1-mini first: measured 1020ms against gpt-5.6-luna's 2070ms on the
+  // dictation cleanup task, with the same output. The gpt-5 nano/mini reasoning
+  // models are both slower AND returned empty — their reasoning tokens consume the
+  // completion budget — so they are deliberately absent.
+  openai: ['gpt-4.1-mini', 'gpt-5.6-luna', 'gpt-5.6', 'gpt-5.1', 'gpt-5', 'gpt-4.1-nano'],
   gemini: ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-pro-latest']
 }
 
