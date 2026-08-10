@@ -33,6 +33,12 @@ pnpm install && make mac-install
 Either way: it starts at login, adds a menu-bar icon, and asks for **Accessibility** the
 first time (that's what lets it paste — grant it). Then press **`⌘⇧V`** and start typing.
 
+**Turning on the AI (10 seconds):** if you've ever run `claude` (or `codex`) in a
+terminal and logged in, you're already done — the app finds that login automatically and
+uses it at no extra cost. No Claude subscription? Open **Settings → AI Providers** and
+paste an OpenAI or Gemini key. *(Paste it in Settings, not a shell variable — a Mac app
+launched from Finder doesn't see your terminal's `export`s.)*
+
 *(Linux install is [further down](#linux).)*
 
 ---
@@ -96,11 +102,14 @@ isn't a cold start.
 
 Sensible out of the box — you only open Settings if you want to change something.
 
-- **AI provider** — rides your existing `claude` or `codex` login at no extra cost, or
-  add an `OPENAI_API_KEY` / `GEMINI_API_KEY`. Two lanes, per feature: *subscription*
-  (free at the margin, default for background work) and *API* (faster, default for
-  interactive transforms — roughly $0.20/month at normal use). Default models are the
-  fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
+- **AI provider** — **your `claude`/`codex` login is picked up automatically** (it's
+  read from the login on disk, so it works however the app starts). Prefer keys, or
+  don't have a subscription? Paste an OpenAI/Gemini key in **Settings → AI Providers** —
+  a GUI-launched Mac app can't see shell `export`s, so the Settings field is the reliable
+  place (the env var only works when you launch from a terminal). Two lanes, per feature:
+  *subscription* (free at the margin, default for background work) and *API* (faster,
+  default for interactive transforms — roughly $0.20/month at normal use). Default models
+  are the fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
 - **Dictation** — transcription is **OpenAI by default**, or switch to fully-offline
   **local Parakeet** (a ~490MB one-time download, then no audio ever leaves the machine).
   The hold-to-talk key is rebindable in Settings → General.
