@@ -1,4 +1,5 @@
 import { normalizeNumbers } from './numbers'
+import { vocabularyRules } from '@shared/vocabulary'
 
 /**
  * User dictionary for dictation, applied to the transcript after recognition.
@@ -172,6 +173,8 @@ export interface CorrectionOptions {
   style?: TranscriptStyle
   /** Spoken numbers to numerals, per the ten-and-up convention. */
   numbers?: boolean
+  /** Built-in tech proper-noun vocabulary (OpenAI, GitHub, Kubernetes…). Default on. */
+  builtinVocabulary?: boolean
 }
 
 /**
@@ -201,16 +204,33 @@ export function styleForApp(
 
 /** The full post-recognition pass: fillers, then user rules, then repair. */
 export function correctTranscript(text: string, opts: CorrectionOptions = {}): string {
-  const rules = parseDictionary(opts.dictionary)
+  const userRules = parseDictionary(opts.dictionary)
+  // Built-in tech vocabulary, cased for the active style. A user rule for the same
+  // `from` wins, so anyone can override a bundled term. Default ON.
+  const builtin =
+    opts.builtinVocabulary === false
+      ? []
+      : (() => {
+          const userFroms = new Set(userRules.map((r) => r.from.toLowerCase()))
+          return vocabularyRules(opts.style === 'casual' ? 'casual' : 'as-spoken').filter(
+            (r) => !userFroms.has(r.from.toLowerCase())
+          )
+        })()
+  const rules = [...builtin, ...userRules]
   // Default ON: this is meant to work without anyone configuring it.
   const cleanup = opts.cleanup !== false
   let out = text
   if (cleanup) out = stripFillers(out)
   // User rules run after, so they act on the cleaned text and can still delete.
+  // Gate tidy() on an ACTUAL change, not on rules merely existing: the built-in
+  // vocabulary is always present, so `rules.length` is now effectively constant, and
+  // keying tidy() off it would re-capitalise every transcript even with cleanup off.
+  const beforeRules = out
   if (rules.length) out = applyDictionary(out, rules)
+  const rulesChanged = out !== beforeRules
   // Before tidy(), so the numerals it produces get the same spacing repair.
   if (opts.numbers) out = normalizeNumbers(out)
-  if (cleanup || rules.length || opts.numbers) out = tidy(out)
+  if (cleanup || rulesChanged || opts.numbers) out = tidy(out)
   // Style last: tidy() re-capitalises the first character, which would undo it.
   if (opts.style && opts.style !== 'as-spoken') out = applyStyle(out, opts.style)
   return out

@@ -161,6 +161,34 @@ describe('correctTranscript', () => {
   })
 })
 
+describe('built-in tech vocabulary', () => {
+  it('fixes split and lowercased brands out of the box', () => {
+    expect(correctTranscript('we deployed to open ai and get hub')).toBe(
+      'We deployed to OpenAI and GitHub'
+    )
+  })
+
+  it('canonicalises distinctive single words', () => {
+    expect(correctTranscript('deploy to kubernetes')).toBe('Deploy to Kubernetes')
+  })
+
+  it('lowercases brands in casual style but keeps the join', () => {
+    expect(correctTranscript('we shipped it on open ai', { style: 'casual' })).toBe(
+      'we shipped it on openai'
+    )
+  })
+
+  it('lets a user rule override a bundled term', () => {
+    expect(correctTranscript('use open ai', { dictionary: 'open ai => OpenAI Inc' })).toBe(
+      'Use OpenAI Inc'
+    )
+  })
+
+  it('can be turned off', () => {
+    expect(correctTranscript('use open ai', { builtinVocabulary: false })).toBe('Use open ai')
+  })
+})
+
 describe('styleForApp', () => {
   const profiles = 'slack => casual\nwezterm => as-spoken\n# comment\nbroken line'
 

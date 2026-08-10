@@ -327,6 +327,7 @@ export function registerIpc(
         const perApp = styleForApp(d.profiles, getDictationTarget())
         let text = correctTranscript(raw, {
           dictionary: d.dictionary,
+          builtinVocabulary: d.builtinVocabulary,
           cleanup: d.cleanup,
           numbers: d.numbers !== false,
           style: perApp ?? d.style

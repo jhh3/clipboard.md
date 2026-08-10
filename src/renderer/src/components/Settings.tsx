@@ -1543,6 +1543,17 @@ export default function Settings() {
                 />
               </Row>
               <Row
+                label="Tech vocabulary"
+                sub={
+                  'Spell tech proper nouns right out of the box — "open ai" → OpenAI, "get hub" → GitHub, "cuber netes" → Kubernetes. Lowercased automatically in casual style. Add your own below.'
+                }
+              >
+                <Toggle
+                  checked={s.dictation.builtinVocabulary !== false}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, builtinVocabulary: v } })}
+                />
+              </Row>
+              <Row
                 label="Dictation dictionary"
                 sub="Fix names and jargon the recogniser gets wrong. One rule per line: heard => written, or a bare word to fix its spelling. Applied offline, after transcription."
               >
