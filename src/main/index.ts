@@ -50,6 +50,7 @@ import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk } from './ptt'
+import { importShellEnv } from './shellEnv'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
 // Push-to-talk opens one descriptor per real keyboard, and a machine with several
@@ -535,6 +536,9 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     const logFile = initLogging()
     console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()
+    // Pull API keys out of the user's shell rc before anything queries a provider —
+    // a Finder-launched Mac app otherwise can't see exported OPENAI_API_KEY etc.
+    await importShellEnv()
     // No Dock icon and no ⌘-Tab entry: this is a background app summoned by a hotkey,
     // and a Dock bounce on every launch is exactly the "it feels like an app" texture
     // Maccy avoids. Windows that genuinely need activation call app.focus() instead.

@@ -33,11 +33,21 @@ pnpm install && make mac-install
 Either way: it starts at login, adds a menu-bar icon, and asks for **Accessibility** the
 first time (that's what lets it paste — grant it). Then press **`⌘⇧V`** and start typing.
 
-**Turning on the AI (10 seconds):** if you've ever run `claude` (or `codex`) in a
-terminal and logged in, you're already done — the app finds that login automatically and
-uses it at no extra cost. No Claude subscription? Open **Settings → AI Providers** and
-paste an OpenAI or Gemini key. *(Paste it in Settings, not a shell variable — a Mac app
-launched from Finder doesn't see your terminal's `export`s.)*
+**Turning on the AI (10 seconds).** It uses whatever you already have, in this order:
+
+1. **A `claude` or `codex` login** — if you've run either in a terminal and signed in, you're
+   done; it's picked up automatically and costs nothing beyond your plan.
+2. **A standard API key in your environment** — `OPENAI_API_KEY`, `GEMINI_API_KEY`, or
+   `ANTHROPIC_API_KEY` exported in your shell rc is imported automatically at launch (even
+   when the app is opened from Finder, which normally can't see your shell's `export`s).
+3. **A key you paste into Settings → AI Providers** — the reliable manual option, and it
+   always wins over the environment.
+
+So for most people: *nothing to configure.* If none of the above is set, open Settings →
+AI Providers and paste one key.
+
+> **Using Wispr Flow (or another dictation app)?** Quit it, or change its hotkey — its
+> hold-to-talk key collides with clipboard.md's (`🌐`/Fn), and both will fire at once.
 
 *(Linux install is [further down](#linux).)*
 
@@ -102,14 +112,14 @@ isn't a cold start.
 
 Sensible out of the box — you only open Settings if you want to change something.
 
-- **AI provider** — **your `claude`/`codex` login is picked up automatically** (it's
-  read from the login on disk, so it works however the app starts). Prefer keys, or
-  don't have a subscription? Paste an OpenAI/Gemini key in **Settings → AI Providers** —
-  a GUI-launched Mac app can't see shell `export`s, so the Settings field is the reliable
-  place (the env var only works when you launch from a terminal). Two lanes, per feature:
-  *subscription* (free at the margin, default for background work) and *API* (faster,
-  default for interactive transforms — roughly $0.20/month at normal use). Default models
-  are the fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
+- **AI provider** — auto-configured from what you already have, in order: your
+  **`claude`/`codex` login** (read from disk, works however the app starts), then a
+  standard **`OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`** from your shell
+  (imported at launch, so a Finder-opened app sees it too), then a key you paste in
+  **Settings → AI Providers** (which always wins). Existing values are never overwritten.
+  Two lanes, per feature: *subscription* (free at the margin, default for background work)
+  and *API* (faster, default for interactive transforms — ~$0.20/month at normal use).
+  Default models are the fast, cheap ones: **Haiku · GPT-5.6 Luna · Gemini Flash-Lite**.
 - **Dictation** — transcription is **OpenAI by default**, or switch to fully-offline
   **local Parakeet** (a ~490MB one-time download, then no audio ever leaves the machine).
   The hold-to-talk key is rebindable in Settings → General.
