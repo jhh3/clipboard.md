@@ -1140,6 +1140,17 @@ export default function Settings() {
               )}
               {!IS_MAC && (
                 <Row
+                  label="Hold-to-talk chord (to agent)"
+                  sub="Optional third key. Speaks straight to your primary agent instead of pasting — the same long-lived session the ask row uses, so each dictation continues the conversation."
+                >
+                  <ChordField
+                    value={s.dictateAgentChord ?? ''}
+                    onCommit={(v) => patch({ dictateAgentChord: v })}
+                  />
+                </Row>
+              )}
+              {!IS_MAC && (
+                <Row
                   label="Hold-to-talk chord (AI cleanup)"
                   sub="Optional second key. Records the same way, then sends the transcript to your AI provider to fix self-corrections, filler words and misheard words. Leave empty to keep every dictation offline."
                 >

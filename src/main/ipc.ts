@@ -67,10 +67,19 @@ import { enrichmentRunStats } from './enrichment'
 import { embedQuery } from './embeddings'
 import { takeScreenshot } from './screenshot'
 
+/**
+ * What a dictation does with its transcript. All three record identically; only the
+ * destination differs, which is why it is one mode rather than a pile of flags.
+ *  - 'paste'   deterministic cleanup, then paste into the focused app
+ *  - 'enhance' the same, plus an AI pass, then paste
+ *  - 'agent'   the same, then speak it to the primary agent instead of pasting
+ */
+export type DictateMode = 'paste' | 'enhance' | 'agent'
+
 export interface RewriteState {
   getText: () => string | null
-  /** True when this dictation was started by the "dictate and enhance" key. */
-  isEnhanced: () => boolean
+  /** Which key started the dictation whose transcript is arriving now. */
+  dictateMode: () => DictateMode
   onDictationDone: () => void
 }
 
@@ -322,10 +331,11 @@ export function registerIpc(
           numbers: d.numbers !== false,
           style: perApp ?? d.style
         })
+        const mode = payload.dictation ? rewrite.dictateMode() : 'paste'
         // The AI pass is opt-in per utterance: it only runs for a dictation started by
         // the second hotkey, so the default path never leaves the machine. A failure
         // here must never lose the words — fall through with the deterministic text.
-        if (payload.dictation && rewrite.isEnhanced()) {
+        if (mode === 'enhance') {
           try {
             text = await enhanceTranscript(text)
           } catch (err) {
@@ -344,6 +354,24 @@ export function registerIpc(
         })
         updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
         sendToPalette('items:changed', { reason: 'captured' })
+
+        // Dictated straight at the agent: no paste, no palette — the words go to the
+        // primary session, which is the same long-lived session the ask row uses, so
+        // successive dictations continue one conversation.
+        if (mode === 'agent') {
+          const agent = getSettings().agents[0]?.name
+          try {
+            await askAgent(text)
+            broadcast('agents:changed', { unread: unreadCount() })
+            return { ok: true, text, id, pasted: false, sentTo: agent ?? 'agent' }
+          } catch (err) {
+            // Never silently swallow the words: they are already saved as a clip, so
+            // say what happened rather than reporting a delivery that did not occur.
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error('[dictate] could not reach the agent:', msg)
+            return { ok: false, error: `Could not reach the agent: ${msg}`, text, id }
+          }
+        }
 
         // Context-aware destination: dictating with the palette OPEN means the
         // words were for an agent, not the app underneath — route the transcript

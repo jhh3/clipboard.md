@@ -19,7 +19,7 @@ type Phase =
   /** `fellBack`: the configured mic was gone, so this is the system default. */
   | { kind: 'recording'; fellBack: boolean }
   | { kind: 'transcribing' }
-  | { kind: 'done'; text: string; pasted: boolean }
+  | { kind: 'done'; text: string; pasted: boolean; sentTo?: string }
   | { kind: 'error'; message: string; note?: string }
 
 function formatElapsed(sec: number): string {
@@ -167,7 +167,7 @@ export default function DictationHud() {
       const audioB64 = await blobToB64(blob)
       const res = await invoke('scratch:transcribe', { audioB64, mime, dictation: true })
       if (res.ok && res.text) {
-        setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true })
+        setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true, sentTo: res.sentTo })
         finishAfter(DONE_MS)
       } else {
         setPhase({
@@ -376,7 +376,9 @@ export default function DictationHud() {
         <>
           <div className="hud-head">
             <span className="hud-status done">Done</span>
-            <span className="hud-footnote">{phase.pasted ? 'Pasted' : 'Copied to clipboard'}</span>
+            <span className="hud-footnote">
+              {phase.sentTo ? `Sent to @${phase.sentTo}` : phase.pasted ? 'Pasted' : 'Copied to clipboard'}
+            </span>
           </div>
           <div className="hud-transcript">{phase.text}</div>
         </>

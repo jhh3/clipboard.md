@@ -10,6 +10,7 @@ import { CaptureService } from './capture'
 import { PasteService } from './paste'
 import { registerIpc } from './ipc'
 import { noteDictationTarget } from './focusedWindow'
+import type { DictateMode } from './ipc'
 import {
   createPaletteWindow,
   togglePalette,
@@ -250,15 +251,16 @@ if (MCP_MODE || BRIDGE_MODE) {
   // and they are indistinguishable from the outside. One line each turns "it does
   // nothing" into a specific answer.
   /**
-   * Whether the CURRENT recording should get the AI pass. Captured at start, because
-   * the transcript arrives long after the key that chose the mode was released.
+   * What the CURRENT recording should do with its transcript. Captured at start,
+   * because the transcript arrives long after the key that chose the mode was
+   * released — three keys record identically and differ only in the destination.
    */
-  let dictateEnhance = false
+  let dictateMode: DictateMode = 'paste'
 
-  const beginDictation = (enhance = false): void => {
+  const beginDictation = (mode: DictateMode = 'paste'): void => {
     if (dictating) return
     dictating = true
-    dictateEnhance = enhance
+    dictateMode = mode
     dictateStartedAt = Date.now()
     console.log('[dictate] start')
     noteDictationTarget()
@@ -345,7 +347,7 @@ if (MCP_MODE || BRIDGE_MODE) {
    * evdev, when it works, still wins: its release fires endDictation immediately and
    * cancels this timer. This is the fallback that makes dictation work anyway.
    */
-  const dictateTrigger = (enhance = false): void => {
+  const dictateTrigger = (mode: DictateMode = 'paste'): void => {
     const now = Date.now()
     const sinceLast = now - lastHotkeyAt
     lastHotkeyAt = now
@@ -355,7 +357,7 @@ if (MCP_MODE || BRIDGE_MODE) {
       // it would immediately start a second recording.
       if (now - lastStopAt < RESTART_GUARD_MS) return
       holdMode = 'unknown'
-      beginDictation(enhance)
+      beginDictation(mode)
       // No repeat can arrive before `delay`, so anything sooner means a tap.
       if (repeat.enabled) armHoldTimer(repeat.delay + REPEAT_SLACK_MS)
       return
@@ -449,9 +451,10 @@ if (MCP_MODE || BRIDGE_MODE) {
       })()
     },
     scratchpad: () => openScratchpadWindow(),
-    dictate: () => dictateTrigger(),
-    // Same recording flow; only the post-processing differs.
-    dictateEnhance: () => dictateTrigger(true),
+    dictate: () => dictateTrigger('paste'),
+    // Same recording flow; only what happens to the transcript differs.
+    dictateEnhance: () => dictateTrigger('enhance'),
+    dictateAgent: () => dictateTrigger('agent'),
     notes: () => openNotesWindow(),
     agents: () => openAgentsWindow()
   }
@@ -516,10 +519,10 @@ if (MCP_MODE || BRIDGE_MODE) {
     registerIpc(paste, capture, {
       getText: () => pendingRewriteText,
       // Which key started this recording, read when its transcript comes back.
-      isEnhanced: () => dictateEnhance,
+      dictateMode: () => dictateMode,
       onDictationDone: () => {
         dictating = false
-        dictateEnhance = false
+        dictateMode = 'paste'
         hideDictationHud()
       }
     })

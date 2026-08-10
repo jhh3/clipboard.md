@@ -16,6 +16,8 @@ export interface HotkeyActions {
   dictate: () => void
   /** Same, but the transcript also goes through an AI cleanup pass. */
   dictateEnhance: () => void
+  /** Same recording, but the transcript is spoken to the primary agent. */
+  dictateAgent: () => void
   notes: () => void
   agents: () => void
 }
@@ -119,6 +121,18 @@ const BINDINGS: Binding[] = [
       return chord ? toGnomeBinding(chord) : ''
     },
     arg: '--dictate-enhance',
+    authoritative: true
+  },
+  {
+    slug: 'clipboard-md-dictate-agent',
+    name: 'clipboard.md — dictate to agent',
+    // Third dictation key: record exactly as normal, then hand the transcript to the
+    // primary agent instead of pasting it. Unbound by default, same as the AI key.
+    get binding() {
+      const chord = parseChord(getSettings().dictateAgentChord ?? '')
+      return chord ? toGnomeBinding(chord) : ''
+    },
+    arg: '--dictate-agent',
     authoritative: true
   },
   { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' },
@@ -249,6 +263,7 @@ export function routeArgs(argv: string[], actions: HotkeyActions): void {
   else if (argv.includes('--capture')) actions.screenshot()
   else if (argv.includes('--scratchpad')) actions.scratchpad()
   else if (argv.includes('--dictate-enhance')) actions.dictateEnhance()
+  else if (argv.includes('--dictate-agent')) actions.dictateAgent()
   else if (argv.includes('--dictate')) actions.dictate()
   else if (argv.includes('--notes')) actions.notes()
   else if (argv.includes('--agents')) actions.agents()

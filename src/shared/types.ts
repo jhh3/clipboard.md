@@ -346,6 +346,8 @@ export interface AppSettings {
   dictateChord: string
   /** Optional second dictation chord that adds an AI cleanup pass. Empty = unbound. */
   dictateEnhanceChord?: string
+  /** Optional third dictation chord: speak straight to the primary agent. Empty = unbound. */
+  dictateAgentChord?: string
   theme: 'system' | 'dark' | 'light'
   /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
   pasteInjection: 'portal' | 'off'
@@ -431,7 +433,15 @@ export interface IpcInvokeMap {
     mime: string
     /** Dictation flow: save as a transcription clip and auto-paste per settings. */
     dictation?: boolean
-  }) => { ok: boolean; text?: string; error?: string; pasted?: boolean; id?: number }
+  }) => {
+    ok: boolean
+    text?: string
+    error?: string
+    pasted?: boolean
+    id?: number
+    /** Agent the transcript was delivered to, when dictated with the agent chord. */
+    sentTo?: string
+  }
   /** Retry transcription of a stored dictation recording. */
   'dictation:retry': (itemId: number) => { ok: boolean; text?: string; error?: string }
   /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
@@ -520,6 +530,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hotkeyHint: 'Ctrl+Alt+V',
   dictateChord: DEFAULT_DICTATE_CHORD,
   dictateEnhanceChord: '',
+  dictateAgentChord: '',
   theme: 'system',
   pasteInjection: 'portal'
 }
