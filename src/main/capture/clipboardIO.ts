@@ -108,8 +108,17 @@ export function writeClipboardHtml(html: string, text: string): Promise<void> {
     clipboard.write({ text, html })
     return Promise.resolve()
   }
-  // xclip owns one target per process; the HTML flavor is the useful one here.
-  return spawnOwner(['-selection', 'clipboard', '-t', 'text/html'], Buffer.from(html, 'utf8'))
+  // xclip owns ONE target per process, and publishing text/html alone makes the
+  // clipboard unreadable to everything that asks for plain text — which is almost
+  // everything. A 2314-character clip with an HTML flavor pasted into neither a
+  // terminal nor Slack, because both request UTF8_STRING and the selection offered
+  // only text/html (verified: `TARGETS` listed `TARGETS text/html` and nothing else).
+  //
+  // So Linux publishes the plain text. Losing rich formatting is a real cost, but a
+  // clip that cannot be pasted anywhere is not a tradeoff, it is a broken clipboard.
+  // Serving both flavours needs a selection owner that answers multiple targets, and
+  // owning the selection in-process is what previously froze the desktop.
+  return writeClipboardText(text)
 }
 
 function spawnOwner(args: string[], data: Buffer): Promise<void> {

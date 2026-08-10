@@ -12,7 +12,7 @@ import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { portalPaste } from './portal'
-import { focusedWmClass, isTerminalClass } from './focusedWindow'
+import { focusedWmClass, getDictationTarget, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
 
 /**
@@ -105,7 +105,10 @@ export class PasteService {
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
       await writeClipboardImage(readFileSync(item.content))
-    } else if (item.html && !shaped.plain) {
+    } else if (item.html && !shaped.plain && process.platform !== 'linux') {
+      // Linux cannot publish HTML and plain text at once (see writeClipboardHtml), and
+      // routing here also skipped the waitForClipboard guard below — so a rich clip
+      // was both unpastable and unverified.
       this.capture.markSelfWrite(item.content)
       await writeClipboardHtml(item.html, item.content)
     } else {
@@ -143,8 +146,17 @@ export class PasteService {
   }
 
   async pasteItem(itemId: number, plain: boolean): Promise<PasteOutcome> {
+    const item = getItem(itemId)
+    console.log(
+      `[paste] item ${itemId} kind=${item?.kind ?? 'missing'} chars=${item?.content.length ?? 0}` +
+        `${item?.html ? ' html' : ''}${plain ? ' plain' : ''}`
+    )
     if (!(await this.setClipboard(itemId, plain, true))) {
-      return { method: 'copied', message: 'Item no longer exists' }
+      // These are two different failures and they used to share one message, so a
+      // clipboard that never took ownership was reported as a deleted item.
+      const reason = getItem(itemId) ? 'clipboard write failed' : 'Item no longer exists'
+      console.error(`[paste] item ${itemId} not pasted: ${reason}`)
+      return { method: 'copied', message: reason }
     }
     return this.deliver()
   }
@@ -196,7 +208,10 @@ export class PasteService {
       // Asked only AFTER hiding and settling: before that the focused window is still
       // ours, and we would be shaping the keystroke for the palette instead of for
       // whatever the user is actually typing into.
-      const dest = await focusedWmClass()
+      // Live detection first; the app recorded at dictation start is the fallback.
+      // Focus can still be in flight here, and guessing wrong costs the whole paste —
+      // a plain Ctrl+V in a terminal does nothing at all.
+      const dest = (await focusedWmClass()) ?? getDictationTarget()
       const shift = isTerminalClass(dest)
       if (await portalPaste(shift)) {
         console.log(`[paste] injected via portal (${shift ? 'Ctrl+Shift+V' : 'Ctrl+V'}${dest ? ` → ${dest}` : ''})`)

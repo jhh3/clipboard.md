@@ -31,12 +31,31 @@ function xprop(args: string[]): Promise<string> {
   })
 }
 
-/** WM_CLASS of the focused window, lowercased, or null when it cannot be determined. */
+/**
+ * WM_CLASS of the focused window, with one short retry.
+ *
+ * We ask immediately after hiding our own window, which is exactly when focus is in
+ * flight and _NET_ACTIVE_WINDOW can read 0x0. xprop itself costs ~8ms, so a single
+ * retry is far cheaper than the failure it prevents.
+ */
 export async function focusedWmClass(): Promise<string | null> {
+  const first = await readWmClass()
+  if (first) return first
+  await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))
+  return readWmClass()
+}
+
+const RETRY_DELAY_MS = 60
+
+async function readWmClass(): Promise<string | null> {
   try {
     const active = await xprop(['-root', '_NET_ACTIVE_WINDOW'])
     const id = active.match(/0x[0-9a-f]+/i)?.[0]
-    if (!id) return null
+    // 0x0 means "no X11 window is active" — mutter reports it while focus is moving,
+    // including the moment just after we hide our own window. It matched the regex,
+    // so we passed it to xprop, which rejects it, and the caller fell back to a plain
+    // Ctrl+V: in a terminal that pastes nothing at all.
+    if (!id || /^0x0+$/i.test(id)) return null
     // WM_CLASS(STRING) = "instance", "Class" — the second is the one apps are known by,
     // but single-valued replies happen, so fall back to the first.
     const cls = await xprop(['-id', id, 'WM_CLASS'])
