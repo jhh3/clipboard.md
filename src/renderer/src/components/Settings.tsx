@@ -933,6 +933,27 @@ export default function Settings() {
   // broadcast wholesale. Focused draft inputs keep their draft (useSyncedDraft).
   useEffect(() => on('settings:changed', (p) => setSettings(p.settings)), [])
 
+  // Provider availability was read once on mount and never again, so the status row
+  // kept saying a provider had no key long after one was pasted into the field right
+  // above it — the only way to see the truth was to close and reopen Settings.
+  // Debounced because a settings change fires per keystroke-commit, and each refresh
+  // re-runs the availability probes.
+  useEffect(() => {
+    let timer = 0
+    const off = on('settings:changed', () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        invoke('providers:status')
+          .then(setProviders)
+          .catch(() => {})
+      }, 400)
+    })
+    return () => {
+      window.clearTimeout(timer)
+      off()
+    }
+  }, [])
+
   // Saved actions get their own local list (persisted via actions:save/:delete,
   // not settings:set) — seed it once from the loaded settings.
   useEffect(() => {

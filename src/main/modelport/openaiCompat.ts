@@ -113,8 +113,11 @@ export async function openaiCompatComplete(
 
 /** Whisper-family transcription via OpenAI (multipart upload). */
 export async function openaiTranscribe(audio: Buffer, mime: string): Promise<string> {
-  const key = process.env.OPENAI_API_KEY
-  if (!key) throw new Error('OPENAI_API_KEY not set')
+  // Same source as every other call: Settings first, environment second. This one
+  // was missed and stayed environment-only, so cloud transcription would fail with
+  // "OPENAI_API_KEY not set" for a user whose key was sitting in Settings.
+  const key = keyFor('openai')
+  if (!key) throw new Error('no OpenAI key in Settings or OPENAI_API_KEY')
   const form = new FormData()
   // The API identifies the container by FILE EXTENSION, so this must match the actual
   // bytes — sending mp4 as `audio.wav` is a 400, not a guess it recovers from.
