@@ -202,6 +202,13 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE agent_sessions ADD COLUMN backend TEXT;
   ALTER TABLE agent_sessions ADD COLUMN sandbox_id TEXT;
+  `,
+
+  // Ack cursor: the last message seq durably drained from a remote bridge. Its
+  // own migration, NOT folded into the one above — that one already ran on
+  // dev DBs, so an appended ALTER there would never execute.
+  `
+  ALTER TABLE agent_sessions ADD COLUMN outbox_cursor INTEGER NOT NULL DEFAULT 0;
   `
 ]
 

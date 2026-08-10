@@ -192,7 +192,12 @@ async function waitForChatReady(io: SessionIO, label: string, timeoutMs = 180_00
   let lastNudge = 0
   while (Date.now() < deadline) {
     const screen = await io.capture()
-    if (screen === null) return true // pane is gone; let the caller surface the real error
+    if (screen === null) return true // pane is genuinely gone; caller surfaces the error
+    // '' is a transient capture failure (remote API blip) — wait, don't quit.
+    if (screen === '') {
+      await new Promise((r) => setTimeout(r, 1000))
+      continue
+    }
     if (CHAT_READY.some((m) => screen.includes(m))) return true
 
     let keys: string[] | null = null
@@ -301,17 +306,29 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
         key,
         cwd,
         claudeArgs: args,
-        env: { CLIPMD_SESSION_KEY: key, CLIPMD_BRIDGE_TOKEN: token }
+        env: { CLIPMD_SESSION_KEY: key, CLIPMD_BRIDGE_TOKEN: token },
+        // Persist the sandbox id the moment it exists — before the long
+        // bootstrap — so a crash mid-launch leaves a killable record, not an
+        // orphaned VM billing silently.
+        onSandbox: (sandboxId) =>
+          db.prepare('UPDATE agent_sessions SET sandbox_id = ? WHERE key = ?').run(sandboxId, key)
       })
-      db.prepare("UPDATE agent_sessions SET status = 'running', sandbox_id = ? WHERE key = ?").run(
-        session.sandboxId,
-        key
-      )
+      db.prepare("UPDATE agent_sessions SET status = 'running' WHERE key = ?").run(key)
       // The app writes the discovery file for remote sessions — the bridge can't
-      // reach our disk. Same file, same reachability semantics everywhere else.
-      writeFileSync(discoveryFile(key), JSON.stringify({ url: session.bridgeUrl, token }))
-      chmodSync(discoveryFile(key), 0o600)
-      void waitForChatReady(remoteIO(session.sandboxId, key), key)
+      // reach our disk — but ONLY after the bridge is actually listening, so the
+      // discovery-exists-means-reachable contract holds. Backgrounded: menus
+      // first, then the port; a send before then queues via deliverWithRetry.
+      void (async () => {
+        const io = remoteIO(session.sandboxId, key)
+        await waitForChatReady(io, key)
+        const up = await remoteBridgeUp(session.bridgeUrl, token)
+        if (!up) {
+          console.error(`[agents] remote ${key} bridge never came up`)
+          return
+        }
+        writeFileSync(discoveryFile(key), JSON.stringify({ url: session.bridgeUrl, token }))
+        chmodSync(discoveryFile(key), 0o600)
+      })()
       return key
     } catch (err) {
       db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(
@@ -368,6 +385,24 @@ function bridgeBase(d: Discovery): string | null {
   return null
 }
 
+/** Poll a remote bridge's /outbox until it answers (claude booted + MCP up). */
+async function remoteBridgeUp(url: string, token: string, timeoutMs = 120_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/outbox?after=0`, {
+        headers: { 'x-token': token },
+        signal: AbortSignal.timeout(8000)
+      })
+      if (res.ok) return true
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 3000))
+  }
+  return false
+}
+
 function discovery(key: string): Discovery | null {
   const file = discoveryFile(key)
   if (!existsSync(file)) return null
@@ -413,6 +448,17 @@ export async function sendToSession(key: string, text: string, kind = 'message')
       // room than loopback needs.
       signal: AbortSignal.timeout(d.url ? 10_000 : 4000)
     })
+    // A LOCAL bridge records this inbound message into SQLite itself. A REMOTE
+    // bridge cannot (no DB there) and we deliberately don't trust its outbox to
+    // report our own messages back — so record inbound HERE, once, on success.
+    if (res.ok && d.url) {
+      getDb()
+        .prepare(
+          `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+           VALUES (?, 'inbound', ?, ?, ?, ?)`
+        )
+        .run(key, kind, text, null, Date.now())
+    }
     return res.ok
   } catch (err) {
     console.error(`[agents] could not reach the bridge for ${key}:`, err)
@@ -873,51 +919,73 @@ export function markRead(sessionKey?: string): void {
  * mirrored replies, delivered inbound) waits in memory behind GET /outbox.
  * Returns true when anything new landed, so the caller can refresh badges.
  */
+/** Kinds a remote bridge is allowed to send us (defense in depth beside the
+ *  outbound-only filter — an unknown kind renders as an unstyled bubble). */
+const OUTBOX_KINDS = new Set(['reply', 'progress', 'question', 'done', 'failure', 'note'])
+
 export async function drainRemoteOutboxes(): Promise<boolean> {
   const db = getDb()
   const rows = db
-    .prepare("SELECT key, sandbox_id FROM agent_sessions WHERE backend = 'e2b' AND status = 'running'")
-    .all() as Array<{ key: string; sandbox_id: string | null }>
+    .prepare(
+      "SELECT key, sandbox_id, outbox_cursor FROM agent_sessions WHERE backend = 'e2b' AND status = 'running'"
+    )
+    .all() as Array<{ key: string; sandbox_id: string | null; outbox_cursor: number }>
   let landed = false
   for (const row of rows) {
     const d = discovery(row.key)
     if (!d?.url) continue
+    let reached = false
     try {
-      const res = await fetch(`${d.url}/outbox`, {
+      const res = await fetch(`${d.url}/outbox?after=${row.outbox_cursor}`, {
         headers: { 'x-token': d.token },
         signal: AbortSignal.timeout(8000)
       })
+      reached = true
       if (!res.ok) continue
       const msgs = (await res.json()) as Array<{
-        direction: 'inbound' | 'outbound'
+        seq: number
+        direction: string
         kind: string
         body: string
         meta?: unknown
         createdAt: number
       }>
-      for (const m of msgs) {
-        if (!m?.body || (m.direction !== 'inbound' && m.direction !== 'outbound')) continue
-        db.prepare(
-          `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(
-          row.key,
-          m.direction,
-          String(m.kind ?? 'message'),
-          String(m.body),
-          m.meta ? JSON.stringify(m.meta) : null,
-          Number(m.createdAt) || Date.now()
-        )
-        landed = true
-      }
-      if (msgs.length > 0) {
-        db.prepare('UPDATE agent_sessions SET last_seen_at = ? WHERE key = ?').run(Date.now(), row.key)
-        // Activity extends the sandbox's TTL so a live conversation can't lapse.
-        if (row.sandbox_id) void touchSandbox(row.sandbox_id)
-      }
+      // One transaction: rows + the cursor advance are durable together, so the
+      // bridge only trims what we've truly stored (the /outbox ack contract).
+      const insert = db.prepare(
+        `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+         VALUES (?, 'outbound', ?, ?, ?, ?)`
+      )
+      let maxSeq = row.outbox_cursor
+      const apply = db.transaction(() => {
+        for (const m of msgs) {
+          if (typeof m?.seq !== 'number') continue
+          maxSeq = Math.max(maxSeq, m.seq)
+          // Outbound only, whitelisted kind: a sandbox must not be able to forge
+          // 'you' messages or inject unrenderable kinds into the operator's thread.
+          if (m.direction !== 'outbound' || !m.body) continue
+          const kind = OUTBOX_KINDS.has(m.kind) ? m.kind : 'reply'
+          insert.run(row.key, kind, String(m.body), m.meta ? JSON.stringify(m.meta) : null, Number(m.createdAt) || Date.now())
+          landed = true
+        }
+        if (maxSeq > row.outbox_cursor) {
+          db.prepare('UPDATE agent_sessions SET outbox_cursor = ?, last_seen_at = ? WHERE key = ?').run(
+            maxSeq,
+            Date.now(),
+            row.key
+          )
+        }
+      })
+      apply()
+      // Activity extends the sandbox's TTL so a live conversation can't lapse.
+      if (maxSeq > row.outbox_cursor && row.sandbox_id) void touchSandbox(row.sandbox_id)
     } catch {
-      /* sandbox asleep or unreachable; the next pass retries */
+      /* transient; the next pass retries from the same cursor (nothing lost) */
     }
+    // Liveness: a reachable bridge that 200s is alive. A discovery file that
+    // exists but whose bridge refuses connection for a whole pass is checked by
+    // the lifecycle sweep, not here — one failed fetch is not death.
+    void reached
   }
   return landed
 }

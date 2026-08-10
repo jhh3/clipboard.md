@@ -7,7 +7,11 @@ import { getDb } from './store/db'
 // Static import on purpose: a dynamic import() here made rollup split the E2B
 // backend into a chunk, where the bundler's __dirname shim landed in the wrong
 // scope (observed live: "__dirname is not defined" killing remote launches).
-import { killRemote } from './remote/e2bBackend'
+import { killRemote, listRunningSandboxIds } from './remote/e2bBackend'
+
+/** An e2b 'starting' row older than this crashed mid-bootstrap (which takes
+ *  ~20s); reconcile buries it and kills any sandbox it managed to create. */
+const REMOTE_STARTING_STALE_MS = 5 * 60 * 1000
 
 const execFileP = promisify(execFile)
 
@@ -152,6 +156,12 @@ async function reconcileState(live: Set<string>): Promise<void> {
     }
   }
 
+  // Remote (e2b) sessions have no local process — reconcile them against the
+  // provider's list of live sandboxes instead. A dead sandbox showing 'running'
+  // silently drops everything the user sends it; a 'starting' row past the
+  // bootstrap window is a crash artifact.
+  await reconcileRemote()
+
   // The reverse: a tmux session of ours that the DB thinks is finished. It really is
   // running, so re-adopt it rather than leaving a live agent nobody can see.
   for (const name of live) {
@@ -169,6 +179,42 @@ async function reconcileState(live: Set<string>): Promise<void> {
       report('adopt', name, 'running', `was ${row.status}`)
     } catch (err) {
       report('adopt', name, 'failed', String(err))
+    }
+  }
+}
+
+/** Reconcile remote sessions against the provider's live-sandbox list. */
+async function reconcileRemote(): Promise<void> {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      "SELECT key, sandbox_id, status, created_at FROM agent_sessions WHERE backend = 'e2b' AND status IN ('running','starting')"
+    )
+    .all() as Array<{ key: string; sandbox_id: string | null; status: string; created_at: number }>
+  if (rows.length === 0) return
+
+  const alive = await listRunningSandboxIds()
+  const now = Date.now()
+  for (const row of rows) {
+    try {
+      // A 'starting' row that never became 'running' within the bootstrap window
+      // is a crash artifact — bury it (and kill any sandbox it left behind).
+      if (row.status === 'starting' && now - row.created_at > REMOTE_STARTING_STALE_MS) {
+        if (row.sandbox_id) await killRemote(row.sandbox_id).catch(() => {})
+        rmSync(join(agentsDir(), `${row.key}.json`), { force: true })
+        db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(now, row.key)
+        report('bury', row.key, 'exited', 'remote start never completed')
+        continue
+      }
+      // If the list call failed, don't guess — leave rows as they are this pass.
+      if (!alive || !row.sandbox_id) continue
+      if (!alive.has(row.sandbox_id) && row.status === 'running') {
+        rmSync(join(agentsDir(), `${row.key}.json`), { force: true })
+        db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(now, row.key)
+        report('bury', row.key, 'exited', 'sandbox no longer running')
+      }
+    } catch (err) {
+      report('bury', row.key, 'failed', String(err))
     }
   }
 }

@@ -185,6 +185,10 @@ export interface RemoteLaunchOptions {
   claudeArgs: string[]
   /** CLIPMD_* env for the session (no DB/memory/require paths — remote mode). */
   env: Record<string, string>
+  /** Called with the sandbox id the instant it exists, BEFORE the long
+   *  bootstrap — so the caller can record it and a later sweep can kill an
+   *  orphan if the app dies mid-launch. */
+  onSandbox?: (sandboxId: string) => void
 }
 
 /** Create a sandbox, make it a claude host, and start the session in tmux. */
@@ -201,47 +205,74 @@ export async function launchRemote(opts: RemoteLaunchOptions): Promise<RemoteSes
   const t0 = Date.now()
   const sb = await SandboxCls().create('base', { apiKey: apiKey(), timeoutMs: SANDBOX_TTL_MS })
   sandboxes.set(sb.sandboxId, sb)
+  opts.onSandbox?.(sb.sandboxId) // record NOW, so a failed bootstrap can't orphan it
   console.log(`[e2b] sandbox ${sb.sandboxId} created in ${Date.now() - t0}ms; bootstrapping…`)
-  await bootstrap(sb)
-  await installBridge(sb)
-  await installPlugin(sb)
-  await seedClaudeConfig(sb, anthropicKey)
-  console.log(`[e2b] ${sb.sandboxId} ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+  try {
+    await bootstrap(sb)
+    await installBridge(sb)
+    await installPlugin(sb)
+    await seedClaudeConfig(sb, anthropicKey)
+    console.log(`[e2b] ${sb.sandboxId} ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 
-  const env: Record<string, string> = {
-    ...opts.env,
-    CLIPMD_BRIDGE_PORT: String(BRIDGE_PORT),
-    CLIPMD_HOOK_NODE: 'node',
-    ...(oauth ? { CLAUDE_CODE_OAUTH_TOKEN: oauth } : { ANTHROPIC_API_KEY: anthropicKey! })
+    // Secrets and env go into a chmod-600 launch script written through the
+    // files API — NEVER into the tmux command string. A `-e SECRET=...` flag
+    // would ride E2B's control-plane request log and show in the sandbox
+    // process list; the script keeps the token out of both. tmux -e is used
+    // only for the launch script to inherit nothing but what we export.
+    const env: Record<string, string> = {
+      ...opts.env,
+      CLIPMD_REMOTE: '1',
+      CLIPMD_BRIDGE_PORT: String(BRIDGE_PORT),
+      CLIPMD_HOOK_NODE: 'node',
+      ...(oauth ? { CLAUDE_CODE_OAUTH_TOKEN: oauth } : { ANTHROPIC_API_KEY: anthropicKey! })
+    }
+    const exports = Object.entries(env)
+      .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
+      .join('\n')
+    const script = `#!/bin/sh\n${exports}\nexec claude ${opts.claudeArgs.map(shellQuote).join(' ')}\n`
+    const scriptPath = `${WORKDIR}/launch-${opts.key}.sh`
+    await sb.files.write(scriptPath, script)
+    await run(sb, `chmod 600 ${scriptPath}`, 10_000)
+    await run(
+      sb,
+      `mkdir -p ${shellQuote(opts.cwd)} && tmux new-session -d -s ${opts.key} -c ${shellQuote(opts.cwd)} sh ${scriptPath}`,
+      30_000
+    )
+    return { sandboxId: sb.sandboxId, bridgeUrl: `https://${sb.getHost(BRIDGE_PORT)}` }
+  } catch (err) {
+    // A half-provisioned sandbox is a billing leak — kill it before rethrowing.
+    console.error(`[e2b] launch failed for ${sb.sandboxId}; killing it:`, err)
+    try {
+      await sb.kill()
+    } catch {
+      /* already gone */
+    }
+    sandboxes.delete(sb.sandboxId)
+    throw err
   }
-  // The claude invocation goes through a launch script rather than inline shell:
-  // args contain prompts with arbitrary quoting, and nesting them inside the
-  // tmux command string is exactly how quoting bugs are made.
-  const script = `#!/bin/sh\nexec claude ${opts.claudeArgs.map(shellQuote).join(' ')}\n`
-  await sb.files.write(`${WORKDIR}/launch-${opts.key}.sh`, script)
-  const envFlags = Object.entries(env)
-    .map(([k, v]) => `-e ${shellQuote(`${k}=${v}`)}`)
-    .join(' ')
-  await run(
-    sb,
-    `mkdir -p ${shellQuote(opts.cwd)} && tmux new-session -d -s ${opts.key} -c ${shellQuote(opts.cwd)} ${envFlags} sh ${WORKDIR}/launch-${opts.key}.sh`,
-    30_000
-  )
-  return { sandboxId: sb.sandboxId, bridgeUrl: `https://${sb.getHost(BRIDGE_PORT)}` }
 }
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
-/** Screen contents of the session's tmux pane, for menu-driving. */
+/**
+ * Screen contents of the session's tmux pane, for menu-driving.
+ *  - a string is the pane
+ *  - '' (empty) is a TRANSIENT failure: the caller should keep waiting, not
+ *    conclude the pane is gone (a single API blip must not abandon a session
+ *    mid-boot, wedged on the trust menu)
+ *  - null means the tmux session genuinely no longer exists
+ */
 export async function captureRemote(sandboxId: string, key: string): Promise<string | null> {
   try {
     const sb = await connect(sandboxId)
     const r = await sb.commands.run(`tmux capture-pane -p -t ${key}`, { timeoutMs: 15_000 })
-    return r.exitCode === 0 ? r.stdout : null
+    if (r.exitCode === 0) return r.stdout
+    // Non-zero with "can't find session" is a real gone-pane; anything else transient.
+    return /can't find|no server|no session/i.test(r.stderr) ? null : ''
   } catch {
-    return null
+    return '' // network/timeout — transient, keep waiting
   }
 }
 
@@ -275,5 +306,28 @@ export async function touchSandbox(sandboxId: string): Promise<void> {
     await sb.setTimeout(SANDBOX_TTL_MS)
   } catch {
     /* best-effort */
+  }
+}
+
+/**
+ * The set of currently-running sandbox ids, or null if the list call failed
+ * (never treat a failed list as "everything is dead"). One API call for the
+ * whole reconcile, versus a connect per session.
+ */
+export async function listRunningSandboxIds(): Promise<Set<string> | null> {
+  try {
+    const list = await SandboxCls().list({ apiKey: apiKey() })
+    // The SDK returns an iterable of running-sandbox info; id field name has
+    // varied across versions, so accept either.
+    const ids = new Set<string>()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const s of list as any) {
+      const id = s?.sandboxId ?? s?.sandbox_id ?? s?.id
+      if (id) ids.add(String(id))
+    }
+    return ids
+  } catch (err) {
+    console.error('[e2b] could not list sandboxes:', err)
+    return null
   }
 }

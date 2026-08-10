@@ -40,7 +40,7 @@ const BRIDGE_TOKEN = process.env.CLIPMD_BRIDGE_TOKEN
  * transcript uuid, which doubles as our flush-race retry signal: a 'dup'
  * response means we only found the PREVIOUS turn's reply so far — keep waiting.
  */
-const REMOTE = !DB && BRIDGE_PORT && BRIDGE_TOKEN
+const REMOTE = process.env.CLIPMD_REMOTE === '1' && BRIDGE_PORT && BRIDGE_TOKEN
 
 function bail(db) {
   try {

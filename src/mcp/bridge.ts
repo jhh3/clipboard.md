@@ -44,13 +44,20 @@ const TOKEN = process.env.CLIPMD_BRIDGE_TOKEN ?? randomBytes(16).toString('hex')
 const FIXED_PORT = Number(process.env.CLIPMD_BRIDGE_PORT ?? 0) || 0
 
 /**
- * REMOTE mode: no CLIPMD_DB means this bridge runs inside a sandbox with no app
- * database on its filesystem. Messages queue in memory instead, and the app
- * drains them over HTTP (GET /outbox) into its own SQLite. The Stop hook, which
- * also can't reach SQLite there, POSTs replies to /mirror on this loopback.
+ * REMOTE mode: this bridge runs inside a sandbox with no app database on its
+ * filesystem. Messages queue in memory instead, and the app drains them over
+ * HTTP (GET /outbox) into its own SQLite. The Stop hook, which also can't reach
+ * SQLite there, POSTs replies to /mirror on this loopback.
+ *
+ * Keyed off an EXPLICIT CLIPMD_REMOTE flag, never merely "no CLIPMD_DB": the
+ * plugin is installed user-scope, so this same bridge also runs in the user's
+ * own terminal claude sessions, which have neither var. There, silently queuing
+ * into a void that nothing drains would tell the agent "delivered" and lose the
+ * message — so a non-remote bridge with no DB stays honest and reports failure.
  */
-const REMOTE = !DB_PATH
+const REMOTE = process.env.CLIPMD_REMOTE === '1'
 interface QueuedMessage {
+  seq: number
   direction: 'inbound' | 'outbound'
   kind: string
   body: string
@@ -58,6 +65,7 @@ interface QueuedMessage {
   createdAt: number
 }
 const queue: QueuedMessage[] = []
+let queueSeq = 0
 const QUEUE_CAP = 500
 /** uuids already mirrored, so the hook's transcript retries can't duplicate. */
 const mirroredUuids = new Set<string>()
@@ -93,7 +101,11 @@ function getDb(): any {
 
 function record(direction: 'inbound' | 'outbound', kind: string, body: string, meta?: unknown): boolean {
   if (REMOTE) {
-    queue.push({ direction, kind, body, meta, createdAt: Date.now() })
+    // Inbound (the operator's own messages) is recorded APP-SIDE at send time,
+    // never trusted from here: a queue the sandbox can write is a channel for
+    // forging "you" messages into the operator's thread. Drop it.
+    if (direction === 'inbound') return true
+    queue.push({ seq: ++queueSeq, direction, kind, body, meta, createdAt: Date.now() })
     if (queue.length > QUEUE_CAP) queue.splice(0, queue.length - QUEUE_CAP)
     return true
   }
@@ -435,10 +447,17 @@ const http = createServer((req, res) => {
     return
   }
 
-  // Remote mode: the app drains queued messages into its own SQLite.
-  if (req.method === 'GET' && req.url === '/outbox') {
-    const drained = queue.splice(0, queue.length)
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(drained))
+  // Remote mode: the app drains queued messages into its own SQLite. Cursor-
+  // based, NOT destructive: /outbox?after=<seq> returns everything newer, and
+  // messages are trimmed only once the app's cursor has advanced past them
+  // (proving it durably stored them). A dropped or timed-out response therefore
+  // loses nothing — the next request re-delivers from the same cursor.
+  if (req.method === 'GET' && req.url?.startsWith('/outbox')) {
+    const after = Number(new URL(req.url, 'http://x').searchParams.get('after') ?? 0) || 0
+    // Everything at or below the acked cursor is safe to forget.
+    while (queue.length > 0 && queue[0].seq <= after) queue.shift()
+    const pending = queue.filter((m) => m.seq > after)
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(pending))
     return
   }
 
@@ -482,9 +501,11 @@ const http = createServer((req, res) => {
   })
 })
 
-// A fixed port binds 0.0.0.0: in a sandbox the provider's proxy reaches the
-// port from outside the loopback. Locally the ephemeral port stays loopback-only.
-http.listen(FIXED_PORT, FIXED_PORT ? '0.0.0.0' : '127.0.0.1', () => {
+// Only a REMOTE bridge binds 0.0.0.0 (the sandbox provider's proxy reaches it
+// from outside loopback). A local bridge — which has full clipboard DB access —
+// stays loopback-only even if it somehow inherited CLIPMD_BRIDGE_PORT, so it can
+// never be reached from the LAN.
+http.listen(REMOTE ? FIXED_PORT : 0, REMOTE ? '0.0.0.0' : '127.0.0.1', () => {
   const addr = http.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
   log(`inbound listener on 127.0.0.1:${port}`)
