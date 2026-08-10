@@ -332,8 +332,25 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    * With no evdev, the hotkey alone toggles. Dictation is reachable either way.
    */
   const RESTART_GUARD_MS = 400
-  /** Slack added to a repeat deadline, to absorb scheduling jitter. */
+  /**
+   * Slack added to the FIRST deadline, before we know whether this is a tap or a hold.
+   * Generous on purpose: getting that classification wrong costs a whole recording.
+   */
   const REPEAT_SLACK_MS = 250
+  /**
+   * Slack once repeats are confirmed flowing — this is the entire perceived cost of
+   * releasing the key, so it is the number that makes dictation feel slow.
+   *
+   * Measured on this machine: release was detected 280ms after the last repeat, every
+   * time (interval 30 + slack 250), against ~0ms on macOS where the helper's event tap
+   * reports a real key-up. That 250ms tolerated eight consecutive missed repeats, which
+   * is far more than jitter requires. Four intervals, floored at 100ms, still absorbs a
+   * stall several times longer than any observed gap and cuts the wait to ~120ms.
+   *
+   * This is a fallback: when evdev delivers a real key-up, onRelease fires immediately
+   * and none of this runs.
+   */
+  const holdDeadline = (): number => Math.max(100, repeat.interval * 4)
   let lastHotkeyAt = 0
   let lastStopAt = 0
   let holdTimer: ReturnType<typeof setTimeout> | null = null
@@ -403,7 +420,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       holdMode = 'holding'
       // Now that repeats are flowing they arrive every `interval` ms, so the deadline
       // can tighten — that is what keeps the stop responsive after release.
-      armHoldTimer(repeat.interval + REPEAT_SLACK_MS)
+      armHoldTimer(holdDeadline())
       return
     }
     clearHoldTimer()

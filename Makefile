@@ -111,7 +111,12 @@ install-appimage: appimage
 # bridge servers registered with Claude ARE this binary, so agents keep long-lived
 # processes running it. rename() swaps the directory entry and leaves the old inode
 # alive for them, so an upgrade never has to kill the user's agent sessions.
-	@cp dist/clipboard.md-*.AppImage $(HOME)/.local/bin/.clipboard.md.AppImage.new
+# Newest match, not the glob: dist/ accumulates one AppImage per version, so after a
+# version bump the glob expands to several paths and cp reads the last one as a
+# destination directory ("No such file or directory") instead of installing anything.
+	@src=$$(ls -t dist/clipboard.md-*.AppImage | head -1); \
+	echo "  installing $$src"; \
+	cp "$$src" $(HOME)/.local/bin/.clipboard.md.AppImage.new
 	@chmod +x $(HOME)/.local/bin/.clipboard.md.AppImage.new
 	@mv -f $(HOME)/.local/bin/.clipboard.md.AppImage.new $(HOME)/.local/bin/clipboard.md.AppImage
 	@echo "installed $(APP)"
