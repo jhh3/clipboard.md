@@ -278,6 +278,12 @@ export interface AppSettings {
   linkEnrichment: boolean
   /** Optional Firecrawl key: upgrades link enrichment for JS-heavy pages. */
   firecrawlApiKey?: string
+  /**
+   * API keys for the api lane. Stored here because a desktop app launched by the
+   * session never sees keys exported in a shell rc; the environment is still read as
+   * a fallback. See modelport/openaiCompat.ts.
+   */
+  apiKeys?: { openai?: string; gemini?: string }
   sessionsEnabled: boolean
   /** Per-provider model overrides (fast models by default). */
   models: Partial<Record<ProviderId, string>>

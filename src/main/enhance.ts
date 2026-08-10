@@ -23,7 +23,13 @@ const SYSTEM = [
   '- remove filler words and false starts',
   '- when the speaker corrects themselves, keep only the corrected version',
   '- fix punctuation, capitalisation, and words that were clearly misheard',
+  '- when the speaker enumerates items out loud ("one ... two ... three ...",',
+  '  "first ... second ...", or "bullet ..."), format them as a real list: put the',
+  '  lead-in on its own line ending with a colon, then one item per line numbered',
+  '  "1." "2." "3." (or "- " for unnumbered ones). Use the speaker\'s own words for',
+  '  each item and drop the spoken number word itself.',
   'Never add, remove, summarise, reorder or reword anything else.',
+  'Do not invent a list where the speaker did not enumerate one.',
   'Preserve the speaker\'s wording, tone and register exactly.',
   'Return only the cleaned text, with no preamble, quotes or explanation.'
 ].join('\n')

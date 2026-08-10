@@ -27,11 +27,32 @@ const CONFIGS: Record<'openai' | 'gemini', CompatConfig> = {
   }
 }
 
+/**
+ * The API key, from Settings first and the environment second.
+ *
+ * Environment-only was unworkable for a desktop app. Keys live in a shell rc, and the
+ * app is started by the session (autostart, a .desktop launcher, systemd) — none of
+ * which source it. The result was an app that could see no providers at all while
+ * `echo $OPENAI_API_KEY` in a terminal printed one, and the only symptom was
+ * "No api-lane provider succeeded (none available)" on a loop.
+ *
+ * The environment still wins nothing and loses nothing: it remains the fallback, so
+ * an app launched from a shell, or a headless --mcp server, keeps working unchanged.
+ */
+function keyFor(provider: 'openai' | 'gemini'): string | undefined {
+  const fromSettings = getSettings().apiKeys?.[provider]?.trim()
+  return fromSettings || process.env[CONFIGS[provider].keyEnv] || undefined
+}
+
 export function openaiCompatAvailable(provider: 'openai' | 'gemini'): { ok: boolean; detail: string } {
-  const key = process.env[CONFIGS[provider].keyEnv]
+  const fromSettings = !!getSettings().apiKeys?.[provider]?.trim()
+  const key = keyFor(provider)
   return key
-    ? { ok: true, detail: `${CONFIGS[provider].model} via ${CONFIGS[provider].keyEnv}` }
-    : { ok: false, detail: `${CONFIGS[provider].keyEnv} not set` }
+    ? {
+        ok: true,
+        detail: `${CONFIGS[provider].model} via ${fromSettings ? 'Settings' : CONFIGS[provider].keyEnv}`
+      }
+    : { ok: false, detail: `no key in Settings or ${CONFIGS[provider].keyEnv}` }
 }
 
 export async function openaiCompatComplete(
@@ -39,8 +60,8 @@ export async function openaiCompatComplete(
   req: PortRequest
 ): Promise<string> {
   const cfg = CONFIGS[provider]
-  const key = process.env[cfg.keyEnv]
-  if (!key) throw new Error(`${cfg.keyEnv} not set`)
+  const key = keyFor(provider)
+  if (!key) throw new Error(`no ${provider} key in Settings or ${cfg.keyEnv}`)
 
   type ContentPart =
     | { type: 'text'; text: string }

@@ -1166,6 +1166,32 @@ export default function Settings() {
           {section === 'providers' && (
             <>
               <h2 className="set-section-title">AI Providers</h2>
+              <Row
+                label="OpenAI API key"
+                sub="Stored in your settings file. Leave empty to use OPENAI_API_KEY from the environment — note that an app started by your desktop session does not see keys exported in a shell profile."
+              >
+                <TextField
+                  value={s.apiKeys?.openai ?? ''}
+                  password
+                  placeholder="sk-…"
+                  onCommit={(v) =>
+                    patch({ apiKeys: { ...(s.apiKeys ?? {}), openai: v || undefined } })
+                  }
+                />
+              </Row>
+              <Row
+                label="Gemini API key"
+                sub="Leave empty to use GEMINI_API_KEY from the environment."
+              >
+                <TextField
+                  value={s.apiKeys?.gemini ?? ''}
+                  password
+                  placeholder="AIza…"
+                  onCommit={(v) =>
+                    patch({ apiKeys: { ...(s.apiKeys ?? {}), gemini: v || undefined } })
+                  }
+                />
+              </Row>
               <p className="set-section-sub">
                 Subscription lane uses your Claude / Codex plans via their local agents. API lane
                 calls OpenAI or Gemini directly with OPENAI_API_KEY / GEMINI_API_KEY from your

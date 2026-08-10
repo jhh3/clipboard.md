@@ -11,6 +11,7 @@ import { PasteService } from './paste'
 import { registerIpc } from './ipc'
 import { noteDictationTarget } from './focusedWindow'
 import type { DictateMode } from './ipc'
+import type { AppSettings } from '@shared/types'
 import {
   createPaletteWindow,
   togglePalette,
@@ -37,7 +38,7 @@ import { getSettings, flushSettings, onSettingsChanged } from './settings'
 import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
 import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
-import { complete } from './modelport'
+import { complete, resetProviderCache } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { unreadCount, prewarmAgents } from './agents'
@@ -565,9 +566,17 @@ if (MCP_MODE || BRIDGE_MODE) {
 
     // Settings used to require a restart to take effect anywhere: push changes to
     // every window, and let the services that cached values re-read them.
-    let lastChord = getSettings().dictateChord
+    // Every chord that maps to a GNOME keybinding. Watching only the first one meant
+    // the enhance and agent chords could be set in Settings and never registered: the
+    // slugs existed with an empty binding, so the keys did nothing and there was no
+    // error anywhere to explain why.
+    const chordsOf = (s: AppSettings): string =>
+      [s.dictateChord, s.dictateEnhanceChord ?? '', s.dictateAgentChord ?? ''].join('|')
+    let lastChords = chordsOf(getSettings())
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
+      // An API key typed into Settings must be usable immediately.
+      resetProviderCache()
       buildTrayMenu() // the Pause-capture checkbox must reflect changes made in Settings
       capture.applySettings()
       if (s.embeddings.enabled) startEmbeddings()
@@ -576,11 +585,11 @@ if (MCP_MODE || BRIDGE_MODE) {
       // re-armed here, and the GNOME keybinding is rewritten by setupHotkeys (that
       // binding is derived from the same setting — see hotkeys.ts). Linux only;
       // macOS dictation is the Fn key via the helper and ignores this entirely.
-      if (process.platform === 'linux' && s.dictateChord !== lastChord) {
-        lastChord = s.dictateChord
+      if (process.platform === 'linux' && chordsOf(s) !== lastChords) {
+        lastChords = chordsOf(s)
         pttActive = startPushToTalk(pttHandlers)
         void setupHotkeys(actions)
-        console.log(`[dictate] chord changed to ${s.dictateChord}`)
+        console.log(`[dictate] chords changed to ${chordsOf(s).replace(/\|/g, ' | ')}`)
       }
     })
 

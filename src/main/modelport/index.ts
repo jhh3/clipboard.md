@@ -155,6 +155,14 @@ function tryParse<T>(
 
 const availCache = new Map<ProviderId, { at: number; ok: boolean; detail: string }>()
 
+/**
+ * Forget cached availability. Called when settings change: a key pasted into Settings
+ * must take effect now, not up to five minutes later, or the field looks broken.
+ */
+export function resetProviderCache(): void {
+  availCache.clear()
+}
+
 export async function isAvailable(provider: ProviderId): Promise<boolean> {
   const cached = availCache.get(provider)
   if (cached && Date.now() - cached.at < 5 * 60_000) return cached.ok
