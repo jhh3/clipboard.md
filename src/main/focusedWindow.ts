@@ -79,3 +79,23 @@ export function isTerminalClass(wmClass: string | null): boolean {
   if (!wmClass) return false
   return TERMINAL_CLASS_PARTS.some((part) => wmClass.includes(part))
 }
+
+/**
+ * The app that was focused when dictation STARTED.
+ *
+ * Captured at the start of a recording rather than when its transcript arrives: by
+ * then our own HUD has been shown and, on Wayland, the focused window may well be
+ * ours. This is what per-application style profiles are keyed on.
+ */
+let dictationTarget: string | null = null
+
+export function noteDictationTarget(): void {
+  dictationTarget = null
+  void focusedWmClass().then((c) => {
+    dictationTarget = c
+  })
+}
+
+export function getDictationTarget(): string | null {
+  return dictationTarget
+}

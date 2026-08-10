@@ -179,10 +179,12 @@ function Row({
  */
 function DictionaryField({
   value,
-  onCommit
+  onCommit,
+  placeholder
 }: {
   value: string
   onCommit: (v: string) => void
+  placeholder?: string
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const [draft, setDraft] = useSyncedDraft(value, ref)
@@ -191,7 +193,7 @@ function DictionaryField({
       ref={ref}
       className="set-textarea identity-textarea"
       spellCheck={false}
-      placeholder={'clipboard dot md => clipboard.md\nParakeet\nsherpa => sherpa-onnx'}
+      placeholder={placeholder ?? 'clipboard dot md => clipboard.md\nParakeet\nsherpa => sherpa-onnx'}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
@@ -1136,6 +1138,17 @@ export default function Settings() {
                   />
                 </Row>
               )}
+              {!IS_MAC && (
+                <Row
+                  label="Hold-to-talk chord (AI cleanup)"
+                  sub="Optional second key. Records the same way, then sends the transcript to your AI provider to fix self-corrections, filler words and misheard words. Leave empty to keep every dictation offline."
+                >
+                  <ChordField
+                    value={s.dictateEnhanceChord ?? ''}
+                    onCommit={(v) => patch({ dictateEnhanceChord: v })}
+                  />
+                </Row>
+              )}
             </>
           )}
 
@@ -1436,6 +1449,27 @@ export default function Settings() {
                   <option value="as-spoken">As spoken</option>
                   <option value="casual">Casual (lowercase)</option>
                 </select>
+              </Row>
+              <Row
+                label="Numbers as numerals"
+                sub="“another twenty items” → “another 20 items”. Follows the usual convention: words below ten, numerals from ten up, and always numerals with a unit — so “one click install” is left alone."
+              >
+                <Toggle
+                  checked={s.dictation.numbers !== false}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, numbers: v } })}
+                />
+              </Row>
+              <Row
+                label="Per-app styles"
+                sub="Override the style for specific apps, one per line: app => style, where app matches part of the window class (slack, wezterm, chrome). Empty means the same style everywhere."
+              >
+                <DictionaryField
+                  value={s.dictation.profiles ?? ''}
+                  onCommit={(v) =>
+                    patch({ dictation: { ...s.dictation, profiles: v || undefined } })
+                  }
+                  placeholder={'slack => casual\nwezterm => as-spoken'}
+                />
               </Row>
               <Row
                 label="Clean up transcripts"

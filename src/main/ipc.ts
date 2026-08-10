@@ -16,7 +16,9 @@ import {
   exportAll
 } from './store/items'
 import { saveRecording, transcribeFile } from './transcribe'
-import { correctTranscript } from './dictionary'
+import { correctTranscript, styleForApp } from './dictionary'
+import { getDictationTarget } from './focusedWindow'
+import { enhanceTranscript } from './enhance'
 import { detectSecret } from './capture/filters'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
@@ -67,6 +69,8 @@ import { takeScreenshot } from './screenshot'
 
 export interface RewriteState {
   getText: () => string | null
+  /** True when this dictation was started by the "dictate and enhance" key. */
+  isEnhanced: () => boolean
   onDictationDone: () => void
 }
 
@@ -308,11 +312,26 @@ export function registerIpc(
         cleanup()
         // Applied to both lanes: the scratchpad mic and the dictation HUD produce the
         // same transcripts and want the same jargon spelled the same way.
-        const text = correctTranscript(raw, {
-          dictionary: getSettings().dictation.dictionary,
-          cleanup: getSettings().dictation.cleanup,
-          style: getSettings().dictation.style
+        const d = getSettings().dictation
+        // Per-app override beats the global style. The destination was captured when
+        // recording STARTED — by now the focused window may be our own HUD.
+        const perApp = styleForApp(d.profiles, getDictationTarget())
+        let text = correctTranscript(raw, {
+          dictionary: d.dictionary,
+          cleanup: d.cleanup,
+          numbers: d.numbers !== false,
+          style: perApp ?? d.style
         })
+        // The AI pass is opt-in per utterance: it only runs for a dictation started by
+        // the second hotkey, so the default path never leaves the machine. A failure
+        // here must never lose the words — fall through with the deterministic text.
+        if (payload.dictation && rewrite.isEnhanced()) {
+          try {
+            text = await enhanceTranscript(text)
+          } catch (err) {
+            console.error('[dictate] AI cleanup failed; using the local transcript:', err)
+          }
+        }
         if (!payload.dictation) return { ok: true, text }
         if (!text) return { ok: false, error: 'Nothing was transcribed' }
 

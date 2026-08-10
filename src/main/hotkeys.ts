@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 import { getSettings } from './settings'
-import { parseChordOrDefault, toGnomeBinding } from '@shared/chord'
+import { parseChord, parseChordOrDefault, toGnomeBinding } from '@shared/chord'
 
 const execFileP = promisify(execFile)
 
@@ -14,6 +14,8 @@ export interface HotkeyActions {
   scratchpad: () => void
   /** Push-to-talk dictation: toggles recording (GNOME keybindings can't report key-up). */
   dictate: () => void
+  /** Same, but the transcript also goes through an AI cleanup pass. */
+  dictateEnhance: () => void
   notes: () => void
   agents: () => void
 }
@@ -99,6 +101,24 @@ const BINDINGS: Binding[] = [
     },
     arg: '--dictate',
     previous: ['<Control><Alt>d'],
+    authoritative: true
+  },
+  {
+    slug: 'clipboard-md-dictate-enhance',
+    name: 'clipboard.md — dictate and enhance (AI)',
+    // Second dictation key: same recording flow, but the transcript is additionally
+    // sent to a model for the corrections a regex cannot make (self-corrections,
+    // ambiguous fillers, tone). Kept on its OWN key rather than a setting on the main
+    // one, so the default dictation path stays offline and predictable — you opt into
+    // the network per utterance, by choosing which button to hold.
+    //
+    // No default binding: an empty chord registers nothing, so this costs a user who
+    // never configures it exactly nothing and cannot collide with their shortcuts.
+    get binding() {
+      const chord = parseChord(getSettings().dictateEnhanceChord ?? '')
+      return chord ? toGnomeBinding(chord) : ''
+    },
+    arg: '--dictate-enhance',
     authoritative: true
   },
   { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' },
@@ -228,6 +248,7 @@ export function routeArgs(argv: string[], actions: HotkeyActions): void {
   if (argv.includes('--rewrite')) actions.rewrite()
   else if (argv.includes('--capture')) actions.screenshot()
   else if (argv.includes('--scratchpad')) actions.scratchpad()
+  else if (argv.includes('--dictate-enhance')) actions.dictateEnhance()
   else if (argv.includes('--dictate')) actions.dictate()
   else if (argv.includes('--notes')) actions.notes()
   else if (argv.includes('--agents')) actions.agents()

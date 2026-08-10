@@ -305,6 +305,13 @@ export interface AppSettings {
     cleanup?: boolean
     /** Output formatting. Undefined = 'as-spoken'. */
     style?: 'as-spoken' | 'casual'
+    /** Spoken numbers to numerals ("twenty items" -> "20 items"). Undefined = on. */
+    numbers?: boolean
+    /**
+     * Per-app style overrides, one per line: `wm-class-fragment => style`.
+     * Empty by default, so an unconfigured install behaves the same everywhere.
+     */
+    profiles?: string
   }
   voiceSamples: string[]
   /**
@@ -337,6 +344,8 @@ export interface AppSettings {
    * key via the helper's event tap, with ⌘⇧D as the toggle fallback.
    */
   dictateChord: string
+  /** Optional second dictation chord that adds an AI cleanup pass. Empty = unbound. */
+  dictateEnhanceChord?: string
   theme: 'system' | 'dark' | 'light'
   /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
   pasteInjection: 'portal' | 'off'
@@ -510,6 +519,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ],
   hotkeyHint: 'Ctrl+Alt+V',
   dictateChord: DEFAULT_DICTATE_CHORD,
+  dictateEnhanceChord: '',
   theme: 'system',
   pasteInjection: 'portal'
 }

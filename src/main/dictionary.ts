@@ -1,3 +1,5 @@
+import { normalizeNumbers } from './numbers'
+
 /**
  * User dictionary for dictation, applied to the transcript after recognition.
  *
@@ -126,32 +128,36 @@ export function stripFillers(text: string): string {
 export type TranscriptStyle = 'as-spoken' | 'casual'
 
 /**
- * Words that are safe to decapitalise at the start of a sentence.
+ * Words that keep their capital even in casual style.
  *
- * An allowlist, not a blanket `toLowerCase()`, because a sentence can begin with a
- * proper noun: "John said yes" must not become "john said yes". Lowercasing is only
- * applied when the opening word is one of these ordinary function words, so a name,
- * an acronym, or any word we don't recognise is left exactly as recognised.
+ * Casual means "typed in a chat window", which in practice means almost nothing is
+ * capitalised. So this is a blocklist of the few things that would look broken or
+ * change meaning in lower case, and everything else is lowered:
+ *
+ *  - "I" and its contractions, which are wrong in lower case
+ *  - acronyms (API, PR, CPU) — "api is down" reads as a typo
+ *  - words with a capital after the first letter (OpenAI, GitHub, macOS, iPhone).
+ *    An internal capital is always deliberate, so it is a reliable signal for a
+ *    brand or identifier, and it survives while "Slack" and "Wednesday" do not.
+ *
+ * An earlier version used an ALLOWLIST of common sentence openers instead. It was
+ * wrong twice over: the list can never be complete (it missed "Then", "Now",
+ * "Probably"), and contractions never matched at all because the captured token
+ * includes the apostrophe, so "That's" was looked up whole. The result was a casual
+ * mode that appeared to lowercase only the first word of the transcript.
  */
-const SAFE_STARTERS = new Set([
-  'a', 'an', 'the', 'and', 'but', 'or', 'so', 'if', 'when', 'while', 'because',
-  'we', 'you', 'they', 'he', 'she', 'it', 'this', 'that', 'these', 'those', 'there',
-  'here', 'what', 'why', 'how', 'who', 'which', 'is', 'are', 'was', 'were', 'do',
-  'does', 'did', 'can', 'could', 'would', 'should', 'will', 'let', 'please', 'hey',
-  'hi', 'ok', 'okay', 'yeah', 'yes', 'no', 'maybe', 'just', 'also', 'my', 'our',
-  'your', 'their', 'not', 'need', 'want', 'got', 'have', 'has', 'had', 'going',
-  'thanks', 'sorry', 'sure', 'looks', 'seems', 'think', 'trying', 'still'
-])
+function keepsCapital(word: string): boolean {
+  if (word === 'I' || word.startsWith("I'")) return true
+  const letters = word.replace(/[^A-Za-z]/g, '')
+  if (letters.length > 1 && letters === letters.toUpperCase()) return true // acronym
+  return /[A-Z]/.test(word.slice(1)) // internal capital: OpenAI, macOS, GitHub
+}
 
 export function applyStyle(text: string, style: TranscriptStyle): string {
   if (style !== 'casual' || !text) return text
-  // Lowercase the opener of each sentence, but only for words on the allowlist.
-  const lowered = text.replace(/(^|[.!?]\s+)([A-Za-z']+)/g, (m, lead: string, word: string) => {
-    // "I" and its contractions stay capitalised; so does anything shouted or unknown.
-    if (word === 'I' || word.startsWith("I'")) return m
-    if (word.toUpperCase() === word && word.length > 1) return m // acronym
-    return SAFE_STARTERS.has(word.toLowerCase()) ? `${lead}${word.toLowerCase()}` : m
-  })
+  const lowered = text.replace(/\b[A-Za-z][A-Za-z']*/g, (word) =>
+    keepsCapital(word) ? word : word.charAt(0).toLowerCase() + word.slice(1)
+  )
   // One sentence, ending in a full stop: chat messages don't carry one. '?' and '!'
   // are meaningful, and multi-sentence text still wants its punctuation.
   const sentences = lowered.match(/[.!?](\s|$)/g)?.length ?? 0
@@ -164,6 +170,33 @@ export interface CorrectionOptions {
   cleanup?: boolean
   /** Output formatting. Defaults to 'as-spoken'. */
   style?: TranscriptStyle
+  /** Spoken numbers to numerals, per the ten-and-up convention. */
+  numbers?: boolean
+}
+
+/**
+ * Per-application overrides, one per line: `wm-class-fragment => style`.
+ *
+ * Empty by default — an unconfigured install behaves identically everywhere. This is
+ * the deterministic half of what VoiceInk calls Power Mode, and it is only possible
+ * because the paste path already resolves the destination's WM_CLASS.
+ */
+export function styleForApp(
+  profiles: string | undefined,
+  wmClass: string | null
+): TranscriptStyle | null {
+  if (!profiles || !wmClass) return null
+  for (const raw of profiles.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const arrow = line.indexOf('=>')
+    if (arrow === -1) continue
+    const match = line.slice(0, arrow).trim().toLowerCase()
+    const style = line.slice(arrow + 2).trim()
+    if (!match || !wmClass.includes(match)) continue
+    if (style === 'casual' || style === 'as-spoken') return style
+  }
+  return null
 }
 
 /** The full post-recognition pass: fillers, then user rules, then repair. */
@@ -175,7 +208,9 @@ export function correctTranscript(text: string, opts: CorrectionOptions = {}): s
   if (cleanup) out = stripFillers(out)
   // User rules run after, so they act on the cleaned text and can still delete.
   if (rules.length) out = applyDictionary(out, rules)
-  if (cleanup || rules.length) out = tidy(out)
+  // Before tidy(), so the numerals it produces get the same spacing repair.
+  if (opts.numbers) out = normalizeNumbers(out)
+  if (cleanup || rules.length || opts.numbers) out = tidy(out)
   // Style last: tidy() re-capitalises the first character, which would undo it.
   if (opts.style && opts.style !== 'as-spoken') out = applyStyle(out, opts.style)
   return out

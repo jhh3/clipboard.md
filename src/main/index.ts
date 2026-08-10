@@ -9,6 +9,7 @@ import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
 import { registerIpc } from './ipc'
+import { noteDictationTarget } from './focusedWindow'
 import {
   createPaletteWindow,
   togglePalette,
@@ -248,11 +249,19 @@ if (MCP_MODE || BRIDGE_MODE) {
   // chord never matching, the HUD never appearing, the recording never stopping —
   // and they are indistinguishable from the outside. One line each turns "it does
   // nothing" into a specific answer.
-  const beginDictation = (): void => {
+  /**
+   * Whether the CURRENT recording should get the AI pass. Captured at start, because
+   * the transcript arrives long after the key that chose the mode was released.
+   */
+  let dictateEnhance = false
+
+  const beginDictation = (enhance = false): void => {
     if (dictating) return
     dictating = true
+    dictateEnhance = enhance
     dictateStartedAt = Date.now()
     console.log('[dictate] start')
+    noteDictationTarget()
     showDictationHud()
   }
 
@@ -336,7 +345,7 @@ if (MCP_MODE || BRIDGE_MODE) {
    * evdev, when it works, still wins: its release fires endDictation immediately and
    * cancels this timer. This is the fallback that makes dictation work anyway.
    */
-  const dictateTrigger = (): void => {
+  const dictateTrigger = (enhance = false): void => {
     const now = Date.now()
     const sinceLast = now - lastHotkeyAt
     lastHotkeyAt = now
@@ -346,7 +355,7 @@ if (MCP_MODE || BRIDGE_MODE) {
       // it would immediately start a second recording.
       if (now - lastStopAt < RESTART_GUARD_MS) return
       holdMode = 'unknown'
-      beginDictation()
+      beginDictation(enhance)
       // No repeat can arrive before `delay`, so anything sooner means a tap.
       if (repeat.enabled) armHoldTimer(repeat.delay + REPEAT_SLACK_MS)
       return
@@ -441,6 +450,8 @@ if (MCP_MODE || BRIDGE_MODE) {
     },
     scratchpad: () => openScratchpadWindow(),
     dictate: () => dictateTrigger(),
+    // Same recording flow; only the post-processing differs.
+    dictateEnhance: () => dictateTrigger(true),
     notes: () => openNotesWindow(),
     agents: () => openAgentsWindow()
   }
@@ -504,8 +515,11 @@ if (MCP_MODE || BRIDGE_MODE) {
 
     registerIpc(paste, capture, {
       getText: () => pendingRewriteText,
+      // Which key started this recording, read when its transcript comes back.
+      isEnhanced: () => dictateEnhance,
       onDictationDone: () => {
         dictating = false
+        dictateEnhance = false
         hideDictationHud()
       }
     })

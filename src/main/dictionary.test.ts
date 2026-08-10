@@ -4,7 +4,8 @@ import {
   applyDictionary,
   applyStyle,
   correctTranscript,
-  stripFillers
+  stripFillers,
+  styleForApp
 } from './dictionary'
 
 describe('parseDictionary', () => {
@@ -84,21 +85,31 @@ describe('stripFillers', () => {
 describe('applyStyle casual', () => {
   const casual = (t: string): string => applyStyle(t, 'casual')
 
-  it('lowercases ordinary sentence openers', () => {
-    expect(casual('Can you check that?')).toBe('can you check that?')
-    expect(casual('The build is green. We can ship.')).toBe('the build is green. we can ship.')
+  it('lowercases essentially everything, not just the first word', () => {
+    expect(casual("That's fine. It's already merged. Maybe we wait.")).toBe(
+      "that's fine. it's already merged. maybe we wait."
+    )
+    expect(casual('Can you check the build? Then we should ship it.')).toBe(
+      'can you check the build? then we should ship it.'
+    )
+    expect(casual('Ship it on Wednesday and tell the team in Slack')).toBe(
+      'ship it on wednesday and tell the team in slack'
+    )
   })
 
-  it('never decapitalises a proper noun', () => {
-    // The whole reason this is an allowlist and not toLowerCase().
-    expect(casual('John said yes')).toBe('John said yes')
-    expect(casual('Parakeet is fast. We like it.')).toBe('Parakeet is fast. we like it.')
-  })
-
-  it('leaves "I" and acronyms alone', () => {
+  it('keeps "I" and its contractions', () => {
     expect(casual('I think so')).toBe('I think so')
-    expect(casual("I'm on it")).toBe("I'm on it")
-    expect(casual('API is down')).toBe('API is down')
+    expect(casual("I'm on it and I'll check")).toBe("I'm on it and I'll check")
+  })
+
+  it('keeps acronyms', () => {
+    expect(casual('The API is down and the PR failed CI')).toBe(
+      'the API is down and the PR failed CI'
+    )
+  })
+
+  it('keeps names with an internal capital, which are always deliberate', () => {
+    expect(casual('Check OpenAI and GitHub on macOS')).toBe('check OpenAI and GitHub on macOS')
   })
 
   it('drops a lone trailing full stop but keeps ? and !', () => {
@@ -147,5 +158,24 @@ describe('correctTranscript', () => {
 
   it('leaves clean text alone', () => {
     expect(correctTranscript('The quick brown fox.')).toBe('The quick brown fox.')
+  })
+})
+
+describe('styleForApp', () => {
+  const profiles = 'slack => casual\nwezterm => as-spoken\n# comment\nbroken line'
+
+  it('matches on a fragment of the window class', () => {
+    expect(styleForApp(profiles, 'slack')).toBe('casual')
+    expect(styleForApp(profiles, 'org.wezfurlong.wezterm')).toBe('as-spoken')
+  })
+
+  it('returns null when nothing is configured or nothing matches', () => {
+    expect(styleForApp(undefined, 'slack')).toBeNull()
+    expect(styleForApp(profiles, 'google-chrome')).toBeNull()
+    expect(styleForApp(profiles, null)).toBeNull()
+  })
+
+  it('ignores comments, malformed lines and unknown styles', () => {
+    expect(styleForApp('chrome => shouty', 'google-chrome')).toBeNull()
   })
 })
