@@ -1,7 +1,7 @@
 {
   "name": "clipboard-md",
   "productName": "clipboard.md",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A local-first, AI-supercharged clipboard manager for Linux and macOS",
   "main": "./out/main/index.mjs",
   "type": "commonjs",
