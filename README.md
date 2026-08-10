@@ -152,6 +152,30 @@ Sensible out of the box — you only open Settings if you want to change somethi
 </details>
 
 <details>
+<summary><b>Custom agents</b></summary>
+
+The palette's ask row talks to your **primary** agent, but you can define as many as you
+like in **Settings → Agents** — one per project or per job. Each is a persistent Claude
+session with:
+
+- **Working directory** — point it at a repo and it works in that codebase. (Defaults
+  to your home directory; change it anytime — it's just a field.)
+- **Identity** — a system prompt describing who it is and how to help. There's a
+  *Draft with AI* button that writes a first version from your notes and usage.
+- **Description** — one line of what it's for; it's what the palette shows, and the
+  hook a future auto-router will use to pick the right agent for a question.
+- **Long-term memory** — *own* (a private memory file it curates and consolidates over
+  time), *shared* (reads/writes the primary's), or *off*.
+- **Runs on** — this machine (local tmux) or a **cloud E2B sandbox** (opt-in; needs an
+  E2B key). Cloud agents don't fight your laptop for RAM and survive lid-close.
+
+In the palette: `⇧Tab` cycles which agent you're asking, `@name` targets one directly,
+`Tab a` on a clip asks the current agent *about* that clip, and `⌘J` sends a clip into
+any running session. Replies land in the inbox (`⌘⇧A`) with markdown rendering.
+
+</details>
+
+<details>
 <summary><b>Agents & the MCP server</b></summary>
 
 Installing the app registers a clipboard MCP server with Claude Code on first run, so
