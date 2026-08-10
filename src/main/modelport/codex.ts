@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { PortRequest } from './index'
 import { resolveVendoredCli, agentScratchDir } from './nativeCli'
+import { apiKeyFor } from './keys'
 
 /**
  * Subscription lane #2: Codex SDK riding the user's ChatGPT-plan Codex login
@@ -22,7 +23,7 @@ export async function codexAvailable(): Promise<{ ok: boolean; detail: string }>
     await access(join(homedir(), '.codex', 'auth.json'), constants.R_OK)
     return { ok: true, detail: 'Codex subscription (Codex SDK)' }
   } catch {
-    if (process.env.OPENAI_API_KEY) return { ok: true, detail: 'Codex SDK via OPENAI_API_KEY' }
+    if (apiKeyFor('openai')) return { ok: true, detail: 'Codex SDK via an OpenAI key' }
     return { ok: false, detail: 'no Codex login or OPENAI_API_KEY — run `codex` once to log in' }
   }
 }

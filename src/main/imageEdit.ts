@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs'
 import { getSettings } from './settings'
+import { apiKeyFor } from './modelport/keys'
 
 /**
  * AI image editing: an image clip + an instruction in, an edited image out.
@@ -36,8 +37,8 @@ export async function editImage(imagePath: string, prompt: string): Promise<stri
 }
 
 async function editWithGemini(imagePath: string, prompt: string, model: string): Promise<string> {
-  const key = process.env.GEMINI_API_KEY
-  if (!key) throw new Error('GEMINI_API_KEY not set')
+  const key = apiKeyFor('gemini')
+  if (!key) throw new Error('no Gemini key in Settings or GEMINI_API_KEY')
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
@@ -74,8 +75,8 @@ async function editWithGemini(imagePath: string, prompt: string, model: string):
 }
 
 async function editWithOpenAI(imagePath: string, prompt: string, model: string): Promise<string> {
-  const key = process.env.OPENAI_API_KEY
-  if (!key) throw new Error('OPENAI_API_KEY not set')
+  const key = apiKeyFor('openai')
+  if (!key) throw new Error('no OpenAI key in Settings or OPENAI_API_KEY')
   const form = new FormData()
   form.append('model', model)
   form.append('prompt', prompt)
