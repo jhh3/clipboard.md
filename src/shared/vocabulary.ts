@@ -75,7 +75,8 @@ export const DEFAULT_VOCAB: VocabTerm[] = [
   { canonical: 'CLI', variants: ['clyde', 'c l i'] },
   { canonical: 'MCP', variants: ['m cp', 'mcb', 'm c p'] },
   // 'jason' is intentionally omitted — it's a common name and would clobber it.
-  { canonical: 'JSON', variants: ['j son', 'j s o n'] }
+  { canonical: 'JSON', variants: ['j son', 'j s o n'] },
+  { canonical: 'LLM', variants: ['l m', 'lm', 'l l m'] }
 ]
 
 /** A single post-recognition substitution: `from` (heard) → `to` (written). */
