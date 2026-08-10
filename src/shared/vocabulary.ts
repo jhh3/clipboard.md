@@ -73,7 +73,9 @@ export const DEFAULT_VOCAB: VocabTerm[] = [
 
   // Acronyms the recogniser fumbles as words or spaced letters.
   { canonical: 'CLI', variants: ['clyde', 'c l i'] },
-  { canonical: 'MCP', variants: ['m cp', 'mcb', 'm c p'] }
+  { canonical: 'MCP', variants: ['m cp', 'mcb', 'm c p'] },
+  // 'jason' is intentionally omitted — it's a common name and would clobber it.
+  { canonical: 'JSON', variants: ['j son', 'j s o n'] }
 ]
 
 /** A single post-recognition substitution: `from` (heard) → `to` (written). */
