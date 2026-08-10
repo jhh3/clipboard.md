@@ -38,11 +38,16 @@ define require_display
 endef
 
 .PHONY: help build run stop restart status logs appimage install-appimage clean-instances doctor \
-        app-run app-stop app-restart deploy
+        app-run app-stop app-restart deploy mac mac-install
 
 help:
 	@echo "clipboard.md"
 	@echo
+	@echo "  macOS — build it yourself (no Developer ID needed):"
+	@echo "  make mac          Build clipboard.md.app into dist/ (locally signed)"
+	@echo "  make mac-install  make mac + copy to /Applications and launch"
+	@echo
+	@echo "  Linux:"
 	@echo "  make run          Build and (re)start the app in the background"
 	@echo "  make stop         Stop it, including any strays"
 	@echo "  make restart      stop + run"
@@ -55,7 +60,36 @@ help:
 	@echo "  make app-restart  Relaunch the installed AppImage"
 	@echo "  make app-stop     Stop the installed AppImage"
 	@echo
-	@echo "Daily use is the AppImage. 'make run' is for working on the code."
+	@echo "Daily use is the AppImage (Linux) or /Applications (macOS)."
+	@echo "'make run' is for working on the code."
+
+# ── macOS: build from source ──────────────────────────────────────────────────
+#
+# Building it yourself is the way to run this on macOS WITHOUT a notarized release.
+# electron-builder ad-hoc-signs the app when no identity is given, and an app you
+# built locally carries no `com.apple.quarantine` flag (that is added only on
+# *download*), so Gatekeeper never shows the "damaged / unidentified developer"
+# dialog the downloaded dmg triggers. It just runs.
+#
+# Prereqs: Node 22+, pnpm (`corepack enable`), and Xcode command-line tools
+# (`xcode-select --install`) for the Swift helper. First run: `pnpm install`.
+mac:
+	@[ "$$(uname)" = "Darwin" ] || { echo "make mac is macOS-only"; exit 1; }
+	pnpm build:mac:adhoc
+	@echo
+	@echo "Built dist/mac-arm64/clipboard.md.app — 'make mac-install' to install it."
+
+# Copy into /Applications and launch. No dmg, no download, no quarantine flag.
+mac-install: mac
+	@osascript -e 'quit app "clipboard.md"' 2>/dev/null; sleep 1
+	@pkill -f "clipboard.md.app/Contents/MacOS" 2>/dev/null; sleep 1 || true
+	@rm -rf /Applications/clipboard.md.app
+	@ditto "dist/mac-arm64/clipboard.md.app" /Applications/clipboard.md.app
+	@# Belt and suspenders: strip any inherited quarantine attribute.
+	@xattr -dr com.apple.quarantine /Applications/clipboard.md.app 2>/dev/null || true
+	@open -a /Applications/clipboard.md.app --args --background
+	@echo "Installed to /Applications and launched. Press Cmd+Shift+V."
+	@echo "First launch asks for Accessibility (to paste) — grant it in System Settings."
 
 build:
 	pnpm build

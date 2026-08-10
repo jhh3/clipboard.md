@@ -17,7 +17,18 @@ Download the file for your system from the [**Releases**](../../releases/latest)
 |---|---|---|
 | **Ubuntu / Debian / Pop!_OS** | `clipboard-md_*_amd64.deb` | Double-click it, then **Install**. Recommended. |
 | **Any other Linux** | `clipboard.md-*.AppImage` | Right-click → Properties → tick **Allow executing**, then double-click. |
-| **macOS** | `clipboard.md-*.dmg` | Open it and drag the app to Applications. |
+| **macOS** | `clipboard.md-*.dmg` | Open it and drag the app to Applications. See the note below. |
+
+> **macOS Gatekeeper note.** The released `.dmg` is development-signed, not
+> notarized (no Apple Developer ID certificate is set up yet), so the first launch
+> shows *"clipboard.md is damaged and can't be opened."* It isn't damaged — that's
+> Gatekeeper reacting to the missing notarization. Get past it once with either:
+> - **right-click** the app in Applications → **Open** → **Open**, or
+> - `xattr -dr com.apple.quarantine /Applications/clipboard.md.app` in Terminal.
+>
+> Prefer no warning at all? **Build it from source** ([below](#build-it-yourself-macos)) —
+> a locally-built app is ad-hoc signed and never carries the quarantine flag, so it
+> just runs.
 
 That's the whole install. On first launch it sets itself up:
 
@@ -39,6 +50,30 @@ both can be changed later in your system settings.
 - **macOS** — **Accessibility** (paste, and rewriting selected text) and, if you use
   screenshots, **Screen Recording**. The app asks and links you straight to the right
   settings pane.
+
+### Build it yourself (macOS)
+
+The most friction-free way to run it on a Mac: build it locally. There's no
+notarization involved, so **no "damaged app" warning** — a locally-built app is
+ad-hoc signed and, because it was never *downloaded*, carries no Gatekeeper
+quarantine flag. It just opens.
+
+```bash
+# one-time: Node 22+, pnpm, and Xcode command-line tools
+corepack enable
+xcode-select --install        # for the Swift paste/selection helper
+
+git clone https://github.com/jhh3/clipboard.md && cd clipboard.md
+pnpm install
+make mac-install              # builds the app and copies it to /Applications
+```
+
+`make mac` builds `dist/mac-arm64/clipboard.md.app` without installing; `make
+mac-install` also copies it to Applications and launches it. Grant **Accessibility**
+when asked (it's what lets the app paste). One caveat: an ad-hoc signature changes
+every build, and macOS ties the Accessibility grant to the signature — so after a
+*rebuild* you re-grant it once. A notarized release wouldn't have that; building
+from source trades that small re-grant for zero Gatekeeper warnings.
 
 ### Uninstall
 

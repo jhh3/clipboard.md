@@ -17,6 +17,7 @@
     "build:helper": "bash src/native/mac/build.sh",
     "build:linux": "electron-vite build && electron-builder --linux",
     "build:mac": "pnpm build:helper && electron-vite build && electron-builder --mac",
+    "build:mac:adhoc": "pnpm build:helper && electron-vite build && electron-builder --mac -c.mac.identity=- -c.mac.notarize=false",
     "build:mac:signed": "pnpm build:helper && electron-vite build && electron-builder --mac -c.mac.identity=\"$CLIPMD_SIGN_IDENTITY\""
   },
   "devDependencies": {
