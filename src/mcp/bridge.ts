@@ -29,8 +29,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { createServer } from 'http'
 import { appendFileSync, readFileSync, writeFileSync, chmodSync, mkdirSync, statSync } from 'fs'
 import { dirname } from 'path'
+import { createRequire } from 'module'
 import { randomBytes } from 'crypto'
-import Database from 'better-sqlite3'
 import { ftsQuery } from '@shared/fts'
 
 const SESSION_KEY = process.env.CLIPMD_SESSION_KEY ?? 'unknown'
@@ -40,6 +40,27 @@ const MEMORY_FILE = process.env.CLIPMD_MEMORY_FILE
 /** Where to publish {port, pid, token} so the app can reach this bridge. */
 const DISCOVERY_FILE = process.env.CLIPMD_BRIDGE_FILE
 const TOKEN = process.env.CLIPMD_BRIDGE_TOKEN ?? randomBytes(16).toString('hex')
+/** Fixed listen port (remote sandboxes: the app derives the public URL from it). */
+const FIXED_PORT = Number(process.env.CLIPMD_BRIDGE_PORT ?? 0) || 0
+
+/**
+ * REMOTE mode: no CLIPMD_DB means this bridge runs inside a sandbox with no app
+ * database on its filesystem. Messages queue in memory instead, and the app
+ * drains them over HTTP (GET /outbox) into its own SQLite. The Stop hook, which
+ * also can't reach SQLite there, POSTs replies to /mirror on this loopback.
+ */
+const REMOTE = !DB_PATH
+interface QueuedMessage {
+  direction: 'inbound' | 'outbound'
+  kind: string
+  body: string
+  meta?: unknown
+  createdAt: number
+}
+const queue: QueuedMessage[] = []
+const QUEUE_CAP = 500
+/** uuids already mirrored, so the hook's transcript retries can't duplicate. */
+const mirroredUuids = new Set<string>()
 
 function log(msg: string): void {
   // stdout is the MCP transport — anything not JSON-RPC there corrupts the stream.
@@ -48,14 +69,17 @@ function log(msg: string): void {
 
 // ── inbox writes ────────────────────────────────────────────────────────────
 
-let db: Database.Database | null = null
-function getDb(): Database.Database | null {
+// better-sqlite3 is loaded LAZILY: in a remote sandbox the package doesn't exist
+// (and isn't needed), and a top-level import would kill the bridge on startup.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let db: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getDb(): any {
   if (db) return db
-  if (!DB_PATH) {
-    log('CLIPMD_DB unset — outbound messages cannot be recorded')
-    return null
-  }
+  if (!DB_PATH) return null
   try {
+    const require = createRequire(import.meta.url)
+    const Database = require('better-sqlite3')
     db = new Database(DB_PATH)
     // The app is the primary writer; a busy timeout keeps a concurrent checkpoint
     // from turning into an immediate SQLITE_BUSY on our side.
@@ -68,6 +92,11 @@ function getDb(): Database.Database | null {
 }
 
 function record(direction: 'inbound' | 'outbound', kind: string, body: string, meta?: unknown): boolean {
+  if (REMOTE) {
+    queue.push({ direction, kind, body, meta, createdAt: Date.now() })
+    if (queue.length > QUEUE_CAP) queue.splice(0, queue.length - QUEUE_CAP)
+    return true
+  }
   const handle = getDb()
   if (!handle) return false
   try {
@@ -259,6 +288,11 @@ function clipboardTool(
   args: { query?: string; limit?: number; id?: number }
 ): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | null {
   if (name !== 'search_clipboard' && name !== 'recent_clips' && name !== 'get_clip') return null
+  if (REMOTE) {
+    return toolError(
+      'Clipboard history is not available in remote sessions yet (it lives on the operator’s machine). Ask the operator to paste what you need.'
+    )
+  }
   const handle = getDb()
   if (!handle) return toolError('Clipboard history is unavailable (no database).')
   const limit = Math.max(1, Math.min(25, Math.round(args.limit ?? 10)))
@@ -393,15 +427,23 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // ── inbound HTTP: clipboard.md → this session ───────────────────────────────
 
 const http = createServer((req, res) => {
-  if (req.method !== 'POST') {
-    res.writeHead(405).end('method not allowed\n')
+  // Loopback-only isn't enough on a shared machine — and in a sandbox this port
+  // is PUBLIC behind the provider's proxy. The token is the whole gate.
+  if (req.headers['x-token'] !== TOKEN) {
+    log(`rejected ${req.method} ${req.url}: bad token`)
+    res.writeHead(403).end('forbidden\n')
     return
   }
-  // Loopback-only isn't enough on a shared machine: any local process could speak
-  // into the agent otherwise. The token file is chmod 600.
-  if (req.headers['x-token'] !== TOKEN) {
-    log('rejected inbound POST: bad token')
-    res.writeHead(403).end('forbidden\n')
+
+  // Remote mode: the app drains queued messages into its own SQLite.
+  if (req.method === 'GET' && req.url === '/outbox') {
+    const drained = queue.splice(0, queue.length)
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(drained))
+    return
+  }
+
+  if (req.method !== 'POST') {
+    res.writeHead(405).end('method not allowed\n')
     return
   }
   let body = ''
@@ -409,6 +451,24 @@ const http = createServer((req, res) => {
     body += c
   })
   req.on('end', () => {
+    // Remote mode: the Stop hook can't reach SQLite, so it mirrors replies here.
+    if (req.url === '/mirror') {
+      try {
+        const m = JSON.parse(body) as { text?: string; uuid?: string }
+        if (!m.text) throw new Error('no text')
+        if (m.uuid && mirroredUuids.has(m.uuid)) {
+          res.writeHead(200).end('dup\n')
+          return
+        }
+        if (m.uuid) mirroredUuids.add(m.uuid)
+        record('outbound', 'reply', m.text, { via: 'stop-hook', uuid: m.uuid })
+        res.writeHead(200).end('ok\n')
+      } catch (e) {
+        res.writeHead(400).end(`bad mirror payload: ${String(e)}\n`)
+      }
+      return
+    }
+
     const kind = String(req.headers['x-kind'] ?? 'message')
     log(`inbound ${body.length}b kind=${kind}`)
     void mcp
@@ -422,7 +482,9 @@ const http = createServer((req, res) => {
   })
 })
 
-http.listen(0, '127.0.0.1', () => {
+// A fixed port binds 0.0.0.0: in a sandbox the provider's proxy reaches the
+// port from outside the loopback. Locally the ephemeral port stays loopback-only.
+http.listen(FIXED_PORT, FIXED_PORT ? '0.0.0.0' : '127.0.0.1', () => {
   const addr = http.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
   log(`inbound listener on 127.0.0.1:${port}`)

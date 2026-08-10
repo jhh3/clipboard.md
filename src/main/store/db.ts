@@ -194,6 +194,14 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_agent_messages_session ON agent_messages(session_key, created_at);
   CREATE INDEX idx_agent_messages_unread ON agent_messages(read_at) WHERE read_at IS NULL;
+  `,
+
+  // Remote session backends (E2B sandboxes). NULL backend means local tmux —
+  // every pre-existing row. sandbox_id is the provider handle needed to
+  // reconnect/kill the sandbox after an app restart.
+  `
+  ALTER TABLE agent_sessions ADD COLUMN backend TEXT;
+  ALTER TABLE agent_sessions ADD COLUMN sandbox_id TEXT;
   `
 ]
 

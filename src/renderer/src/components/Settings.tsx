@@ -552,6 +552,17 @@ function AgentCard({
       </div>
       <div className="agent-card-row">
         <label className="agent-inline">
+          Runs on
+          <select
+            className="set-input"
+            value={def.backend ?? 'local'}
+            onChange={(e) => onPatch({ backend: e.target.value as AgentDef['backend'] })}
+          >
+            <option value="local">This machine</option>
+            <option value="e2b">E2B sandbox (cloud)</option>
+          </select>
+        </label>
+        <label className="agent-inline">
           Memory
           <select
             className="set-input"
@@ -1417,6 +1428,38 @@ export default function Settings() {
                 >
                   <PlusIcon size={12} /> Add agent
                 </button>
+              </div>
+              <div className="set-block">
+                <div className="set-label">Remote execution (E2B)</div>
+                <div className="set-sub">
+                  Agents set to &quot;E2B sandbox&quot; run their Claude session in a cloud microVM
+                  (~20s first launch while the sandbox bootstraps; conversations flow through the
+                  same inbox). Auth: paste a token from running <code>claude setup-token</code> to
+                  bill your subscription — without one, remote sessions use the ANTHROPIC_API_KEY
+                  from your environment. Note: remote sessions can&apos;t see your clipboard or
+                  local files yet.
+                </div>
+                <Row label="E2B API key" sub="From e2b.dev → dashboard. Stored locally.">
+                  <TextField
+                    password
+                    value={s.remote.e2bApiKey ?? ''}
+                    placeholder="e2b_…"
+                    onCommit={(v) => patch({ remote: { ...s.remote, e2bApiKey: v || undefined } })}
+                  />
+                </Row>
+                <Row
+                  label="Claude subscription token"
+                  sub="Run `claude setup-token` in a terminal and paste the result. A long-lived credential — treat it like a password."
+                >
+                  <TextField
+                    password
+                    value={s.remote.claudeOauthToken ?? ''}
+                    placeholder="(optional — falls back to ANTHROPIC_API_KEY)"
+                    onCommit={(v) =>
+                      patch({ remote: { ...s.remote, claudeOauthToken: v || undefined } })
+                    }
+                  />
+                </Row>
               </div>
               <div className="set-block">
                 <div className="set-label">Long-term memory</div>

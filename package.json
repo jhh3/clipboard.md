@@ -50,6 +50,7 @@
     "better-sqlite3": "^13.0.3",
     "codemirror": "^6.0.2",
     "dbus-next": "^0.10.2",
+    "e2b": "^2.38.2",
     "sharp": "^0.35.3",
     "sherpa-onnx-node": "^1.13.4",
     "sqlite-vec": "^0.1.9",

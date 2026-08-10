@@ -49,6 +49,8 @@ export interface AgentDef {
   persistent?: boolean
   /** Launch the singleton at app start so the first ask is instant. */
   prewarm?: boolean
+  /** Where sessions run: this machine's tmux (default) or an E2B sandbox. */
+  backend?: 'local' | 'e2b'
 }
 
 /** Back-compat alias — the spawn-recipe subset predates personas. */
@@ -59,6 +61,8 @@ export interface AgentSession {
   profile: string
   cwd: string
   title: string | null
+  /** 'e2b' when the session runs in a remote sandbox; undefined = local. */
+  backend?: 'e2b'
   /** dormant = slept to reclaim memory, resumable via `claude --resume`. */
   status: 'starting' | 'running' | 'dormant' | 'exited'
   createdAt: number
@@ -311,6 +315,12 @@ export interface AppSettings {
   smartPaste: boolean
   /** AI image editing (palette: `e` on an image clip). Model '' = provider default. */
   imageEdit: { provider: 'gemini' | 'openai'; model?: string }
+  /**
+   * Remote session execution. e2bApiKey enables the 'e2b' agent backend;
+   * claudeOauthToken (from `claude setup-token`) makes remote sessions bill the
+   * user's subscription — without it the remote falls back to ANTHROPIC_API_KEY.
+   */
+  remote: { e2bApiKey?: string; claudeOauthToken?: string }
   savedActions: SavedAction[]
   smartCollections: SmartCollection[]
   /** Spawn recipes for agent sessions. */
@@ -488,6 +498,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   smartPaste: true,
   // Nano Banana 2 Lite: ~3s round-trip on a real edit, cheapest of the family.
   imageEdit: { provider: 'gemini' },
+  remote: {},
   savedActions: [],
   smartCollections: [],
   agentProfiles: [

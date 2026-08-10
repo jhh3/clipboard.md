@@ -4,6 +4,10 @@ import { promisify } from 'util'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getDb } from './store/db'
+// Static import on purpose: a dynamic import() here made rollup split the E2B
+// backend into a chunk, where the bundler's __dirname shim landed in the wrong
+// scope (observed live: "__dirname is not defined" killing remote launches).
+import { killRemote } from './remote/e2bBackend'
 
 const execFileP = promisify(execFile)
 
@@ -124,8 +128,14 @@ async function learnSessionIds(): Promise<void> {
  */
 async function reconcileState(live: Set<string>): Promise<void> {
   const db = getDb()
+  // Remote (e2b) rows are excluded: they have no local tmux session and no local
+  // pid, so this check would bury every healthy one. Their liveness is the
+  // outbox drain's problem; a dead sandbox surfaces as delivery failures.
   const rows = db
-    .prepare("SELECT key, pid, status FROM agent_sessions WHERE status IN ('running','starting')")
+    .prepare(
+      `SELECT key, pid, status FROM agent_sessions
+       WHERE status IN ('running','starting') AND (backend IS NULL OR backend != 'e2b')`
+    )
     .all() as Array<{ key: string; pid: number | null; status: string }>
 
   for (const row of rows) {
@@ -167,8 +177,14 @@ async function reconcileState(live: Set<string>): Promise<void> {
 async function sweepDormant(live: Set<string>): Promise<void> {
   const db = getDb()
   const cutoff = Date.now() - DORMANT_IDLE_MS
+  // Remote sessions don't do dormancy in R1: killing the sandbox loses the
+  // conversation (no --resume path there yet), so idle ones simply age toward
+  // teardown, where the sandbox is killed for real.
   const rows = db
-    .prepare("SELECT key, session_id FROM agent_sessions WHERE status = 'running' AND last_seen_at < ?")
+    .prepare(
+      `SELECT key, session_id FROM agent_sessions
+       WHERE status = 'running' AND last_seen_at < ? AND (backend IS NULL OR backend != 'e2b')`
+    )
     .all(cutoff) as Array<{ key: string; session_id: string | null }>
 
   for (const row of rows) {
@@ -191,17 +207,29 @@ async function sweepTeardown(): Promise<void> {
   const now = Date.now()
   const rows = db
     .prepare(
-      `SELECT key, status, last_seen_at FROM agent_sessions
+      `SELECT key, status, last_seen_at, backend, sandbox_id FROM agent_sessions
        WHERE (status = 'exited' AND last_seen_at < ?)
-          OR (status = 'dormant' AND last_seen_at < ?)`
+          OR (status = 'dormant' AND last_seen_at < ?)
+          OR (status = 'running' AND backend = 'e2b' AND last_seen_at < ?)`
     )
-    .all(now - TEARDOWN_GRACE_MS, now - HARD_TTL_MS) as Array<{
+    .all(now - TEARDOWN_GRACE_MS, now - HARD_TTL_MS, now - TEARDOWN_GRACE_MS) as Array<{
     key: string
     status: string
     last_seen_at: number
+    backend: string | null
+    sandbox_id: string | null
   }>
 
   for (const row of rows) {
+    // Remote teardown includes the sandbox itself — otherwise it idles on the
+    // provider's meter until its own TTL fires. Best-effort; the TTL backstops.
+    if (row.backend === 'e2b' && row.sandbox_id) {
+      try {
+        await killRemote(row.sandbox_id)
+      } catch {
+        /* sandbox already gone, or provider unreachable */
+      }
+    }
     try {
       archive(row.key)
     } catch (err) {
