@@ -41,7 +41,7 @@ import { setAiTransform } from './transforms'
 import { complete, resetProviderCache } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
-import { unreadCount, prewarmAgents } from './agents'
+import { unreadCount, prewarmAgents, drainRemoteOutboxes } from './agents'
 import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
 import { sweep } from './agentLifecycle'
 import { ensurePlugin, ensureMcpServer } from './agentPlugin'
@@ -654,6 +654,20 @@ if (MCP_MODE || BRIDGE_MODE) {
     ensureMemoryFile()
     startMemorySchedule()
     setTimeout(() => void prewarmAgents(), 8000)
+
+    // Remote sessions can't write our SQLite — their bridges queue messages and
+    // we pull. 5s keeps the palette's ask view feeling live without hammering
+    // the sandbox provider's proxy.
+    setInterval(() => {
+      void drainRemoteOutboxes()
+        .then((landed) => {
+          if (landed) {
+            buildTrayMenu()
+            broadcast('agents:changed', { unread: unreadCount() })
+          }
+        })
+        .catch(() => {})
+    }, 5000)
 
     createTray()
 

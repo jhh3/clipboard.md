@@ -31,6 +31,16 @@ import { createRequire } from 'module'
 const KEY = process.env.CLIPMD_SESSION_KEY
 const DB = process.env.CLIPMD_DB
 const REQUIRE_FROM = process.env.CLIPMD_REQUIRE_FROM
+const BRIDGE_PORT = process.env.CLIPMD_BRIDGE_PORT
+const BRIDGE_TOKEN = process.env.CLIPMD_BRIDGE_TOKEN
+
+/**
+ * REMOTE mode: inside a sandbox there is no SQLite — the bridge (same box,
+ * loopback) queues replies for the app to drain. The bridge dedupes by
+ * transcript uuid, which doubles as our flush-race retry signal: a 'dup'
+ * response means we only found the PREVIOUS turn's reply so far — keep waiting.
+ */
+const REMOTE = process.env.CLIPMD_REMOTE === '1' && BRIDGE_PORT && BRIDGE_TOKEN
 
 function bail(db) {
   try {
@@ -41,7 +51,8 @@ function bail(db) {
   process.exit(0)
 }
 
-if (!KEY || !DB || !REQUIRE_FROM) bail()
+if (!KEY) bail()
+if (!REMOTE && (!DB || !REQUIRE_FROM)) bail()
 
 let input = ''
 try {
@@ -97,6 +108,31 @@ function lastAssistantText(path) {
     // the tools already reported themselves. Keep looking back.
   }
   return null
+}
+
+if (REMOTE) {
+  // Post each candidate to the bridge; 'dup' means the transcript hasn't flushed
+  // this turn's reply yet (we found an already-mirrored one) — retry.
+  for (let i = 0; i < 10; i++) {
+    const cand = lastAssistantText(hook.transcript_path)
+    if (cand) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/mirror`, {
+          method: 'POST',
+          headers: { 'x-token': BRIDGE_TOKEN, 'content-type': 'application/json' },
+          body: JSON.stringify({ text: cand.text, uuid: cand.uuid }),
+          signal: AbortSignal.timeout(3000)
+        })
+        const verdict = (await res.text()).trim()
+        if (res.ok && verdict === 'ok') process.exit(0)
+        if (!res.ok) process.exit(0) // bridge gone; never block the turn
+      } catch {
+        process.exit(0)
+      }
+    }
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  process.exit(0)
 }
 
 let db = null

@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { spawn, execFile } from 'child_process'
 import { claudeBin } from './claudeBin'
 import { promisify } from 'util'
-import { existsSync, readFileSync, rmSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { getDb } from './store/db'
@@ -10,6 +10,13 @@ import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { resumable } from './agentLifecycle'
 import { agentByName, memoryFile, promptMemory, sessionTitleFor } from './assistantMemory'
+import {
+  captureRemote,
+  killRemote,
+  launchRemote,
+  sendKeysRemote,
+  touchSandbox
+} from './remote/e2bBackend'
 import { CHANNEL_REF, hookEnv } from './agentPlugin'
 import type { AgentProfile, AgentSession, AgentMessage, ClipItem } from '@shared/types'
 
@@ -158,12 +165,39 @@ const CHAT_READY = [
  * claude. So we only ever send keys when a prompt we recognise is actually on
  * screen, and we wait for a positive ready signal rather than assuming.
  */
-async function waitForChatReady(target: string, timeoutMs = 180_000): Promise<boolean> {
+/** How a backend lets us look at and poke a session's terminal. */
+interface SessionIO {
+  capture(): Promise<string | null>
+  send(keys: string[]): Promise<void>
+}
+
+function localIO(key: string): SessionIO {
+  return {
+    capture: () => run('tmux', ['capture-pane', '-p', '-t', key], 5000),
+    send: async (keys) => {
+      await run('tmux', ['send-keys', '-t', key, ...keys], 5000)
+    }
+  }
+}
+
+function remoteIO(sandboxId: string, key: string): SessionIO {
+  return {
+    capture: () => captureRemote(sandboxId, key),
+    send: (keys) => sendKeysRemote(sandboxId, key, keys)
+  }
+}
+
+async function waitForChatReady(io: SessionIO, label: string, timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   let lastNudge = 0
   while (Date.now() < deadline) {
-    const screen = await run('tmux', ['capture-pane', '-p', '-t', target], 5000)
-    if (screen === null) return true // pane is gone; let the caller surface the real error
+    const screen = await io.capture()
+    if (screen === null) return true // pane is genuinely gone; caller surfaces the error
+    // '' is a transient capture failure (remote API blip) — wait, don't quit.
+    if (screen === '') {
+      await new Promise((r) => setTimeout(r, 1000))
+      continue
+    }
     if (CHAT_READY.some((m) => screen.includes(m))) return true
 
     let keys: string[] | null = null
@@ -174,12 +208,12 @@ async function waitForChatReady(target: string, timeoutMs = 180_000): Promise<bo
     // Rate-limit: a menu takes a moment to redraw, and hammering keys at it is how
     // you end up several menus deep or cancelling out of claude entirely.
     if (keys && Date.now() - lastNudge > 2000) {
-      await run('tmux', ['send-keys', '-t', target, ...keys], 5000)
+      await io.send(keys)
       lastNudge = Date.now()
     }
     await new Promise((r) => setTimeout(r, 1000))
   }
-  console.error(`[agents] ${target} never reached chat-ready; it may be stuck on a prompt`)
+  console.error(`[agents] ${label} never reached chat-ready; it may be stuck on a prompt`)
   return false
 }
 
@@ -237,16 +271,21 @@ export interface LaunchOptions {
 export async function launchSession(opts: LaunchOptions): Promise<string> {
   const p = profile(opts.profile)
   if (!p) throw new Error(`unknown agent profile: ${opts.profile}`)
+  const remote = p.backend === 'e2b'
 
   const key = `clipmd-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
-  const cwd = p.cwd || app.getPath('home')
-  if (!existsSync(cwd)) throw new Error(`profile "${p.name}" points at a missing directory: ${cwd}`)
+  // A remote sandbox has its own filesystem: the def's LOCAL cwd is meaningless
+  // there, and checking it against the local disk would be wrong twice over.
+  const cwd = remote ? '/home/user' : p.cwd || app.getPath('home')
+  if (!remote && !existsSync(cwd)) {
+    throw new Error(`profile "${p.name}" points at a missing directory: ${cwd}`)
+  }
 
   const db = getDb()
   db.prepare(
-    `INSERT INTO agent_sessions (key, profile, cwd, title, status, created_at, last_seen_at)
-     VALUES (?, ?, ?, ?, 'starting', ?, ?)`
-  ).run(key, p.name, cwd, opts.title ?? null, Date.now(), Date.now())
+    `INSERT INTO agent_sessions (key, profile, cwd, title, status, backend, created_at, last_seen_at)
+     VALUES (?, ?, ?, ?, 'starting', ?, ?, ?)`
+  ).run(key, p.name, cwd, opts.title ?? null, remote ? 'e2b' : null, Date.now(), Date.now())
 
   const args = claudeArgs(p, key, opts.prompt, opts.systemPrompt)
   const useTmux = p.tmux !== false && (await tmuxAvailable())
@@ -258,6 +297,46 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
       `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
        VALUES (?, 'inbound', 'message', ?, ?, ?)`
     ).run(key, opts.prompt, JSON.stringify({ via: 'opening-prompt' }), Date.now())
+  }
+
+  if (remote) {
+    try {
+      const token = randomBytes(16).toString('hex')
+      const session = await launchRemote({
+        key,
+        cwd,
+        claudeArgs: args,
+        env: { CLIPMD_SESSION_KEY: key, CLIPMD_BRIDGE_TOKEN: token },
+        // Persist the sandbox id the moment it exists — before the long
+        // bootstrap — so a crash mid-launch leaves a killable record, not an
+        // orphaned VM billing silently.
+        onSandbox: (sandboxId) =>
+          db.prepare('UPDATE agent_sessions SET sandbox_id = ? WHERE key = ?').run(sandboxId, key)
+      })
+      db.prepare("UPDATE agent_sessions SET status = 'running' WHERE key = ?").run(key)
+      // The app writes the discovery file for remote sessions — the bridge can't
+      // reach our disk — but ONLY after the bridge is actually listening, so the
+      // discovery-exists-means-reachable contract holds. Backgrounded: menus
+      // first, then the port; a send before then queues via deliverWithRetry.
+      void (async () => {
+        const io = remoteIO(session.sandboxId, key)
+        await waitForChatReady(io, key)
+        const up = await remoteBridgeUp(session.bridgeUrl, token)
+        if (!up) {
+          console.error(`[agents] remote ${key} bridge never came up`)
+          return
+        }
+        writeFileSync(discoveryFile(key), JSON.stringify({ url: session.bridgeUrl, token }))
+        chmodSync(discoveryFile(key), 0o600)
+      })()
+      return key
+    } catch (err) {
+      db.prepare("UPDATE agent_sessions SET status = 'exited', ended_at = ? WHERE key = ?").run(
+        Date.now(),
+        key
+      )
+      throw err
+    }
   }
 
   try {
@@ -284,16 +363,44 @@ export async function launchSession(opts: LaunchOptions): Promise<string> {
   // Dismiss the trust/dev-channel menu the custom MCP channel triggers. Without
   // this the session sits on that menu forever: the bridge is connected, so it
   // looks alive, but nothing we send is ever read.
-  if (useTmux) void waitForChatReady(key)
+  if (useTmux) void waitForChatReady(localIO(key), key)
   return key
 }
 
 // ── addressing a running session ────────────────────────────────────────────
 
 interface Discovery {
-  port: number
-  pid: number
+  /** Local sessions: loopback port the bridge published. */
+  port?: number
+  /** Remote sessions: full public base URL of the bridge (the APP writes this
+   *  discovery file itself — nothing inside a sandbox can). */
+  url?: string
+  pid?: number
   token: string
+}
+
+function bridgeBase(d: Discovery): string | null {
+  if (d.url) return d.url
+  if (d.port) return `http://127.0.0.1:${d.port}`
+  return null
+}
+
+/** Poll a remote bridge's /outbox until it answers (claude booted + MCP up). */
+async function remoteBridgeUp(url: string, token: string, timeoutMs = 120_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/outbox?after=0`, {
+        headers: { 'x-token': token },
+        signal: AbortSignal.timeout(8000)
+      })
+      if (res.ok) return true
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 3000))
+  }
+  return false
 }
 
 function discovery(key: string): Discovery | null {
@@ -331,12 +438,27 @@ export async function sendToSession(key: string, text: string, kind = 'message')
     return false
   }
   try {
-    const res = await fetch(`http://127.0.0.1:${d.port}/`, {
+    const base = bridgeBase(d)
+    if (!base) return false
+    const res = await fetch(`${base}/`, {
       method: 'POST',
       headers: { 'x-token': d.token, 'x-kind': kind, 'content-type': 'text/plain' },
       body: text,
-      signal: AbortSignal.timeout(4000)
+      // Remote bridges sit behind the sandbox provider's proxy — give them more
+      // room than loopback needs.
+      signal: AbortSignal.timeout(d.url ? 10_000 : 4000)
     })
+    // A LOCAL bridge records this inbound message into SQLite itself. A REMOTE
+    // bridge cannot (no DB there) and we deliberately don't trust its outbox to
+    // report our own messages back — so record inbound HERE, once, on success.
+    if (res.ok && d.url) {
+      getDb()
+        .prepare(
+          `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+           VALUES (?, 'inbound', ?, ?, ?, ?)`
+        )
+        .run(key, kind, text, null, Date.now())
+    }
     return res.ok
   } catch (err) {
     console.error(`[agents] could not reach the bridge for ${key}:`, err)
@@ -354,11 +476,14 @@ export async function reviveSession(key: string): Promise<boolean> {
   const sessionId = resumable(key)
   if (!sessionId) return false
   const db = getDb()
-  const row = db.prepare('SELECT profile, cwd, title FROM agent_sessions WHERE key = ?').get(key) as
-    | { profile: string; cwd: string; title: string | null }
-    | undefined
+  const row = db
+    .prepare('SELECT profile, cwd, title, backend FROM agent_sessions WHERE key = ?')
+    .get(key) as { profile: string; cwd: string; title: string | null; backend: string | null } | undefined
   const p = row ? profile(row.profile) : undefined
   if (!row || !p) return false
+  // Remote sandboxes don't sleep-and-resume in R1: the sandbox either lives (no
+  // revival needed) or was killed with the claude session state inside it.
+  if (row.backend === 'e2b') return false
 
   try {
     // An agent's identity is not part of the persisted conversation — reapply it
@@ -381,7 +506,7 @@ export async function reviveSession(key: string): Promise<boolean> {
       key
     )
     // --resume adds its own "resume from summary" menu on top of the trust one.
-    if (p.tmux !== false) void waitForChatReady(key)
+    if (p.tmux !== false) void waitForChatReady(localIO(key), key)
     console.log(`[agents] revived ${key} from session ${sessionId}`)
     return true
   } catch (err) {
@@ -711,6 +836,7 @@ function rowToSession(r: Record<string, unknown>): AgentSession {
     key: r.key as string,
     profile: r.profile as string,
     cwd: r.cwd as string,
+    backend: r.backend === 'e2b' ? 'e2b' : undefined,
     title: (r.title as string) ?? null,
     status: r.status as AgentSession['status'],
     createdAt: r.created_at as number,
@@ -787,6 +913,83 @@ export function markRead(sessionKey?: string): void {
   }
 }
 
+/**
+ * Drain remote bridges' queued messages into OUR SQLite. Inside a sandbox the
+ * bridge has no database, so everything it would have written (tool posts,
+ * mirrored replies, delivered inbound) waits in memory behind GET /outbox.
+ * Returns true when anything new landed, so the caller can refresh badges.
+ */
+/** Kinds a remote bridge is allowed to send us (defense in depth beside the
+ *  outbound-only filter — an unknown kind renders as an unstyled bubble). */
+const OUTBOX_KINDS = new Set(['reply', 'progress', 'question', 'done', 'failure', 'note'])
+
+export async function drainRemoteOutboxes(): Promise<boolean> {
+  const db = getDb()
+  const rows = db
+    .prepare(
+      "SELECT key, sandbox_id, outbox_cursor FROM agent_sessions WHERE backend = 'e2b' AND status = 'running'"
+    )
+    .all() as Array<{ key: string; sandbox_id: string | null; outbox_cursor: number }>
+  let landed = false
+  for (const row of rows) {
+    const d = discovery(row.key)
+    if (!d?.url) continue
+    let reached = false
+    try {
+      const res = await fetch(`${d.url}/outbox?after=${row.outbox_cursor}`, {
+        headers: { 'x-token': d.token },
+        signal: AbortSignal.timeout(8000)
+      })
+      reached = true
+      if (!res.ok) continue
+      const msgs = (await res.json()) as Array<{
+        seq: number
+        direction: string
+        kind: string
+        body: string
+        meta?: unknown
+        createdAt: number
+      }>
+      // One transaction: rows + the cursor advance are durable together, so the
+      // bridge only trims what we've truly stored (the /outbox ack contract).
+      const insert = db.prepare(
+        `INSERT INTO agent_messages (session_key, direction, kind, body, meta, created_at)
+         VALUES (?, 'outbound', ?, ?, ?, ?)`
+      )
+      let maxSeq = row.outbox_cursor
+      const apply = db.transaction(() => {
+        for (const m of msgs) {
+          if (typeof m?.seq !== 'number') continue
+          maxSeq = Math.max(maxSeq, m.seq)
+          // Outbound only, whitelisted kind: a sandbox must not be able to forge
+          // 'you' messages or inject unrenderable kinds into the operator's thread.
+          if (m.direction !== 'outbound' || !m.body) continue
+          const kind = OUTBOX_KINDS.has(m.kind) ? m.kind : 'reply'
+          insert.run(row.key, kind, String(m.body), m.meta ? JSON.stringify(m.meta) : null, Number(m.createdAt) || Date.now())
+          landed = true
+        }
+        if (maxSeq > row.outbox_cursor) {
+          db.prepare('UPDATE agent_sessions SET outbox_cursor = ?, last_seen_at = ? WHERE key = ?').run(
+            maxSeq,
+            Date.now(),
+            row.key
+          )
+        }
+      })
+      apply()
+      // Activity extends the sandbox's TTL so a live conversation can't lapse.
+      if (maxSeq > row.outbox_cursor && row.sandbox_id) void touchSandbox(row.sandbox_id)
+    } catch {
+      /* transient; the next pass retries from the same cursor (nothing lost) */
+    }
+    // Liveness: a reachable bridge that 200s is alive. A discovery file that
+    // exists but whose bridge refuses connection for a whole pass is checked by
+    // the lifecycle sweep, not here — one failed fetch is not death.
+    void reached
+  }
+  return landed
+}
+
 export function unreadCount(): number {
   const r = getDb()
     .prepare("SELECT COUNT(*) c FROM agent_messages WHERE direction = 'outbound' AND read_at IS NULL")
@@ -796,19 +999,24 @@ export function unreadCount(): number {
 
 export async function endSession(key: string): Promise<void> {
   const db = getDb()
-  try {
-    await execFileP('tmux', ['kill-session', '-t', key], { timeout: 3000 })
-  } catch {
-    /* not a tmux session, or already gone */
-  }
-  const row = db.prepare('SELECT pid FROM agent_sessions WHERE key = ?').get(key) as
-    | { pid: number | null }
+  const row = db.prepare('SELECT pid, backend, sandbox_id FROM agent_sessions WHERE key = ?').get(key) as
+    | { pid: number | null; backend: string | null; sandbox_id: string | null }
     | undefined
-  if (row?.pid) {
+  if (row?.backend === 'e2b') {
+    // Ending a remote session kills the whole sandbox — nothing else lives there.
+    if (row.sandbox_id) await killRemote(row.sandbox_id)
+  } else {
     try {
-      process.kill(row.pid)
+      await execFileP('tmux', ['kill-session', '-t', key], { timeout: 3000 })
     } catch {
-      /* already exited */
+      /* not a tmux session, or already gone */
+    }
+    if (row?.pid) {
+      try {
+        process.kill(row.pid)
+      } catch {
+        /* already exited */
+      }
     }
   }
   rmSync(discoveryFile(key), { force: true })
