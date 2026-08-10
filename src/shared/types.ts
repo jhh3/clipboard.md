@@ -323,6 +323,14 @@ export interface AppSettings {
      * Empty by default, so an unconfigured install behaves the same everywhere.
      */
     profiles?: string
+    /**
+     * Learn from corrections: when you fix a mis-transcribed word shortly after a
+     * transcript is pasted, propose a `heard => written` dictionary rule. Off by
+     * default — it observes post-paste edits. Deterministic and offline (Phase 0).
+     */
+    learnCorrections?: boolean
+    /** Correction suggestions the user dismissed, as `heard=>written` keys — never re-offered. */
+    dismissedSuggestions?: string[]
   }
   voiceSamples: string[]
   /**
@@ -372,8 +380,24 @@ export interface PasteOutcome {
   message?: string
 }
 
+/** A proposed dictation dictionary rule learned from a post-paste correction. */
+export interface DictationSuggestion {
+  /** `heard=>written` lowercased — dedupe/dismiss key. */
+  key: string
+  from: string
+  to: string
+  /** Short human reason ("sounds like what you dictated"). */
+  reason: string
+  /** The transcription clip this came from, if known. */
+  itemId?: number
+  at: number
+}
+
 /** IPC channel map: renderer -> main (invoke). */
 export interface IpcInvokeMap {
+  'dictation:suggestions:list': () => DictationSuggestion[]
+  'dictation:suggestion:accept': (key: string) => void
+  'dictation:suggestion:dismiss': (key: string) => void
   'agents:profiles': () => AgentProfile[]
   'agents:sessions': (includeEnded?: boolean) => AgentSession[]
   'agents:launch': (opts: { profile: string; prompt?: string; title?: string }) => string
@@ -487,6 +511,8 @@ export interface IpcEventMap {
    *  ask instead of a paste. */
   'palette:dictation': { text: string }
   'toast': { message: string; kind: 'info' | 'error' | 'success' }
+  /** The set of learned correction suggestions changed (new one, accept, dismiss). */
+  'dictation:suggestions:changed': { suggestions: DictationSuggestion[] }
   /** Broadcast after any settings change so every window/service picks it up live. */
   'settings:changed': { settings: AppSettings }
 }

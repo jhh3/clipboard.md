@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentDef,
   AppSettings,
+  DictationSuggestion,
   ProviderId,
   ProviderLane,
   ProviderStatus,
@@ -778,6 +779,7 @@ export default function Settings() {
   const [providers, setProviders] = useState<ProviderStatus[]>([])
   const [savedActions, setSavedActions] = useState<SavedAction[]>([])
   const [section, setSection] = useState<SectionId>('general')
+  const [suggestions, setSuggestions] = useState<DictationSuggestion[]>([])
   const [savedFlash, setSavedFlash] = useState(false)
   const [newApp, setNewApp] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -932,6 +934,14 @@ export default function Settings() {
   // Settings can change from other windows (or main itself) — adopt the
   // broadcast wholesale. Focused draft inputs keep their draft (useSyncedDraft).
   useEffect(() => on('settings:changed', (p) => setSettings(p.settings)), [])
+
+  // Learned correction suggestions: seed once, then follow main's broadcasts.
+  useEffect(() => {
+    invoke('dictation:suggestions:list')
+      .then(setSuggestions)
+      .catch(() => {})
+    return on('dictation:suggestions:changed', (p) => setSuggestions(p.suggestions))
+  }, [])
 
   // Provider availability was read once on mount and never again, so the status row
   // kept saying a provider had no key long after one was pasted into the field right
@@ -1553,6 +1563,43 @@ export default function Settings() {
                   onChange={(v) => patch({ dictation: { ...s.dictation, builtinVocabulary: v } })}
                 />
               </Row>
+              <Row
+                label="Learn from my corrections"
+                sub="When you fix a mis-transcribed word right after dictating — in the app you pasted into, or by editing the clip here — offer to remember it as a rule below. Runs on-device; nothing is sent anywhere. Off by default."
+              >
+                <Toggle
+                  checked={s.dictation.learnCorrections === true}
+                  onChange={(v) => patch({ dictation: { ...s.dictation, learnCorrections: v } })}
+                />
+              </Row>
+              {suggestions.length > 0 && (
+                <div className="set-suggestions">
+                  {suggestions.map((sg) => (
+                    <div key={sg.key} className="set-suggestion">
+                      <div className="set-suggestion-text">
+                        <span className="set-suggestion-rule">
+                          <b>{sg.from}</b> → <b>{sg.to}</b>
+                        </span>
+                        <span className="set-suggestion-reason">{sg.reason}</span>
+                      </div>
+                      <div className="set-suggestion-actions">
+                        <button
+                          className="linkish"
+                          onClick={() => void invoke('dictation:suggestion:accept', sg.key)}
+                        >
+                          Add
+                        </button>
+                        <button
+                          className="linkish set-suggestion-dismiss"
+                          onClick={() => void invoke('dictation:suggestion:dismiss', sg.key)}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <Row
                 label="Dictation dictionary"
                 sub="Fix names and jargon the recogniser gets wrong. One rule per line: heard => written, or a bare word to fix its spelling. Applied offline, after transcription."
