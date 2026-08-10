@@ -69,7 +69,11 @@ export const DEFAULT_VOCAB: VocabTerm[] = [
   { canonical: 'Supabase', variants: ['supabase', 'super base'] },
   { canonical: 'Figma', variants: ['figma'] },
   { canonical: 'Tailwind', variants: ['tailwind', 'tail wind'] },
-  { canonical: 'Electron', variants: ['electron'] }
+  { canonical: 'Electron', variants: ['electron'] },
+
+  // Acronyms the recogniser fumbles as words or spaced letters.
+  { canonical: 'CLI', variants: ['clyde', 'c l i'] },
+  { canonical: 'MCP', variants: ['m cp', 'mcb', 'm c p'] }
 ]
 
 /** A single post-recognition substitution: `from` (heard) → `to` (written). */

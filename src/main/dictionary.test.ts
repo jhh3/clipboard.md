@@ -172,6 +172,12 @@ describe('built-in tech vocabulary', () => {
     expect(correctTranscript('deploy to kubernetes')).toBe('Deploy to Kubernetes')
   })
 
+  it('fixes fumbled acronyms (CLI, MCP)', () => {
+    expect(correctTranscript('run the clyde and start the m cp server')).toBe(
+      'Run the CLI and start the MCP server'
+    )
+  })
+
   it('lowercases brands in casual style but keeps the join', () => {
     expect(correctTranscript('we shipped it on open ai', { style: 'casual' })).toBe(
       'we shipped it on openai'
