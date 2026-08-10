@@ -1,4 +1,4 @@
-import { createReadStream, readFileSync, type ReadStream } from 'fs'
+import { closeSync, openSync, read as fsRead, readFileSync } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
 import { getSettings } from './settings'
@@ -42,7 +42,7 @@ export interface PttHandlers {
   onRelease: () => void
 }
 
-let streams: ReadStream[] = []
+let fds: number[] = []
 let chordActive = false
 
 /**
@@ -54,15 +54,43 @@ let chordActive = false
  * never sees a keystroke. Open them all — devices we can't read are skipped, and
  * events we don't care about are discarded without inspection.
  */
-function keyboardDevices(): string[] {
+interface KbdDevice {
+  path: string
+  /** Keycodes the device advertises, from its KEY bitmap. */
+  keys: Set<number>
+}
+
+/**
+ * Decode a `B: KEY=` bitmap into the keycodes a device can emit.
+ *
+ * Words are 64-bit hex, printed most-significant first, so the LAST word holds
+ * keycodes 0-63. Without this we cannot tell a keyboard from a power button, and
+ * opening the power button costs a blocking read on one of libuv's four threads.
+ */
+function keyBitmap(block: string): Set<number> {
+  const out = new Set<number>()
+  const m = /B: KEY=([0-9a-fA-F ]+)/.exec(block)
+  if (!m) return out
+  const words = m[1].trim().split(/\s+/)
+  for (let i = 0; i < words.length; i++) {
+    const word = BigInt(`0x${words[words.length - 1 - i]}`)
+    for (let bit = 0; bit < 64; bit++) {
+      if ((word >> BigInt(bit)) & 1n) out.add(i * 64 + bit)
+    }
+  }
+  return out
+}
+
+function keyboardDevices(): KbdDevice[] {
   try {
-    const raw = readFileSync('/proc/bus/input/devices', 'utf8')
-    return raw
+    return readFileSync('/proc/bus/input/devices', 'utf8')
       .split('\n\n')
       .filter((block) => /Handlers=[^\n]*\bkbd\b/.test(block))
-      .map((block) => /(event\d+)/.exec(block)?.[1])
-      .filter((n): n is string => !!n)
-      .map((n) => `/dev/input/${n}`)
+      .map((block) => {
+        const node = /(event\d+)/.exec(block)?.[1]
+        return node ? { path: `/dev/input/${node}`, keys: keyBitmap(block) } : null
+      })
+      .filter((d): d is KbdDevice => !!d)
   } catch {
     return []
   }
@@ -95,40 +123,57 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   // with EACCES — the app then disabled the hotkey toggle in favour of a PTT that
   // could never fire, and dictation was dead with a reassuring log line. Track the
   // failures and say so.
-  const devices = keyboardDevices()
+  // Only devices that can actually produce this chord.
+  //
+  // We used to open every node with a kbd handler — nine here, including Power
+  // Button, Video Bus and two Thelio Io boards that never emit a letter. Each open
+  // device holds a BLOCKING read on a libuv worker thread, and libuv ships four of
+  // them, so the silent devices parked the entire pool and the real keyboards were
+  // never scheduled. Push-to-talk was dead with fds open, no error and nothing
+  // logged, and every isolated probe "worked" only because it opened fewer than four
+  // devices. Filtering to devices that advertise the chord's own keycode keeps this
+  // to the two or three real keyboards, and the pool bump below covers the rest.
+  const devices = keyboardDevices().filter((d) => d.keys.has(chord!.key))
   let failed = 0
-  for (const path of devices) {
+  for (const { path } of devices) {
     try {
-      const stream = createReadStream(path)
-      stream.on('error', (err) => {
-        failed++
-        stream.destroy()
-        // One line per device, once — enough to explain a silent PTT.
-        console.error(`[ptt] cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? err.message}`)
-        if (failed === devices.length) {
-          console.error(
-            '[ptt] NO keyboard device is readable — hold-to-talk will never fire. ' +
-              'Add your user to the "input" group (sudo usermod -aG input $USER) and log back in.'
-          )
-        }
-      })
-      stream.on('data', (chunk) => onChunk(chunk as Buffer, handlers))
-      streams.push(stream)
-    } catch {
+      const fd = openSync(path, 'r')
+      fds.push(fd)
+      const buf = Buffer.allocUnsafe(EVENT_SIZE * 64)
+      const pump = (): void => {
+        if (!fds.includes(fd)) return // torn down by stopPushToTalk
+        fsRead(fd, buf, 0, buf.length, null, (err, bytes) => {
+          if (err) {
+            console.error(`[ptt] ${path} read failed: ${(err as NodeJS.ErrnoException).code}`)
+            return
+          }
+          if (bytes > 0) onChunk(buf.subarray(0, bytes), handlers, path)
+          pump()
+        })
+      }
+      pump()
+    } catch (err) {
       failed++
+      console.error(`[ptt] cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? String(err)}`)
     }
   }
-  if (streams.length === 0) {
+  if (fds.length === 0) {
     console.log('[ptt] no readable keyboard device; hold-to-talk unavailable')
+    if (failed > 0) {
+      console.error(
+        '[ptt] NO keyboard device is readable — hold-to-talk will never fire. ' +
+          'Add your user to the "input" group (sudo usermod -aG input $USER) and log back in.'
+      )
+    }
     return false
   }
   console.log(
-    `[ptt] hold-to-talk armed on ${streams.length} keyboard device(s); chord ${formatChord(parsed)}`
+    `[ptt] hold-to-talk armed on ${fds.length} keyboard device(s); chord ${formatChord(parsed)}`
   )
   return true
 }
 
-function onChunk(chunk: Buffer, handlers: PttHandlers): void {
+function onChunk(chunk: Buffer, handlers: PttHandlers, _path = '?'): void {
   const c = chord
   if (!c) return
   for (let off = 0; off + EVENT_SIZE <= chunk.length; off += EVENT_SIZE) {
@@ -150,9 +195,11 @@ function onChunk(chunk: Buffer, handlers: PttHandlers): void {
     const complete = keyHeld && modsHeld.every(Boolean)
     if (complete && !chordActive) {
       chordActive = true
+      console.log('[ptt] chord PRESS from evdev')
       handlers.onPress()
     } else if (!complete && chordActive) {
       chordActive = false
+      console.log('[ptt] chord RELEASE from evdev')
       handlers.onRelease()
     }
   }
@@ -214,8 +261,15 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
 let macChild: ChildProcess | null = null
 
 export function stopPushToTalk(): void {
-  for (const s of streams) s.destroy()
-  streams = []
+  const open = fds
+  fds = []
+  for (const fd of open) {
+    try {
+      closeSync(fd)
+    } catch {
+      /* already gone */
+    }
+  }
   modsHeld = modsHeld.map(() => false)
   keyHeld = false
   chordActive = false
@@ -226,5 +280,5 @@ export function stopPushToTalk(): void {
 }
 
 export function isPushToTalkActive(): boolean {
-  return streams.length > 0 || macChild !== null
+  return fds.length > 0 || macChild !== null
 }

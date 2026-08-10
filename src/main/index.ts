@@ -51,6 +51,12 @@ import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk } from './ptt'
 
+// Blocking evdev reads live on libuv worker threads, and the default pool is four.
+// Push-to-talk opens one descriptor per real keyboard, and a machine with several
+// would park the pool and stall every other fs operation in the app. Must be set
+// before the first async fs call creates the pool.
+process.env.UV_THREADPOOL_SIZE ||= '16'
+
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
 if (process.platform === 'linux') {
@@ -312,8 +318,15 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   const pttHandlers = {
     onPress: () => beginDictation(),
     onRelease: () => {
-      // A quick tap latches recording on; a genuine hold ends on release.
-      if (Date.now() - dictateStartedAt < MIN_HOLD_MS) return
+      // macOS keeps tap-to-latch: the Fn tap has always behaved that way there and it
+      // works well, so it is left exactly as it was.
+      //
+      // Linux does not. The guard existed because the key-repeat heuristic could not
+      // tell a tap from a hold, so a short press had to latch rather than stop. evdev
+      // reports the real release, so a short press is simply a short recording — and
+      // swallowing it is why dictation sometimes never stopped listening: the latch
+      // was entered and only a second press could leave it.
+      if (process.platform === 'darwin' && Date.now() - dictateStartedAt < MIN_HOLD_MS) return
       endDictation()
     }
   }
@@ -408,10 +421,15 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       if (now - lastStopAt < RESTART_GUARD_MS) return
       holdMode = 'unknown'
       beginDictation(mode)
-      // No repeat can arrive before `delay`, so anything sooner means a tap.
-      if (repeat.enabled) armHoldTimer(repeat.delay + REPEAT_SLACK_MS)
+      // Only the fallback needs a timer. With evdev live there were two independent
+      // stop mechanisms racing over one recording, which is how a hold ended early or
+      // latched on and never stopped.
+      if (!pttActive && repeat.enabled) armHoldTimer(repeat.delay + REPEAT_SLACK_MS)
       return
     }
+
+    // evdev owns the ending; repeats from the held key are just noise.
+    if (pttActive) return
 
     // Already recording. A gap no larger than the repeat delay means this is the same
     // hold continuing; anything longer is a deliberate second press.
