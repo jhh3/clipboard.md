@@ -14,15 +14,8 @@ or handed to an agent — all on your own machine, on your existing Claude subsc
 
 ## Install (macOS)
 
-**Option A — download it.** Grab `clipboard.md-*.dmg` from the
-[**latest release**](../../releases/latest), open it, and drag the app to Applications.
-
-> The first launch shows *"clipboard.md is damaged and can't be opened."* It's **not**
-> damaged — the build just isn't notarized yet. **Right-click the app → Open → Open**,
-> once, and it's fine forever after.
-
-**Option B — build it (no warning at all).** A locally-built app skips the whole
-Gatekeeper dance. Two commands:
+**Option A — build it (recommended, no warnings).** A locally-built app is trusted by
+macOS, so it skips the whole Gatekeeper "damaged" dance. Two commands:
 
 ```bash
 git clone https://github.com/jhh3/clipboard.md && cd clipboard.md
@@ -32,6 +25,13 @@ make mac-install
 `make mac-install` handles the rest — dependencies, the build, and copying it to
 Applications. You just need [Node 22+](https://nodejs.org) installed first (it'll prompt
 you to approve Xcode's command-line tools if they're missing).
+
+**Option B — download it.** Grab `clipboard.md-*.dmg` from the
+[**latest release**](../../releases/latest), open it, and drag the app to Applications.
+
+> Because the download isn't notarized yet, the first launch shows *"clipboard.md is
+> damaged and can't be opened."* It's **not** damaged — **right-click the app → Open →
+> Open**, once, and it's fine forever after. (Building it yourself, above, avoids this.)
 
 Either way: it starts at login, adds a menu-bar icon, and asks for **Accessibility** the
 first time (that's what lets it paste — grant it). Then press **`⌘⇧V`** and start typing.
