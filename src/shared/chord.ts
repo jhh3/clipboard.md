@@ -28,20 +28,76 @@ export interface Chord {
 }
 
 /**
- * Main key name → Linux evdev keycode (input-event-codes.h).
+ * Main key name → its Linux evdev keycode and its GNOME keysym token.
  *
- * Deliberately limited to keys that make sense to HOLD for push-to-talk. Anything
- * absent is rejected at parse time rather than silently producing a chord evdev can
- * never match.
+ * Both representations live in one table so a key can never be added to the trigger
+ * and forgotten in the observer. Anything absent is rejected at parse time rather
+ * than silently producing a chord evdev can never match.
+ *
+ * The unglamorous half of this table — F13–F24, the numpad, Insert/Home/Menu — is the
+ * useful half. Programmable keypads and macro pads are normally configured to emit
+ * exactly those, because nothing else on the machine uses them, which makes them the
+ * best possible push-to-talk keys: a single button you can hold, with no chord and
+ * nothing else to collide with.
  */
-const KEY_CODES: Record<string, number> = {
-  Space: 57,
-  A: 30, B: 48, C: 46, D: 32, E: 18, F: 33, G: 34, H: 35, I: 23,
-  J: 36, K: 37, L: 38, M: 50, N: 49, O: 24, P: 25, Q: 16, R: 19,
-  S: 31, T: 20, U: 22, V: 47, W: 17, X: 45, Y: 21, Z: 44,
-  '1': 2, '2': 3, '3': 4, '4': 5, '5': 6, '6': 7, '7': 8, '8': 9, '9': 10, '0': 11,
-  F1: 59, F2: 60, F3: 61, F4: 62, F5: 63, F6: 64,
-  F7: 65, F8: 66, F9: 67, F10: 68, F11: 87, F12: 88
+interface KeyDef {
+  /** input-event-codes.h */
+  code: number
+  /** What GNOME wants in a binding string. */
+  gnome: string
+  /** True for keys you type with, where binding them bare would be destructive. */
+  typing?: boolean
+}
+
+const KEYS: Record<string, KeyDef> = {
+  Space: { code: 57, gnome: 'space', typing: true },
+  // Letters and digits
+  ...Object.fromEntries(
+    Object.entries({
+      A: 30, B: 48, C: 46, D: 32, E: 18, F: 33, G: 34, H: 35, I: 23,
+      J: 36, K: 37, L: 38, M: 50, N: 49, O: 24, P: 25, Q: 16, R: 19,
+      S: 31, T: 20, U: 22, V: 47, W: 17, X: 45, Y: 21, Z: 44,
+      '1': 2, '2': 3, '3': 4, '4': 5, '5': 6, '6': 7, '7': 8, '8': 9, '9': 10, '0': 11
+    }).map(([k, code]) => [k, { code, gnome: k.toLowerCase(), typing: true } as KeyDef])
+  ),
+  // Function keys. F13+ are what most macro pads emit.
+  ...Object.fromEntries(
+    (
+      [
+        ['F1', 59], ['F2', 60], ['F3', 61], ['F4', 62], ['F5', 63], ['F6', 64],
+        ['F7', 65], ['F8', 66], ['F9', 67], ['F10', 68], ['F11', 87], ['F12', 88],
+        ['F13', 183], ['F14', 184], ['F15', 185], ['F16', 186], ['F17', 187], ['F18', 188],
+        ['F19', 189], ['F20', 190], ['F21', 191], ['F22', 192], ['F23', 193], ['F24', 194]
+      ] as Array<[string, number]>
+    ).map(([k, code]) => [k, { code, gnome: k } as KeyDef])
+  ),
+  // Numpad. GNOME spells these KP_*; the browser reports them as Numpad*.
+  Numpad0: { code: 82, gnome: 'KP_0' },
+  Numpad1: { code: 79, gnome: 'KP_1' },
+  Numpad2: { code: 80, gnome: 'KP_2' },
+  Numpad3: { code: 81, gnome: 'KP_3' },
+  Numpad4: { code: 75, gnome: 'KP_4' },
+  Numpad5: { code: 76, gnome: 'KP_5' },
+  Numpad6: { code: 77, gnome: 'KP_6' },
+  Numpad7: { code: 71, gnome: 'KP_7' },
+  Numpad8: { code: 72, gnome: 'KP_8' },
+  Numpad9: { code: 73, gnome: 'KP_9' },
+  NumpadAdd: { code: 78, gnome: 'KP_Add' },
+  NumpadSubtract: { code: 74, gnome: 'KP_Subtract' },
+  NumpadMultiply: { code: 55, gnome: 'KP_Multiply' },
+  NumpadDivide: { code: 98, gnome: 'KP_Divide' },
+  NumpadDecimal: { code: 83, gnome: 'KP_Decimal' },
+  NumpadEnter: { code: 96, gnome: 'KP_Enter' },
+  // Navigation and the odds and ends a macro pad may send.
+  Insert: { code: 110, gnome: 'Insert' },
+  Delete: { code: 111, gnome: 'Delete' },
+  Home: { code: 102, gnome: 'Home' },
+  End: { code: 107, gnome: 'End' },
+  PageUp: { code: 104, gnome: 'Page_Up' },
+  PageDown: { code: 109, gnome: 'Page_Down' },
+  Pause: { code: 119, gnome: 'Pause' },
+  ScrollLock: { code: 70, gnome: 'Scroll_Lock' },
+  Menu: { code: 127, gnome: 'Menu' }
 }
 
 /** Modifier keycodes, left and right variants — either side satisfies the chord. */
@@ -52,11 +108,9 @@ export const MOD_CODES = {
   meta: [125, 126]
 } as const
 
-/** The GNOME binding token for each main key. GNOME lowercases letters and space. */
+/** The GNOME binding token for a main key. */
 function gnomeKeyToken(key: string): string {
-  if (key === 'Space') return 'space'
-  if (/^F\d{1,2}$/.test(key)) return key
-  return key.toLowerCase()
+  return KEYS[key]?.gnome ?? key.toLowerCase()
 }
 
 /**
@@ -83,8 +137,10 @@ export function parseChord(input: string): Chord | null {
     }
   }
   if (!chord.key) return null
-  // A bare key with no modifier would swallow that key system-wide — refuse it.
-  if (!chord.ctrl && !chord.alt && !chord.shift && !chord.meta) return null
+  // A bare key IS allowed. It is the right answer for a programmable keypad, where
+  // the whole point is one dedicated button with no chord. Whether a particular bare
+  // key is a GOOD idea is a separate question — see chordWarning, which the UI
+  // surfaces instead of refusing outright.
   return chord
 }
 
@@ -92,10 +148,28 @@ export function parseChord(input: string): Chord | null {
 export function canonicalKey(raw: string): string | null {
   const t = raw.trim()
   if (!t) return null
+  if (KEYS[t]) return t // already canonical (Numpad0, PageUp, F13…)
   const upper = t.toUpperCase()
   if (upper === 'SPACE' || t === ' ') return 'Space'
-  if (/^F\d{1,2}$/.test(upper) && KEY_CODES[upper] !== undefined) return upper
-  if (KEY_CODES[upper] !== undefined) return upper
+  if (KEYS[upper]) return upper
+  // Case-insensitive fallback, so "numpad0" and "pageup" work when typed by hand.
+  const match = Object.keys(KEYS).find((k) => k.toUpperCase() === upper)
+  return match ?? null
+}
+
+/**
+ * Why a chord might be a bad idea, or null when it is fine.
+ *
+ * A warning rather than a refusal: binding a bare typing key really does swallow it
+ * everywhere, but that is the user's call to make — and for a dedicated keypad button
+ * there is nothing to warn about at all.
+ */
+export function chordWarning(c: Chord): string | null {
+  const bare = !c.ctrl && !c.alt && !c.shift && !c.meta
+  if (!bare) return null
+  if (KEYS[c.key]?.typing) {
+    return `${c.key} on its own will be captured everywhere, including while you type. Add a modifier, or pick a keypad or F13+ key.`
+  }
   return null
 }
 
@@ -131,7 +205,7 @@ export interface EvdevChord {
 
 /** The evdev view of the chord: which raw keycodes to watch, grouped by role. */
 export function toEvdevChord(c: Chord): EvdevChord | null {
-  const key = KEY_CODES[c.key]
+  const key = KEYS[c.key]?.code
   if (key === undefined) return null
   const modifierGroups: number[][] = []
   if (c.ctrl) modifierGroups.push([...MOD_CODES.ctrl])

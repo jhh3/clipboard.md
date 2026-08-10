@@ -1551,6 +1551,19 @@ select.set-input option {
   color: var(--accent);
 }
 
+.chord-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A caution, not an error: the binding was accepted. */
+.chord-warn {
+  max-width: 260px;
+  text-align: right;
+  color: var(--warn, #d9a441);
+}
+
 /* toggle switch */
 
 .toggle {

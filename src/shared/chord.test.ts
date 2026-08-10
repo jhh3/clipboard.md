@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  chordWarning,
   DEFAULT_DICTATE_CHORD,
   formatChord,
   parseChord,
@@ -56,9 +57,34 @@ describe('chord', () => {
     expect(parseChord('')).toBeNull()
   })
 
-  it('refuses a bare key, which would swallow it system-wide', () => {
-    expect(parseChord('Space')).toBeNull()
-    expect(parseChord('F5')).toBeNull()
+  /**
+   * A programmable keypad's whole appeal is one dedicated button, so a bare key has
+   * to be bindable. These keys are also the ones a macro pad actually emits.
+   */
+  it('accepts a single key, for a macro pad', () => {
+    for (const k of ['F13', 'F24', 'Numpad0', 'NumpadEnter', 'Insert', 'Pause', 'Menu']) {
+      const c = parseChord(k)
+      expect(c, k).not.toBeNull()
+      expect(toEvdevChord(c!)!.modifierGroups).toEqual([])
+      expect(chordWarning(c!), k).toBeNull()
+    }
+    expect(toEvdevChord(parseChord('F13')!)!.key).toBe(183)
+    expect(toGnomeBinding(parseChord('Numpad0')!)).toBe('KP_0')
+    expect(toGnomeBinding(parseChord('PageUp')!)).toBe('Page_Up')
+  })
+
+  /** Bare typing keys are allowed but flagged — binding them really is destructive. */
+  it('warns about a bare typing key without refusing it', () => {
+    expect(parseChord('Space')).not.toBeNull()
+    expect(chordWarning(parseChord('Space')!)).toMatch(/everywhere/)
+    expect(chordWarning(parseChord('A')!)).toMatch(/everywhere/)
+    // With a modifier there is nothing to warn about.
+    expect(chordWarning(parseChord('Ctrl+Alt+Space')!)).toBeNull()
+  })
+
+  it('matches a bare key on the main key alone', () => {
+    const e = toEvdevChord(parseChord('F13')!)!
+    expect([...e.watched]).toEqual([183])
   })
 
   it('falls back to the default rather than leaving dictation unbound', () => {

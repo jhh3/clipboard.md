@@ -9,6 +9,7 @@ import type {
 } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
 import { IS_MAC, GLOBAL_MOD } from '../lib/keys'
+import { DEFAULT_DICTATE_CHORD, chordWarning, formatChord, parseChord } from '@shared/chord'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
@@ -252,13 +253,25 @@ function TextField({
  */
 function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [recording, setRecording] = useState(false)
-  const [rejected, setRejected] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
 
+  /**
+   * Browser key code → our canonical key name.
+   *
+   * e.code is the PHYSICAL key and is layout-independent, which is what makes it
+   * comparable with the raw evdev codes the hold is watched on. Numpad*, F13–F24 and
+   * the navigation keys are listed because that is what a programmable keypad emits —
+   * they are the whole reason single-key binding exists.
+   */
   const codeToKey = (code: string): string | null => {
     if (code === 'Space') return 'Space'
     if (/^Key[A-Z]$/.test(code)) return code.slice(3)
     if (/^Digit\d$/.test(code)) return code.slice(5)
-    if (/^F\d{1,2}$/.test(code)) return code
+    if (/^F([1-9]|1\d|2[0-4])$/.test(code)) return code
+    if (/^Numpad(\d|Add|Subtract|Multiply|Divide|Decimal|Enter)$/.test(code)) return code
+    if (['Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Pause', 'ScrollLock'].includes(code))
+      return code
+    if (code === 'ContextMenu') return 'Menu'
     return null
   }
 
@@ -267,48 +280,61 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
     e.stopPropagation()
     if (e.key === 'Escape') {
       setRecording(false)
-      setRejected(false)
+      setNote(null)
       return
     }
     const key = codeToKey(e.code)
-    if (!key) return // a lone modifier: keep waiting for the main key
+    if (!key) return // a lone modifier, or a key we cannot express: keep waiting
     const parts: string[] = []
     if (e.ctrlKey) parts.push('Ctrl')
     if (e.altKey) parts.push('Alt')
     if (e.shiftKey) parts.push('Shift')
     if (e.metaKey) parts.push('Super')
-    if (parts.length === 0) {
-      // A bare key would swallow it system-wide; chord.ts rejects it too.
-      setRejected(true)
-      return
-    }
     parts.push(key)
+    const chord = parseChord(parts.join('+'))
+    if (!chord) return
     setRecording(false)
-    setRejected(false)
-    onCommit(parts.join('+'))
+    // A bare typing key is allowed but worth flagging; a keypad button is not.
+    setNote(chordWarning(chord))
+    onCommit(formatChord(chord))
   }
 
+  const isDefault = value === DEFAULT_DICTATE_CHORD
   return (
     <div className="chord-field">
-      <button
-        type="button"
-        className={'set-input chord-capture' + (recording ? ' recording' : '')}
-        onClick={() => {
-          setRecording(true)
-          setRejected(false)
-        }}
-        /*
-         * No onBlur cancel. Pressing a chord that is ALREADY a global binding fires
-         * that action too — the dictation HUD appears and takes focus — and a blur
-         * handler would then cancel the capture before the keydown committed it, so
-         * rebinding away from the current chord could never work. Escape cancels,
-         * and clicking elsewhere is harmless because we only listen while recording.
-         */
-        onKeyDown={recording ? onKeyDown : undefined}
-      >
-        {recording ? 'Press a chord…' : value || 'Ctrl+Alt+Space'}
-      </button>
-      {rejected && <span className="set-sub">Needs at least one modifier</span>}
+      <div className="chord-row">
+        <button
+          type="button"
+          className={'set-input chord-capture' + (recording ? ' recording' : '')}
+          onClick={() => {
+            setRecording(true)
+            setNote(null)
+          }}
+          /*
+           * No onBlur cancel. Pressing a chord that is ALREADY a global binding fires
+           * that action too — the dictation HUD appears and takes focus — and a blur
+           * handler would cancel the capture before the keydown committed it, so
+           * rebinding away from the current chord could never work.
+           */
+          onKeyDown={recording ? onKeyDown : undefined}
+        >
+          {recording ? 'Press a key…' : value || DEFAULT_DICTATE_CHORD}
+        </button>
+        {!isDefault && (
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => {
+              setNote(null)
+              setRecording(false)
+              onCommit(DEFAULT_DICTATE_CHORD)
+            }}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      {note && <span className="set-sub chord-warn">{note}</span>}
     </div>
   )
 }
@@ -1075,7 +1101,7 @@ export default function Settings() {
               {!IS_MAC && (
                 <Row
                   label="Hold-to-talk chord"
-                  sub="Hold this to dictate; release to transcribe. Needs at least one modifier."
+                  sub="Hold this to dictate; release to transcribe. A single key works — ideal for a macro pad."
                 >
                   <ChordField
                     value={s.dictateChord}
