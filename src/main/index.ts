@@ -49,7 +49,7 @@ import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
-import { startPushToTalk, stopPushToTalk } from './ptt'
+import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { seedApiKeys } from './modelport/keys'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
@@ -333,6 +333,30 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
 
   /**
+   * macOS: make sure the Fn push-to-talk tap is running, re-arming it if not.
+   *
+   * The tap is a helper child that can only be spawned with Accessibility in hand. If
+   * the permission wasn't granted at launch the child exited (code 3) and nothing
+   * restarted it, so granting it later left dictation dead until a manual relaunch —
+   * exactly the trap a user just hit. Call this from the paths a user naturally passes
+   * through (opening the palette, the dictation hotkey, and a poll right after the
+   * grant). It's a cheap sync boolean when the tap is already alive, and only pays the
+   * trust check + re-spawn when it's actually down, so no one can stay stuck un-armed.
+   */
+  const ensurePttArmed = async (): Promise<void> => {
+    if (process.platform !== 'darwin') return
+    if (isPushToTalkActive()) return
+    try {
+      if (!(await isTrusted())) return
+    } catch {
+      return
+    }
+    if (isPushToTalkActive()) return // a concurrent caller won the race
+    pttActive = startPushToTalk(pttHandlers)
+    if (pttActive) console.log('[ptt] re-armed — Accessibility is now available')
+  }
+
+  /**
    * Hotkey path. ALWAYS live, even when evdev is watching.
    *
    * This used to `return` whenever pttActive was true, handing dictation entirely to
@@ -412,6 +436,9 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    * cancels this timer. This is the fallback that makes dictation work anyway.
    */
   const dictateTrigger = (mode: DictateMode = 'paste'): void => {
+    // If the Fn tap died for lack of Accessibility and the user later granted it, this
+    // hotkey (the toggle fallback) still fires — so use it to bring the tap back.
+    void ensurePttArmed()
     const now = Date.now()
     const sinceLast = now - lastHotkeyAt
     lastHotkeyAt = now
@@ -482,8 +509,32 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     await isTrusted(true)
     new Notification({
       title: 'clipboard.md needs Accessibility',
-      body: 'Allow clipboard.md under Privacy & Security ▸ Accessibility, then restart it, to paste automatically and rewrite selected text.'
+      body: 'Allow clipboard.md under Privacy & Security ▸ Accessibility — paste and push-to-talk turn on the moment you do, no restart needed.'
     }).show()
+    // Watch for the grant and re-arm push-to-talk the instant it lands, so the user
+    // never has to relaunch. Give up after a few minutes rather than poll forever — the
+    // palette/hotkey paths (ensurePttArmed) still cover a later grant.
+    let waited = 0
+    const poll = setInterval(() => {
+      void (async () => {
+        waited += 2500
+        if (isPushToTalkActive()) {
+          clearInterval(poll)
+          return
+        }
+        if (await isTrusted()) {
+          clearInterval(poll)
+          console.log('[mac] Accessibility just granted; activating paste and push-to-talk')
+          await ensurePttArmed()
+          new Notification({
+            title: 'clipboard.md is ready',
+            body: 'Accessibility granted — hold 🌐 (Fn) to dictate.'
+          }).show()
+        } else if (waited >= 5 * 60_000) {
+          clearInterval(poll)
+        }
+      })()
+    }, 2500)
   }
 
   async function currentSelection(): Promise<string> {
@@ -501,7 +552,12 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
 
   const actions: HotkeyActions = {
-    toggle: () => togglePalette(),
+    toggle: () => {
+      // Opening the palette is the most-travelled path, so it's the cheapest place to
+      // guarantee push-to-talk is armed for anyone who granted Accessibility mid-session.
+      void ensurePttArmed()
+      togglePalette()
+    },
     rewrite: () => {
       void currentSelection().then((text) => {
         if (!text.trim()) {

@@ -27,6 +27,52 @@ const execFileP = promisify(execFile)
  */
 
 const WANTED = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'E2B_API_KEY']
+const MARKER = '__CLIPMD_ENV__'
+
+/**
+ * Dump a shell's environment between two markers.
+ *
+ * Crucially, returns stdout even when the shell EXITS NON-ZERO. An interactive rc
+ * routinely exits non-zero — an instant-prompt theme (powerlevel10k), a trailing
+ * command in ~/.zshrc, `set -e` chatter — and execFile rejects on any non-zero exit,
+ * throwing away the perfectly good `env` output already on stdout. That is why the
+ * import silently produced nothing on a normal machine: the env was printed, then the
+ * shell returned 1 and we discarded it. The failed process still carries its stdout.
+ */
+async function dumpEnv(shell: string, flag: string): Promise<string> {
+  try {
+    const { stdout } = await execFileP(shell, [flag, `echo ${MARKER}; env; echo ${MARKER}`], {
+      timeout: 5000,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true
+    })
+    return stdout
+  } catch (err) {
+    const out = (err as { stdout?: string }).stdout
+    if (out) return out // non-zero exit, but the env dump made it out first
+    throw err
+  }
+}
+
+/** Fill WANTED keys from an `env` dump body. Returns how many were newly set. */
+function absorb(body: string): number {
+  let imported = 0
+  for (const line of body.split('\n')) {
+    const eq = line.indexOf('=')
+    if (eq < 1) continue
+    const key = line.slice(0, eq)
+    // FILL, never overwrite. `process.env[key]` already being set means the app was
+    // launched with it (a terminal, a systemd unit that forwarded it) — more
+    // intentional than the rc default, so leave it. A key set in Settings wins over the
+    // environment regardless (see keyFor()), so end to end: Settings > launch env > rc.
+    if (!WANTED.includes(key) || process.env[key]) continue
+    const value = line.slice(eq + 1)
+    if (!value) continue
+    process.env[key] = value
+    imported++
+  }
+  return imported
+}
 
 export async function importShellEnv(): Promise<void> {
   if (process.platform === 'win32') return
@@ -34,37 +80,21 @@ export async function importShellEnv(): Promise<void> {
   if (WANTED.every((k) => process.env[k])) return
 
   const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash')
-  try {
-    // -ilc: interactive login shell so rc files run. A unique delimiter frames the
-    // env dump so shell banners/rc chatter around it can't corrupt the parse.
-    const marker = '__CLIPMD_ENV__'
-    const { stdout } = await execFileP(shell, ['-ilc', `echo ${marker}; env; echo ${marker}`], {
-      timeout: 5000,
-      maxBuffer: 4 * 1024 * 1024,
-      // A login shell that tries to read from the tty would hang; detach stdin.
-      windowsHide: true
-    })
-    const body = stdout.split(marker)[1] ?? ''
-    let imported = 0
-    for (const line of body.split('\n')) {
-      const eq = line.indexOf('=')
-      if (eq < 1) continue
-      const key = line.slice(0, eq)
-      // FILL, never overwrite. `process.env[key]` already being set means the app
-      // was launched with it (e.g. from a terminal, or a systemd unit that forwarded
-      // it) — that value is more intentional than the rc default, so leave it. And a
-      // key set in Settings wins over the environment regardless (see keyFor()), so
-      // the precedence end to end is: Settings > launch env > shell rc.
-      if (!WANTED.includes(key) || process.env[key]) continue
-      const value = line.slice(eq + 1)
-      if (!value) continue
-      process.env[key] = value
-      imported++
+  // -ilc first: an interactive login shell runs ~/.zshrc / ~/.bashrc, where most people
+  // export keys. -lc is the fallback: a login shell runs ~/.zprofile / ~/.zshenv (zsh
+  // does NOT read .zshrc non-interactively), catching keys set there and covering the
+  // case where the interactive shell couldn't run at all.
+  let imported = 0
+  for (const flag of ['-ilc', '-lc']) {
+    let body: string
+    try {
+      body = (await dumpEnv(shell, flag)).split(MARKER)[1] ?? ''
+    } catch (err) {
+      console.log(`[env] ${shell} ${flag}: ${(err as Error).message.split('\n')[0]}`)
+      continue
     }
-    if (imported > 0) console.log(`[env] imported ${imported} API key(s) from the shell environment`)
-  } catch (err) {
-    // No shell, timeout, or a hostile rc — the app still works via Settings keys
-    // and the on-disk claude/codex login. Log once; never fail startup over it.
-    console.log(`[env] could not read the shell environment: ${(err as Error).message.split('\n')[0]}`)
+    imported += absorb(body)
+    if (WANTED.every((k) => process.env[k])) break // got them all; skip the fallback
   }
+  if (imported > 0) console.log(`[env] imported ${imported} API key(s) from the shell environment`)
 }
