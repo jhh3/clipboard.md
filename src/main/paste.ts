@@ -119,15 +119,26 @@ export class PasteService {
     return true
   }
 
-  async setClipboardRaw(output: string, outputKind: 'text' | 'image'): Promise<void> {
+  /** Returns false when the text never reached the selection — see the guard below. */
+  async setClipboardRaw(output: string, outputKind: 'text' | 'image'): Promise<boolean> {
     markOwnedByUs()
     if (outputKind === 'image') {
       this.capture.markSelfWrite()
       await writeClipboardImage(nativeImage.createFromDataURL(output).toPNG())
-    } else {
-      this.capture.markSelfWrite(output)
-      await writeClipboardText(output)
+      return true
     }
+    this.capture.markSelfWrite(output)
+    await writeClipboardText(output)
+    // The same guard setClipboard() has, and for the same reason: the write goes to
+    // a detached owner process, so returning before it actually holds the X selection
+    // means the Ctrl+V we are about to inject pastes whatever was on the clipboard
+    // BEFORE this dictation. That is precisely the "it pasted the last thing I
+    // copied" failure — silent, because every step reported success.
+    if (!(await waitForClipboard(output))) {
+      console.error('[paste] clipboard did not take ownership in time')
+      return false
+    }
+    return true
   }
 
   async pasteItem(itemId: number, plain: boolean): Promise<PasteOutcome> {
@@ -138,7 +149,11 @@ export class PasteService {
   }
 
   async pasteRaw(output: string, outputKind: 'text' | 'image'): Promise<PasteOutcome> {
-    await this.setClipboardRaw(output, outputKind)
+    // Injecting Ctrl+V when the clipboard write did not land would paste the PREVIOUS
+    // clipboard entry into whatever the user is typing in — worse than not pasting.
+    if (!(await this.setClipboardRaw(output, outputKind))) {
+      return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
+    }
     return this.deliver()
   }
 

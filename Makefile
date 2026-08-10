@@ -16,6 +16,27 @@ LOG := $(HOME)/.config/clipboard.md/logs/main-$(shell date +%F).log
 APP := $(HOME)/.local/bin/clipboard.md.AppImage
 APP_UNIT := clipboard-md-app
 
+# The display environment the app cannot work without, taken from the SESSION rather
+# than from whoever ran make.
+#
+# `systemd-run --user` forwards the caller's environment, not the graphical session's.
+# Run make from a shell without these — an agent, cron, ssh — and the app starts
+# blind: clipboard I/O is X11 (xclip), so with no DISPLAY every copy and paste dies
+# while the app otherwise looks perfectly healthy. Portal keystroke injection is
+# D-Bus and keeps working, so the log even reports "injected via portal" for pastes
+# that go nowhere. Pulling these from `systemctl --user show-environment` makes the
+# launch identical no matter who starts it.
+SESSION_ENV = $$(systemctl --user show-environment 2>/dev/null \
+	| grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|GNOME_SETUP_DISPLAY)=' \
+	| sed 's/^/--setenv=/')
+
+# Refuse to start blind rather than start something subtly broken.
+define require_display
+	@systemctl --user show-environment 2>/dev/null | grep -q '^DISPLAY=' || { \
+		echo "no DISPLAY in the systemd user environment — is a graphical session running?"; \
+		exit 1; }
+endef
+
 .PHONY: help build run stop restart status logs appimage install-appimage clean-instances doctor \
         app-run app-stop app-restart deploy
 
@@ -44,7 +65,8 @@ build:
 # lands in the journal. Crucially it does NOT override DISPLAY: clipboard capture and
 # paste are X11-based and go silent without it.
 run: build clean-instances
-	@systemd-run --user --collect --unit=$(UNIT) "$(APPDIR)/$(ELECTRON)" "$(APPDIR)" --background >/dev/null
+	$(require_display)
+	@systemd-run --user --collect --unit=$(UNIT) $(SESSION_ENV) "$(APPDIR)/$(ELECTRON)" "$(APPDIR)" --background >/dev/null
 	@sleep 3
 	@$(MAKE) --no-print-directory status
 
@@ -116,11 +138,15 @@ APP_PIDS = $$(ps -eo pid,args --no-headers \
 # Same transient-unit treatment as `run`, for the same reason: the real session
 # environment, and never an overridden DISPLAY.
 app-run:
-	@systemd-run --user --collect --unit=$(APP_UNIT) "$(APP)" --background >/dev/null
+	$(require_display)
+	@systemd-run --user --collect --unit=$(APP_UNIT) $(SESSION_ENV) "$(APP)" --background >/dev/null
 	@sleep 4
 	@pid=$$(echo "$(APP_PIDS)" | head -1); \
-	if [ -n "$$pid" ]; then echo "running        pid $$pid"; \
-	else echo "FAILED to start — make logs"; exit 1; fi
+	if [ -z "$$pid" ]; then echo "FAILED to start — make logs"; exit 1; fi; \
+	echo "running        pid $$pid"; \
+	tr '\0' '\n' < /proc/$$pid/environ | grep -q '^DISPLAY=' \
+		&& echo "display        ok (clipboard I/O can reach X)" \
+		|| { echo "display        MISSING — clipboard and paste will not work"; exit 1; }
 
 app-stop:
 	@systemctl --user stop $(APP_UNIT) 2>/dev/null || true
