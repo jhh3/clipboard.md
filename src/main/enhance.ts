@@ -47,7 +47,7 @@ const CLOSING = [
  * 'standard' would have produced it, so the preset costs nothing when it is not
  * needed and only earns its keep on the message you would regret sending.
  */
-const PROMPTS: Record<EnhancePreset, string> = {
+const PROMPTS: Record<'standard' | 'positive', string> = {
   standard: [
     ...BASE,
     'Never add, remove, summarise, reorder or reword anything else.',
@@ -78,15 +78,36 @@ const PROMPTS: Record<EnhancePreset, string> = {
  */
 const MAX_CHARS = 4000
 
+/**
+ * The system prompt for a preset.
+ *
+ * 'custom' REPLACES the behaviour rules rather than extending them: someone writing
+ * their own instruction may want something the built-ins actively forbid — translate
+ * it, make it terse, always bullet it — and silently keeping "never reword anything"
+ * underneath would make their prompt look broken.
+ *
+ * The output contract is always appended, because the pipeline pastes whatever comes
+ * back: a model that replies "Sure! Here's your text:" would paste that too. An empty
+ * custom prompt falls back to 'standard' instead of sending no instructions at all.
+ */
+function systemFor(preset: EnhancePreset, custom: string | undefined): string {
+  if (preset !== 'custom') return PROMPTS[preset]
+  const body = custom?.trim()
+  if (!body) return PROMPTS.standard
+  return [body, ...CLOSING].join('\n')
+}
+
 export async function enhanceTranscript(text: string): Promise<string> {
   const trimmed = text.trim()
   if (!trimmed || trimmed.length > MAX_CHARS) return text
-  const preset: EnhancePreset = getSettings().dictation.enhancePreset ?? 'standard'
-  const out = await complete('transforms', { prompt: trimmed, system: PROMPTS[preset] })
+  const d = getSettings().dictation
+  const preset: EnhancePreset = d.enhancePreset ?? 'standard'
+  const system = systemFor(preset, d.enhanceCustomPrompt)
+  const out = await complete('transforms', { prompt: trimmed, system })
   const cleaned = out.trim()
   // A model that returns nothing, or answers the text instead of cleaning it, must not
   // replace the user's words. Length is a crude but effective guard against both.
-  const maxGrowth = preset === 'positive' ? 2.5 : 2
+  const maxGrowth = preset === 'custom' ? 4 : preset === 'positive' ? 2.5 : 2
   if (!cleaned || cleaned.length > trimmed.length * maxGrowth) {
     console.error('[dictate] AI cleanup returned an implausible result; keeping the original')
     return text

@@ -225,7 +225,7 @@ export interface TransformResult {
  * 'positive' additionally rewrites genuinely harsh text to be constructive, and
  * leaves everything else alone.
  */
-export type EnhancePreset = 'standard' | 'positive'
+export type EnhancePreset = 'standard' | 'positive' | 'custom'
 
 export type ProviderLane = 'subscription' | 'api'
 export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini'
@@ -323,6 +323,11 @@ export interface AppSettings {
     cleanup?: boolean
     /** Which AI cleanup preset the enhance key uses. Undefined = 'standard'. */
     enhancePreset?: EnhancePreset
+    /**
+     * Instructions for the 'custom' preset. Replaces the built-in behaviour rules;
+     * the output contract ("return only the text") is always appended.
+     */
+    enhanceCustomPrompt?: string
     /** Output formatting. Undefined = 'as-spoken'. */
     style?: 'as-spoken' | 'casual'
     /** Spoken numbers to numerals ("twenty items" -> "20 items"). Undefined = on. */

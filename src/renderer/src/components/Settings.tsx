@@ -1226,8 +1226,27 @@ export default function Settings() {
                 >
                   <option value="standard">Standard — fix mechanics, keep my words</option>
                   <option value="positive">Positive — soften harsh wording, otherwise standard</option>
+                  <option value="custom">Custom — my own instructions</option>
                 </select>
               </Row>
+              {s.dictation.enhancePreset === 'custom' && (
+                <Row
+                  label="Custom instructions"
+                  sub="Tells the model what to do with each transcript. This replaces the built-in rules, so describe everything you want — including whether to keep your wording. Leave empty to fall back to Standard."
+                >
+                  <DictionaryField
+                    value={s.dictation.enhanceCustomPrompt ?? ''}
+                    onCommit={(v) =>
+                      patch({
+                        dictation: { ...s.dictation, enhanceCustomPrompt: v || undefined }
+                      })
+                    }
+                    placeholder={
+                      'Clean up dictated speech: remove filler words, fix punctuation\nand capitalisation, and keep my wording and tone.\nTranslate the result into Spanish.'
+                    }
+                  />
+                </Row>
+              )}
               {!IS_MAC && (
                 <Row
                   label="Hold-to-talk chord (AI cleanup)"
