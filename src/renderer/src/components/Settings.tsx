@@ -161,16 +161,22 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 function Row({
   label,
   sub,
+  badge,
   children
 }: {
   label: string
   sub?: string
+  /** Small pill after the label, e.g. "Beta" for experimental settings. */
+  badge?: string
   children: ReactNode
 }) {
   return (
     <div className="set-row">
       <div className="set-row-text">
-        <div className="set-label">{label}</div>
+        <div className="set-label">
+          {label}
+          {badge && <span className="set-badge">{badge}</span>}
+        </div>
         {sub && <div className="set-sub">{sub}</div>}
       </div>
       <div className="set-control">{children}</div>
@@ -1565,7 +1571,8 @@ export default function Settings() {
               </Row>
               <Row
                 label="Learn from my corrections"
-                sub="When you fix a mis-transcribed word right after dictating — in the app you pasted into, or by editing the clip here — offer to remember it as a rule below. Runs on-device; nothing is sent anywhere. Off by default."
+                badge="Beta"
+                sub="When you fix a mis-transcribed word right after dictating — in the app you pasted into (re-copy the corrected text), or with “Correct last dictation” in the menu bar — offer to remember it as a rule below. Runs on-device; nothing is sent anywhere. Off by default."
               >
                 <Toggle
                   checked={s.dictation.learnCorrections === true}

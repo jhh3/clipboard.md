@@ -2777,6 +2777,22 @@ body.route-dictation #root {
   background: none; border: none; cursor: pointer; text-decoration: underline;
 }
 
+/* "Beta"/experimental pill after a settings label. */
+.set-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
 /* Learn-from-corrections suggestion cards (Intelligence → dictation). */
 .set-suggestions {
   display: flex;
