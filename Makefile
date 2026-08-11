@@ -63,6 +63,16 @@ help:
 	@echo "Daily use is the AppImage (Linux) or /Applications (macOS)."
 	@echo "'make run' is for working on the code."
 
+# The code-signing identity, auto-detected. Pass MAC_IDENTITY="name" to override.
+#
+# Ad-hoc signing (the fallback when no identity exists) has no stable designated
+# requirement, and TCC pins Accessibility/Microphone grants to the binary's code
+# hash — so every rebuild looks like a different app and macOS silently drops the
+# permissions. Detecting an identity automatically means a user who creates the
+# self-signed cert once never has to remember the flag again.
+MAC_IDENTITY ?= $(shell [ "$$(uname)" = Darwin ] && \
+	security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)"$$/\1/p' | head -1)
+
 # ── macOS: build from source ──────────────────────────────────────────────────
 #
 # Building it yourself is the way to run this on macOS WITHOUT a notarized release.
@@ -94,8 +104,13 @@ mac:
 		echo "(Permission grants — Accessibility, Mic — persist across rebuilds.)"; \
 		CLIPMD_SIGN_IDENTITY="$(MAC_IDENTITY)" pnpm build:mac:local; \
 	else \
-		echo "No Developer identity in keychain — ad-hoc signing."; \
-		echo "(macOS will re-ask for Accessibility after each rebuild.)"; \
+		echo "No code-signing identity found — falling back to ad-hoc signing."; \
+		echo "WARNING: macOS drops Accessibility/Microphone grants on EVERY rebuild,"; \
+		echo "         because an ad-hoc signature has no stable identity."; \
+		echo "         Fix it once: Keychain Access > Certificate Assistant >"; \
+		echo "         Create a Certificate, name 'clipboard.md local', type"; \
+		echo "         'Code Signing', Self Signed Root. Rebuilds keep their grants"; \
+		echo "         after that, and this Makefile will find it automatically."; \
 		pnpm build:mac:adhoc; \
 	fi
 	@echo
@@ -109,6 +124,14 @@ mac-install: mac
 	@ditto "dist/mac-arm64/clipboard.md.app" /Applications/clipboard.md.app
 	@# Belt and suspenders: strip any inherited quarantine attribute.
 	@xattr -dr com.apple.quarantine /Applications/clipboard.md.app 2>/dev/null || true
+# One app on the machine, not two. The freshly built copy left in dist/ is a
+# complete bundle with the same identifier, so LaunchServices registers it as a
+# SECOND "clipboard.md": Privacy & Security then lists two identical rows, and the
+# Accessibility grant you give one does not apply to the other — which reads as
+# "I granted it and paste still doesn't work".
+	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+		-u "$(CURDIR)/dist/mac-arm64/clipboard.md.app" >/dev/null 2>&1 || true
+	@rm -rf "dist/mac-arm64/clipboard.md.app"
 	@open -a /Applications/clipboard.md.app --args --background
 	@echo "Installed to /Applications and launched. Press Cmd+Shift+V."
 	@echo "First launch asks for Accessibility (to paste) — grant it in System Settings."
