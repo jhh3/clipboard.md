@@ -1189,10 +1189,10 @@ export default function Settings() {
                       <kbd className="hotkey-kbd">🌐 / ⌘⇧D</kbd> plain — offline, pasted
                     </div>
                     <div>
-                      <kbd className="hotkey-kbd">⌘⌥D</kbd> AI cleanup
+                      <kbd className="hotkey-kbd">⌘⌥D</kbd> AI cleanup — press, then press again
                     </div>
                     <div>
-                      <kbd className="hotkey-kbd">⌘⌥A</kbd> to primary agent
+                      <kbd className="hotkey-kbd">⌘⌥A</kbd> to agent — press, then press again
                     </div>
                   </div>
                 </Row>

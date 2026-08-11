@@ -459,12 +459,27 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
 
     // Linux only. evdev reports a real release there, so repeats from the held key
     // are noise and a second trigger must not stop the recording.
-    //
-    // macOS has no evdev: its Fn tap only watches the Fn key, so a dictation started
-    // from a MENU-BAR accelerator has no release event at all and the second press IS
-    // the stop. Skipping it here left those modes recording forever — the same bug
-    // this guard was added to fix on Linux, reintroduced on the other platform.
     if (process.platform === 'linux' && pttActive) return
+
+    // macOS stops here, and never reaches the key-repeat heuristic below.
+    //
+    // That heuristic reads GNOME's repeat delay and interval; off Linux
+    // keyRepeatTiming() returns a FALLBACK that still says enabled:true, so a second
+    // press within delay+slack (750ms) was classified as a key-repeat — "still held" —
+    // rather than as the stop. Holding ⌘⌥D therefore recorded forever, and with no
+    // transcript there was nothing to paste, which is why both symptoms appeared
+    // together.
+    //
+    // globalShortcut only ever reports key-down, so the next deliberate press IS the
+    // stop. Presses inside the restart guard are auto-repeat from a held key, not
+    // intent, and are ignored — without that a repeating accelerator would flap
+    // between start and stop.
+    if (process.platform !== 'linux') {
+      if (sinceLast < RESTART_GUARD_MS) return
+      clearHoldTimer()
+      endDictation()
+      return
+    }
 
     // Already recording. A gap no larger than the repeat delay means this is the same
     // hold continuing; anything longer is a deliberate second press.
