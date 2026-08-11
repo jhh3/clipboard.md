@@ -4,7 +4,10 @@ import { resolve } from 'path'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // double-metaphone is a tiny, pure ESM package used by the corrections matcher;
+    // bundle it rather than externalize so the packaged (ESM) main has no runtime
+    // node_modules resolution to get wrong — the kind of ESM/CJS trap we've hit before.
+    plugins: [externalizeDepsPlugin({ exclude: ['double-metaphone'] })],
     resolve: {
       alias: { '@shared': resolve(__dirname, 'src/shared') }
     },

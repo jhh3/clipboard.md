@@ -1,7 +1,14 @@
 import { Menu, Tray, nativeImage } from 'electron'
 import { getSettings, updateSettings } from './settings'
 import { unreadCount } from './agents'
-import { openAgentsWindow, openNotesWindow, openSettingsWindow, showPalette } from './windows'
+import {
+  openAgentsWindow,
+  openNotesWindow,
+  openScratchpadWindow,
+  openSettingsWindow,
+  showPalette
+} from './windows'
+import { lastDictationId } from './corrections'
 
 
 /**
@@ -75,8 +82,23 @@ export function buildTrayMenu(): void {
   // Linux the real bindings are GNOME-level ⌃⌥ ones the Menu API can't render.
   const acc = (mac: string): { accelerator?: string } =>
     process.platform === 'darwin' ? { accelerator: mac } : {}
+  // The one reliable correction path for dictations we can't observe (terminals like
+  // WezTerm, or any app we didn't paste into via our own field): reopen the last
+  // transcript here, fix the word, and the scratchpad-edit path learns the rule.
+  const canCorrect = settings.dictation.learnCorrections === true
   const menu = Menu.buildFromTemplate([
     { label: 'Open clipboard palette', ...acc('Cmd+Shift+V'), click: () => showPalette() },
+    ...(canCorrect
+      ? [
+          {
+            label: 'Correct last dictation',
+            click: (): void => {
+              const id = lastDictationId()
+              if (id !== undefined) openScratchpadWindow(id)
+            }
+          }
+        ]
+      : []),
     { type: 'separator' },
     { label: 'Notes…', ...acc('Cmd+Shift+N'), click: () => openNotesWindow() },
     {

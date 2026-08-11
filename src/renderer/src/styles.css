@@ -2777,6 +2777,61 @@ body.route-dictation #root {
   background: none; border: none; cursor: pointer; text-decoration: underline;
 }
 
+/* "Beta"/experimental pill after a settings label. */
+.set-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+/* Learn-from-corrections suggestion cards (Intelligence → dictation). */
+.set-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -2px 0 10px;
+}
+.set-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.set-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.set-suggestion-rule {
+  font-size: 13px;
+}
+.set-suggestion-reason {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.set-suggestion-actions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.set-suggestion-dismiss {
+  color: var(--text-dim);
+}
+
 /* Ask-row agent target chip (shown when more than one agent is defined). */
 .ask-agent {
   display: inline-flex; gap: 5px; align-items: center; flex: none;

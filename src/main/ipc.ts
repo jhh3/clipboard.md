@@ -17,6 +17,13 @@ import {
 } from './store/items'
 import { saveRecording, transcribeFile } from './transcribe'
 import { correctTranscript, styleForApp } from './dictionary'
+import {
+  notePastedTranscript,
+  considerScratchEdit,
+  listSuggestions,
+  acceptSuggestion,
+  dismissSuggestion
+} from './corrections'
 import { getDictationTarget } from './focusedWindow'
 import { enhanceTranscript } from './enhance'
 import { detectSecret } from './capture/filters'
@@ -266,6 +273,10 @@ export function registerIpc(
   handle('settings:get', () => getSettings())
   handle('settings:set', (_e, patch: Partial<AppSettings>) => updateSettings(patch))
 
+  handle('dictation:suggestions:list', () => listSuggestions())
+  handle('dictation:suggestion:accept', (_e, key: string) => acceptSuggestion(key))
+  handle('dictation:suggestion:dismiss', (_e, key: string) => dismissSuggestion(key))
+
   handle('providers:status', () => providersStatus())
   handle('enrichment:status', () => {
     const stats = enrichQueueStats()
@@ -383,6 +394,9 @@ export function registerIpc(
           return { ok: true, text, id, pasted: false }
         }
 
+        // Remember what we pasted so a quick correction of it can become a
+        // dictionary rule. Destination is the app captured when recording started.
+        notePastedTranscript({ text, itemId: id, destKey: getDictationTarget() })
         if (getSettings().dictation.autoPaste) {
           const outcome = await paste.pasteRaw(text, 'text')
           return { ok: true, text, id, pasted: outcome.method === 'injected' }
@@ -411,6 +425,14 @@ export function registerIpc(
     }
   })
   handle('scratch:save', (_e, payload: { text: string; itemId?: number }) => {
+    // Editing a dictation clip in the scratchpad is a clean before/after pair: if the
+    // change looks like a fix of a mis-transcribed word, offer a dictionary rule.
+    if (payload.itemId) {
+      const src = getItem(payload.itemId)
+      if (src?.content && src.content !== payload.text) {
+        considerScratchEdit(src.content, payload.text, payload.itemId)
+      }
+    }
     // This path receives raw selections (rewrite hotkey) and scratchpad text, so it
     // must run the same secret scan as capture — otherwise highlighting an API key
     // and hitting rewrite stored it indexed, embedded and queued for enrichment.

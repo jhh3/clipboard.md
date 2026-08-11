@@ -10,6 +10,7 @@ import type { ClipKind } from '@shared/types'
 import { upsertClip, enqueueEnrichment } from '../store/items'
 import { runFilters } from './filters'
 import { getSettings } from '../settings'
+import { considerSnapshot } from '../corrections'
 
 export interface CaptureEvents {
   onItem: (id: number, created: boolean) => void
@@ -293,6 +294,9 @@ export class CaptureService {
     if (verdict === 'store-secret') {
       console.log(`[capture] stored secret-flagged clip (${reason}), excluded from index`)
     }
+    // A foreign copy may be the user re-copying a transcript they just corrected —
+    // let the learn-from-corrections pass have a look. Cheap no-op unless enabled.
+    considerSnapshot(text, sourceApp?.name ?? null)
     this.events.onItem(id, created)
   }
 

@@ -51,6 +51,7 @@ import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { seedApiKeys } from './modelport/keys'
+import { initCorrections } from './corrections'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
 // Push-to-talk opens one descriptor per real keyboard, and a machine with several
@@ -675,6 +676,18 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
           ? `delay=${repeat.delay}ms interval=${repeat.interval}ms`
           : 'DISABLED in the desktop settings — the chord will toggle instead of hold')
     )
+
+    // Learn-from-corrections: push the suggestion list to open windows and nudge
+    // with a toast when a new one is learned. Opt-in; does nothing until enabled.
+    initCorrections((suggestions, added) => {
+      broadcast('dictation:suggestions:changed', { suggestions })
+      if (added) {
+        broadcast('toast', {
+          message: `Learned a fix: “${added.from}” → “${added.to}”. Review it in Settings.`,
+          kind: 'info'
+        })
+      }
+    })
 
     createPaletteWindow()
     capture.start()
