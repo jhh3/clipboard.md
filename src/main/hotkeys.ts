@@ -36,6 +36,13 @@ const MAC_SHORTCUTS: Array<[string, keyof HotkeyActions]> = [
   ['Command+Shift+S', 'screenshot'],
   ['Command+Shift+E', 'scratchpad'],
   ['Command+Shift+D', 'dictate'],
+  // The other two dictation modes. Option rather than Shift: a global shortcut is
+  // taken from every app on the machine, and Cmd+Shift+G/T/P are Find-Again,
+  // reopen-tab and command-palette in common apps. Cmd+Option+<letter> is far less
+  // contested. These are toggles — press to start, press again to stop — because
+  // globalShortcut only ever reports key-down; hold-to-talk on macOS is the Fn key.
+  ['Command+Alt+D', 'dictateEnhance'],
+  ['Command+Alt+A', 'dictateAgent'],
   ['Command+Shift+N', 'notes'],
   ['Command+Shift+A', 'agents']
 ]

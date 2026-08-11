@@ -457,8 +457,14 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       return
     }
 
-    // evdev owns the ending; repeats from the held key are just noise.
-    if (pttActive) return
+    // Linux only. evdev reports a real release there, so repeats from the held key
+    // are noise and a second trigger must not stop the recording.
+    //
+    // macOS has no evdev: its Fn tap only watches the Fn key, so a dictation started
+    // from a MENU-BAR accelerator has no release event at all and the second press IS
+    // the stop. Skipping it here left those modes recording forever — the same bug
+    // this guard was added to fix on Linux, reintroduced on the other platform.
+    if (process.platform === 'linux' && pttActive) return
 
     // Already recording. A gap no larger than the repeat delay means this is the same
     // hold continuing; anything longer is a deliberate second press.

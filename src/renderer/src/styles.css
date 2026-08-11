@@ -2936,3 +2936,20 @@ body.route-dictation #root {
   flex: 1; overflow: hidden; font-size: 11.5px; color: var(--text-faint);
   text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* Read-only key list in Settings (macOS dictation modes): the control column shows
+   facts rather than an input, so it stacks and stays visually quieter than a field. */
+.set-static {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.set-static > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
