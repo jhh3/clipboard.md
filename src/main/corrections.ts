@@ -37,6 +37,9 @@ const SUGGESTIONS_MAX = 25
 const pending: Pending[] = []
 const suggestions: DictationSuggestion[] = []
 
+/** The most recent dictation clip, for the "correct last dictation" affordance. */
+let lastDictationItemId: number | undefined
+
 type Notify = (all: DictationSuggestion[], added?: DictationSuggestion) => void
 let notify: Notify = () => {}
 
@@ -49,12 +52,21 @@ function enabled(): boolean {
   return getSettings().dictation.learnCorrections === true
 }
 
+/** The last dictation clip id, so a menu action can reopen it for correction. */
+export function lastDictationId(): number | undefined {
+  return lastDictationItemId
+}
+
 /** Record a just-pasted transcript so a later edit can be matched against it. */
 export function notePastedTranscript(p: {
   text: string
   itemId?: number
   destKey: string | null
 }): void {
+  // Tracked regardless of the toggle: the "correct last dictation" action is useful
+  // even before someone turns learning on (and is how terminal/other-app dictations,
+  // which we can't observe directly, get a correction path at all).
+  if (p.itemId) lastDictationItemId = p.itemId
   if (!enabled() || !p.text.trim()) return
   pending.unshift({ original: p.text, itemId: p.itemId, destKey: p.destKey, at: Date.now() })
   if (pending.length > PENDING_MAX) pending.length = PENDING_MAX
@@ -73,7 +85,7 @@ export function considerSnapshot(edited: string, destKey: string | null): void {
   for (const p of pending) {
     if (!destMatches(p.destKey, destKey)) continue
     const sub = singleSubstitution(p.original, edited)
-    if (sub && tryMake(p.original, edited, sub, p.itemId)) return
+    if (sub && tryMake(p.original, edited, sub, p.itemId, now - p.at)) return
   }
 }
 
@@ -121,29 +133,38 @@ function tryMake(
   original: string,
   edited: string,
   sub: { heard: string; written: string },
-  itemId?: number
+  itemId?: number,
+  latencyMs?: number
 ): boolean {
   const { heard, written } = sub
-  if (!plausibleWritten(written)) return false
+  // Instrumentation: a candidate reached here means the diff found a localized
+  // substitution, so logging which gate kills it (and never the text around it) tells
+  // us — with real usage — whether the thresholds are right, without re-guessing.
+  const drop = (gate: string): false => {
+    console.log(`[corrections] candidate "${heard}"→"${written}" dropped at ${gate}`)
+    return false
+  }
+
+  if (!plausibleWritten(written)) return drop('plausible-form')
   const casingOnly = heard.toLowerCase() === written.toLowerCase()
-  if (!casingOnly && !soundsAlike(heard, written)) return false
+  if (!casingOnly && !soundsAlike(heard, written)) return drop('sound-alike')
 
   // Rule simulation — the decisive guard. The proposed rule must turn the original
   // into exactly the edit and alter nothing else; if it rewrites untouched text it's
   // a false positive by construction.
   const rule: DictRule = { from: heard, to: written }
-  if (applyDictionary(original, [rule]) !== edited) return false
+  if (applyDictionary(original, [rule]) !== edited) return drop('rule-simulation')
 
   // Novelty: don't propose something the built-in vocabulary or an existing user
   // rule already covers. (If a rule for `heard` already fired, the transcript
   // wouldn't contain `heard` at all — this is belt-and-suspenders.)
   const style = getSettings().dictation.style === 'casual' ? 'casual' : 'as-spoken'
   const existing = [...vocabularyRules(style), ...parseDictionary(getSettings().dictation.dictionary)]
-  if (existing.some((r) => r.from.toLowerCase() === heard.toLowerCase())) return false
+  if (existing.some((r) => r.from.toLowerCase() === heard.toLowerCase())) return drop('novelty')
 
   const key = `${heard}=>${written}`.toLowerCase()
-  if ((getSettings().dictation.dismissedSuggestions ?? []).includes(key)) return false
-  if (suggestions.some((s) => s.key === key)) return false
+  if ((getSettings().dictation.dismissedSuggestions ?? []).includes(key)) return drop('dismissed')
+  if (suggestions.some((s) => s.key === key)) return drop('duplicate')
 
   const s: DictationSuggestion = {
     key,
@@ -155,7 +176,8 @@ function tryMake(
   }
   suggestions.unshift(s)
   if (suggestions.length > SUGGESTIONS_MAX) suggestions.length = SUGGESTIONS_MAX
-  console.log(`[corrections] suggest "${heard}" => "${written}" (${s.reason})`)
+  const lat = latencyMs !== undefined ? `, ${Math.round(latencyMs / 1000)}s after paste` : ''
+  console.log(`[corrections] suggest "${heard}" => "${written}" (${s.reason}${lat})`)
   notify(suggestions.slice(), s)
   return true
 }

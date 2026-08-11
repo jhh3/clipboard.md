@@ -1,3 +1,5 @@
+import { doubleMetaphone } from 'double-metaphone'
+
 /**
  * Pure matching logic for "learn from corrections" — no electron, no settings, so it
  * is unit-testable in isolation. See corrections.ts for the stateful pipeline that
@@ -65,22 +67,34 @@ export function plausibleWritten(written: string): boolean {
 }
 
 /**
- * Do two forms plausibly sound the same? A small normalized edit distance OR a
- * matching Soundex code. This separates a transcription fix ("cuber netes" →
- * "kubernetes") from an unrelated rewrite.
+ * Do two forms plausibly sound the same? This is what separates a transcription fix
+ * ("cuber netes" → "kubernetes") from an unrelated rewrite. Three OR-ed tests, each
+ * tight on its own; the caller's rule-simulation is the final backstop:
+ *
+ *  1. edit distance ≤ 1 — a letter or two off is clearly the same word mis-heard.
+ *  2. Double Metaphone — models the digraph/silent-letter errors dictation makes
+ *     (knight/night, cloud/Claude). Far higher precision than Soundex, and it still
+ *     fires on domain jargon that surface-similarity would miss.
+ *  3. Jaro-Winkler ≥ a tight floor — its prefix bonus fits ASR reality (onset heard
+ *     right, tail flubbed). Short tokens get a higher bar, where the bonus is least
+ *     reliable. We keep this OR-ed with phonetics rather than AND-ing them: English
+ *     encoders butcher tech jargon, so a strict phonetic gate would drop exactly the
+ *     jargon corrections that are our highest-value case.
  */
 export function soundsAlike(heard: string, written: string): boolean {
   const h = heard.toLowerCase().replace(/[^a-z0-9]/g, '')
   const w = written.toLowerCase().replace(/[^a-z0-9]/g, '')
   if (!h || !w) return false
-  if (levRatio(h, w) <= 0.5) return true
-  const sh = soundex(h)
-  return sh !== '' && sh === soundex(w)
+  if (levenshtein(h, w) <= 1) return true
+  if (metaphoneMatch(h, w)) return true
+  const floor = Math.min(h.length, w.length) <= 4 ? 0.92 : 0.88
+  return jaroWinkler(h, w) >= floor
 }
 
-function levRatio(a: string, b: string): number {
-  const max = Math.max(a.length, b.length)
-  return max === 0 ? 0 : levenshtein(a, b) / max
+/** True when the two words share any Double Metaphone code (primary or alternate). */
+function metaphoneMatch(a: string, b: string): boolean {
+  const codesB = doubleMetaphone(b)
+  return doubleMetaphone(a).some((code) => code !== '' && codesB.includes(code))
 }
 
 export function levenshtein(a: string, b: string): number {
@@ -101,24 +115,45 @@ export function levenshtein(a: string, b: string): number {
   return prev[n]
 }
 
-const SOUNDEX_CODE: Record<string, string> = {
-  B: '1', F: '1', P: '1', V: '1',
-  C: '2', G: '2', J: '2', K: '2', Q: '2', S: '2', X: '2', Z: '2',
-  D: '3', T: '3',
-  L: '4',
-  M: '5', N: '5',
-  R: '6'
+/** Jaro-Winkler similarity in [0,1]; the prefix bonus rewards a shared onset. */
+export function jaroWinkler(a: string, b: string): number {
+  const j = jaro(a, b)
+  if (j < 0.7) return j
+  let prefix = 0
+  const max = Math.min(4, a.length, b.length)
+  while (prefix < max && a[prefix] === b[prefix]) prefix++
+  return j + prefix * 0.1 * (1 - j)
 }
 
-export function soundex(s: string): string {
-  const a = s.toUpperCase().replace(/[^A-Z]/g, '')
-  if (!a) return ''
-  let out = a[0]
-  let prev = SOUNDEX_CODE[a[0]] ?? ''
-  for (let i = 1; i < a.length && out.length < 4; i++) {
-    const code = SOUNDEX_CODE[a[i]] ?? ''
-    if (code && code !== prev) out += code
-    if (a[i] !== 'H' && a[i] !== 'W') prev = code
+function jaro(a: string, b: string): number {
+  if (a === b) return 1
+  const la = a.length
+  const lb = b.length
+  if (!la || !lb) return 0
+  const range = Math.max(0, Math.floor(Math.max(la, lb) / 2) - 1)
+  const aMatched = new Array<boolean>(la).fill(false)
+  const bMatched = new Array<boolean>(lb).fill(false)
+  let matches = 0
+  for (let i = 0; i < la; i++) {
+    const lo = Math.max(0, i - range)
+    const hi = Math.min(i + range + 1, lb)
+    for (let k = lo; k < hi; k++) {
+      if (bMatched[k] || a[i] !== b[k]) continue
+      aMatched[i] = true
+      bMatched[k] = true
+      matches++
+      break
+    }
   }
-  return (out + '000').slice(0, 4)
+  if (!matches) return 0
+  let transpositions = 0
+  let k = 0
+  for (let i = 0; i < la; i++) {
+    if (!aMatched[i]) continue
+    while (!bMatched[k]) k++
+    if (a[i] !== b[k]) transpositions++
+    k++
+  }
+  transpositions /= 2
+  return (matches / la + matches / lb + (matches - transpositions) / matches) / 3
 }

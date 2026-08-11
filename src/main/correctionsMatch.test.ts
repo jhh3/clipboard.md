@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { singleSubstitution, plausibleWritten, soundsAlike, soundex } from './correctionsMatch'
+import {
+  singleSubstitution,
+  plausibleWritten,
+  soundsAlike,
+  jaroWinkler
+} from './correctionsMatch'
 
 describe('singleSubstitution', () => {
   it('isolates a one-word fix, punctuation stripped', () => {
@@ -36,14 +41,24 @@ describe('singleSubstitution', () => {
 
 describe('soundsAlike', () => {
   it('accepts near-homophones and split-word merges', () => {
-    expect(soundsAlike('cloud', 'Claude')).toBe(true)
-    expect(soundsAlike('cuber netes', 'kubernetes')).toBe(true)
+    expect(soundsAlike('cloud', 'Claude')).toBe(true) // Double Metaphone: both KLT
+    expect(soundsAlike('cuber netes', 'kubernetes')).toBe(true) // 1 edit after normalize
     expect(soundsAlike('github', 'GitHub')).toBe(true)
+    expect(soundsAlike('knight', 'night')).toBe(true) // silent-letter, metaphone catches it
   })
 
   it('rejects unrelated words', () => {
     expect(soundsAlike('banana', 'helicopter')).toBe(false)
     expect(soundsAlike('cat', 'dog')).toBe(false)
+    expect(soundsAlike('kubernetes', 'deployment')).toBe(false)
+  })
+})
+
+describe('jaroWinkler', () => {
+  it('scores identical, similar, and unrelated strings', () => {
+    expect(jaroWinkler('martha', 'martha')).toBe(1)
+    expect(jaroWinkler('martha', 'marhta')).toBeGreaterThan(0.9) // classic transposition
+    expect(jaroWinkler('abc', 'xyz')).toBe(0)
   })
 })
 
@@ -58,13 +73,5 @@ describe('plausibleWritten', () => {
     expect(plausibleWritten('a'.repeat(41))).toBe(false)
     expect(plausibleWritten('user@example.com')).toBe(false) // PII shape, has @
     expect(plausibleWritten('one two three four')).toBe(false) // > 3 tokens
-  })
-})
-
-describe('soundex', () => {
-  it('codes the way the reference algorithm does', () => {
-    expect(soundex('Robert')).toBe('R163')
-    expect(soundex('Rupert')).toBe('R163')
-    expect(soundex('')).toBe('')
   })
 })

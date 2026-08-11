@@ -2,6 +2,17 @@
 
 Auto-suggesting dictation dictionary rules from high-confidence post-paste corrections.
 
+> **Update (post-OSS-research — see DICTATION-LEARNING-RESEARCH.md).** Phase 0 is built,
+> plus these refinements: the sound-alike gate now uses **Double Metaphone + Jaro-Winkler**
+> (not Soundex + a loose edit-distance ratio); a **"Correct last dictation"** menu action
+> (feeding the scratchpad-edit path) is the pragmatic answer to surfaces we can't observe;
+> and lightweight local gate/latency instrumentation now validates the thresholds.
+> The **fast-LLM classifier (Phase 1) is demoted** — the hardened deterministic gates plus
+> one-tap confirmation cover the suggest band; reserve an LLM only for a future *silent
+> auto-add*. **Terminal verdict:** WezTerm/iTerm/Terminal.app expose no accessible text, so
+> inline terminal corrections are not observable without keystroke logging (which we won't
+> do) — the "Correct last dictation" action is the intended path there.
+
 ## 1. Summary
 
 When clipboard.md dictates and pastes a transcript, it knows exactly what text it inserted (the transcription clip stored at `src/main/ipc.ts:349-355`). "Learn from corrections" watches for the user immediately fixing a single mis-transcribed word in that pasted text, isolates the `heard → written` change with a word-level diff, and — only after a stack of deterministic on-device gates pass — asks a cheap LLM whether the edit is a genuine transcription error worth remembering. If so, it proposes appending a rule to the existing `settings.dictation.dictionary` string (`src/shared/types.ts:306`), which `parseDictionary`/`applyDictionary` (`src/main/dictionary.ts:30-74`) already pick up on the next transcript with no new plumbing. The feature is opt-in, biased hard toward precision, and — per the codebase's own accessibility constraints (`src/main/focusedWindow.ts:14-20`) — has full reach only on macOS.
