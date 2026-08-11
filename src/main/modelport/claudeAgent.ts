@@ -1,3 +1,5 @@
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { access } from 'fs/promises'
 import { constants } from 'fs'
 import { homedir } from 'os'
@@ -5,6 +7,8 @@ import { join } from 'path'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
 import { resolveVendoredCli, agentScratchDir } from './nativeCli'
+
+const execFileP = promisify(execFile)
 
 /**
  * Subscription lane #1: Claude Agent SDK, riding the user's existing Claude Code
@@ -15,14 +19,47 @@ import { resolveVendoredCli, agentScratchDir } from './nativeCli'
  * and referencing the file path in the prompt.
  */
 
-export async function claudeAgentAvailable(): Promise<{ ok: boolean; detail: string }> {
+/** Linux, WSL, and macOS with Keychain storage disabled keep the login on disk. */
+async function credentialsFilePresent(): Promise<boolean> {
   try {
     await access(join(homedir(), '.claude', '.credentials.json'), constants.R_OK)
-    return { ok: true, detail: 'Claude subscription (Agent SDK)' }
+    return true
   } catch {
-    if (process.env.ANTHROPIC_API_KEY) return { ok: true, detail: 'Agent SDK via ANTHROPIC_API_KEY' }
-    return { ok: false, detail: 'no Claude login or ANTHROPIC_API_KEY — run `claude` once to log in' }
+    return false
   }
+}
+
+/**
+ * macOS keeps the Claude Code login in the login Keychain, not on disk.
+ *
+ * Checking only for ~/.claude/.credentials.json reported "no Claude login" to every
+ * macOS subscription user — the file simply does not exist there — while the CLI we
+ * spawn reads the Keychain itself and would have worked fine. A false negative here
+ * is not cosmetic: complete() skips providers it believes are unavailable, so the
+ * whole subscription lane went dark.
+ *
+ * Attributes only, never the secret. Adding -w reads the password, which requires ACL
+ * authorization and pops a "clipboard.md wants to use your confidential information"
+ * dialog on every status refresh. Presence is all we need — the CLI refreshes the
+ * token itself, so checking expiry here could only invent new false negatives.
+ */
+async function keychainLoginPresent(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  try {
+    await execFileP('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials'], {
+      timeout: 5000
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function claudeAgentAvailable(): Promise<{ ok: boolean; detail: string }> {
+  if (await credentialsFilePresent()) return { ok: true, detail: 'Claude subscription (Agent SDK)' }
+  if (await keychainLoginPresent()) return { ok: true, detail: 'Claude subscription (Keychain)' }
+  if (process.env.ANTHROPIC_API_KEY) return { ok: true, detail: 'Agent SDK via ANTHROPIC_API_KEY' }
+  return { ok: false, detail: 'no Claude login or ANTHROPIC_API_KEY — run `claude` once to log in' }
 }
 
 export async function claudeAgentComplete(req: PortRequest): Promise<string> {

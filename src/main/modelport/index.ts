@@ -108,10 +108,12 @@ export async function complete(
   if (lane === 'api') order.push(...SUBSCRIPTION_LANE.filter((p) => !order.includes(p)))
   let lastErr: unknown = null
   let crossed = false
+  let attempted = false
   for (const provider of order) {
     try {
       const avail = await isAvailable(provider)
       if (!avail) continue
+      attempted = true
       if (laneOf(provider) !== lane && !crossed) {
         crossed = true
         console.log(`[modelport] ${feature}: no ${lane}-lane provider available; using ${provider}`)
@@ -120,6 +122,27 @@ export async function complete(
     } catch (err) {
       lastErr = err
       console.error(`[modelport] ${provider} failed for ${feature}:`, err)
+    }
+  }
+  // Nothing was even tried, which means DETECTION said no — not a provider.
+  //
+  // Detection is a heuristic over credential files, keychains and environment
+  // variables, and it will be wrong sooner or later. It already was: macOS keeps the
+  // Claude login in the Keychain rather than ~/.claude/.credentials.json, so every
+  // macOS subscription user was told "no Claude login" while the CLI we spawn reads
+  // the Keychain itself and would have worked. A gap like that should cost a status
+  // dot, not the whole feature.
+  //
+  // So try the configured provider anyway and let the real call be the judge: it
+  // either works, or it fails with an error that says what is actually wrong instead
+  // of our guess about it.
+  if (!attempted) {
+    try {
+      console.log(`[modelport] ${feature}: nothing detected as available; trying ${primary} anyway`)
+      return await BACKENDS[primary](req)
+    } catch (err) {
+      lastErr = err
+      console.error(`[modelport] ${primary} failed for ${feature}:`, err)
     }
   }
   throw new Error(
