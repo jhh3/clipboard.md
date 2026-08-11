@@ -274,9 +274,28 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
   const path = helperPath()
   if (!path) return false
   try {
-    // --fn: hold the Fn/🌐 key. A single held key beats a chord for push-to-talk,
-    // and it frees ⌘⇧D to stay as the toggle fallback.
-    const child = spawn(path, ['ptt', '--fn'], { stdio: ['pipe', 'pipe', 'ignore'] })
+    // Every dictation mode is held, not toggled — the same behaviour Linux gets from
+    // evdev. The helper watches each chord with one listen-only event tap and reports
+    // "<mode> down" / "<mode> up"; globalShortcut cannot do this because it only ever
+    // reports key-down, which is why these two modes used to be toggles.
+    //
+    // ⌘⇧D is watched as well as Fn, so it holds rather than toggles. Every dictation
+    // key on macOS then behaves identically to Linux, and no code has to special-case
+    // "this one has a release and that one doesn't". Carbon virtual keycodes: D=2, A=0.
+    const child = spawn(
+      path,
+      [
+        'ptt',
+        '--fn',
+        '--watch',
+        'paste:2:cmd+shift',
+        '--watch',
+        'enhance:2:cmd+alt',
+        '--watch',
+        'agent:0:cmd+alt'
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    )
     macChild = child
     child.stdout.setEncoding('utf8')
     let buffered = ''
@@ -284,11 +303,18 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
       buffered += chunk
       const lines = buffered.split('\n')
       buffered = lines.pop() ?? ''
-      for (const line of lines) {
-        // macOS watches the Fn key only, which is the plain dictation mode. The
-        // AI-polish and agent keys are Linux-only for now (see hotkeys.ts).
-        if (line.trim() === 'down') handlers.onPress('paste')
-        else if (line.trim() === 'up') handlers.onRelease('paste')
+      for (const raw of lines) {
+        const line = raw.trim()
+        if (!line) continue
+        // "<mode> down" / "<mode> up". A bare "down"/"up" means an older helper
+        // binary that only knew the Fn key, so treat it as the plain mode rather
+        // than dropping the event and silently losing push-to-talk after an upgrade.
+        const [a, b] = line.split(/\s+/)
+        const mode = (b ? a : 'paste') as PttMode
+        const edge = b ?? a
+        if (mode !== 'paste' && mode !== 'enhance' && mode !== 'agent') continue
+        if (edge === 'down') handlers.onPress(mode)
+        else if (edge === 'up') handlers.onRelease(mode)
       }
     })
     child.on('error', () => {

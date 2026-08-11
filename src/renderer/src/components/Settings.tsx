@@ -1156,7 +1156,7 @@ export default function Settings() {
                 label="Global hotkeys"
                 sub={
                   IS_MAC
-                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation: hold 🌐 (Fn) to talk, or ⌘⇧D to toggle · ⌘⌥D AI cleanup · ⌘⌥A to agent. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
+                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation, hold to talk: 🌐 (Fn) or ⌘⇧D plain · ⌘⌥D AI cleanup · ⌘⌥A to agent. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
                     : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
                 }
               >
@@ -1182,17 +1182,17 @@ export default function Settings() {
               {IS_MAC && (
                 <Row
                   label="Dictation modes"
-                  sub="All three record identically and differ only in what happens to the transcript. Hold 🌐 (Fn) for the plain mode; the other two are toggles — press to start, press again to stop — because macOS global shortcuts only report key-down."
+                  sub="All three record identically and differ only in what happens to the transcript. Hold to talk, release to finish."
                 >
                   <div className="set-static">
                     <div>
                       <kbd className="hotkey-kbd">🌐 / ⌘⇧D</kbd> plain — offline, pasted
                     </div>
                     <div>
-                      <kbd className="hotkey-kbd">⌘⌥D</kbd> AI cleanup — press, then press again
+                      <kbd className="hotkey-kbd">⌘⌥D</kbd> AI cleanup
                     </div>
                     <div>
-                      <kbd className="hotkey-kbd">⌘⌥A</kbd> to agent — press, then press again
+                      <kbd className="hotkey-kbd">⌘⌥A</kbd> to primary agent
                     </div>
                   </div>
                 </Row>

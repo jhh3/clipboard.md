@@ -457,29 +457,16 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       return
     }
 
-    // Linux only. evdev reports a real release there, so repeats from the held key
-    // are noise and a second trigger must not stop the recording.
-    if (process.platform === 'linux' && pttActive) return
-
-    // macOS stops here, and never reaches the key-repeat heuristic below.
+    // A real release source owns the ending on BOTH platforms now: evdev on Linux,
+    // the helper's event tap on macOS, which watches every dictation chord rather
+    // than only the Fn key. Repeats from a held key are noise, and a second trigger
+    // must not stop a recording that already has a release coming.
     //
-    // That heuristic reads GNOME's repeat delay and interval; off Linux
-    // keyRepeatTiming() returns a FALLBACK that still says enabled:true, so a second
-    // press within delay+slack (750ms) was classified as a key-repeat — "still held" —
-    // rather than as the stop. Holding ⌘⌥D therefore recorded forever, and with no
-    // transcript there was nothing to paste, which is why both symptoms appeared
-    // together.
-    //
-    // globalShortcut only ever reports key-down, so the next deliberate press IS the
-    // stop. Presses inside the restart guard are auto-repeat from a held key, not
-    // intent, and are ignored — without that a repeating accelerator would flap
-    // between start and stop.
-    if (process.platform !== 'linux') {
-      if (sinceLast < RESTART_GUARD_MS) return
-      clearHoldTimer()
-      endDictation()
-      return
-    }
+    // This used to be Linux-only, which forced macOS through the key-repeat
+    // heuristic below — and that heuristic reads GNOME settings, so off Linux it fell
+    // back to enabled:true and misread a second press as "still held". The AI modes
+    // recorded forever, and with no transcript there was nothing to paste.
+    if (pttActive) return
 
     // Already recording. A gap no larger than the repeat delay means this is the same
     // hold continuing; anything longer is a deliberate second press.

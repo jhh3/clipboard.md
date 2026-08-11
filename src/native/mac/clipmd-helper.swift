@@ -462,33 +462,43 @@ func cmdWatch(intervalMs: Int) {
 ///
 /// Releasing the modifier counts as a release too. Users let go of ⌘ and the letter
 /// together, and whichever the OS reports first should end the hold.
-func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags, fnKey: Bool = false) {
+/// One key (or chord) to watch, and the mode name reported when it is held.
+struct PttWatch {
+  let label: String
+  let keyCode: CGKeyCode
+  let modifiers: CGEventFlags
+  let fnKey: Bool
+}
+
+func cmdPtt(watches: [PttWatch]) {
   guard isTrusted(prompt: false) else {
     fail("accessibility permission not granted", code: 3)
   }
 
-  final class State {
+  /// One independent hold per watched key. Every dictation mode gets real
+  /// press/release here, the same as Linux gets from evdev — previously only the Fn
+  /// key was watched, so the other modes had to be toggles bound to globalShortcut,
+  /// which reports key-down only.
+  final class Hold {
     var down = false
-    let keyCode: CGKeyCode
-    let modifiers: CGEventFlags
-    let fnKey: Bool
-    init(keyCode: CGKeyCode, modifiers: CGEventFlags, fnKey: Bool) {
-      self.keyCode = keyCode
-      self.modifiers = modifiers
-      self.fnKey = fnKey
-    }
+    let watch: PttWatch
+    init(_ watch: PttWatch) { self.watch = watch }
     func press() {
       guard !down else { return }  // key repeat, not a second press
       down = true
-      output("down\n")
+      output("\(watch.label) down\n")
     }
     func release() {
       guard down else { return }
       down = false
-      output("up\n")
+      output("\(watch.label) up\n")
     }
   }
-  let state = State(keyCode: keyCode, modifiers: modifiers, fnKey: fnKey)
+  final class State {
+    let holds: [Hold]
+    init(_ watches: [PttWatch]) { holds = watches.map(Hold.init) }
+  }
+  let state = State(watches)
 
   let callback: CGEventTapCallBack = { _, type, event, refcon in
     guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -498,18 +508,26 @@ func cmdPtt(keyCode: CGKeyCode, modifiers: CGEventFlags, fnKey: Bool = false) {
 
     switch type {
     case .keyDown:
-      if !state.fnKey, code == state.keyCode, flags.contains(state.modifiers) { state.press() }
+      for h in state.holds where !h.watch.fnKey {
+        if code == h.watch.keyCode, flags.contains(h.watch.modifiers) { h.press() }
+      }
     case .keyUp:
-      if !state.fnKey, code == state.keyCode { state.release() }
+      for h in state.holds where !h.watch.fnKey {
+        if code == h.watch.keyCode { h.release() }
+      }
     case .flagsChanged:
-      if state.fnKey {
-        // The Fn/🌐 key is a modifier: it never sends keyDown/keyUp, only
-        // flagsChanged with keycode 63 and .maskSecondaryFn set while held.
-        if code == 63 {
-          if flags.contains(.maskSecondaryFn) { state.press() } else { state.release() }
+      for h in state.holds {
+        if h.watch.fnKey {
+          // The Fn/🌐 key is a modifier: it never sends keyDown/keyUp, only
+          // flagsChanged with keycode 63 and .maskSecondaryFn set while held.
+          if code == 63 {
+            if flags.contains(.maskSecondaryFn) { h.press() } else { h.release() }
+          }
+        } else if !flags.contains(h.watch.modifiers) {
+          // Letting go of ⌘ or ⌥ ends the hold too — people release the modifier and
+          // the letter together and the OS may report either first.
+          h.release()
         }
-      } else if !flags.contains(state.modifiers) {
-        state.release()
       }
     case .tapDisabledByTimeout, .tapDisabledByUserInput:
       // The system disables a slow tap; ours does nothing but compare integers, so
@@ -596,16 +614,43 @@ case "watch":
   let index = rest.firstIndex(of: "--interval-ms").map { $0 + 1 }
   cmdWatch(intervalMs: index.flatMap { $0 < rest.count ? Int(rest[$0]) : nil } ?? 300)
 case "ptt":
-  if rest.contains("--fn") {
-    // Hold the Fn/🌐 key to talk — a single physical key beats a chord for
-    // something you hold while speaking.
-    cmdPtt(keyCode: 63, modifiers: [], fnKey: true)
-  } else {
-    // Chord mode (legacy default ⌘⇧D; 0x02 is the 'D' key).
-    let keyIndex = rest.firstIndex(of: "--keycode").map { $0 + 1 }
-    let keyCode = CGKeyCode(keyIndex.flatMap { $0 < rest.count ? UInt16(rest[$0]) : nil } ?? 0x02)
-    cmdPtt(keyCode: keyCode, modifiers: [.maskCommand, .maskShift])
+  // --watch label:keycode:mods  (mods: cmd, alt, shift, ctrl, fn — '+'-separated,
+  // or 'none'). Repeatable, so every dictation mode can be held rather than toggled.
+  // --fn stays as shorthand for the plain mode on the Fn key.
+  var watches: [PttWatch] = []
+  var i = 0
+  while i < rest.count {
+    if rest[i] == "--watch", i + 1 < rest.count {
+      let parts = rest[i + 1].split(separator: ":", omittingEmptySubsequences: false)
+      if parts.count == 3, let key = UInt16(parts[1]) {
+        var mods: CGEventFlags = []
+        var fn = false
+        for m in parts[2].split(separator: "+") {
+          switch m {
+          case "cmd": mods.insert(.maskCommand)
+          case "alt": mods.insert(.maskAlternate)
+          case "shift": mods.insert(.maskShift)
+          case "ctrl": mods.insert(.maskControl)
+          case "fn": fn = true
+          default: break
+          }
+        }
+        watches.append(
+          PttWatch(label: String(parts[0]), keyCode: CGKeyCode(key), modifiers: mods, fnKey: fn))
+      }
+      i += 2
+      continue
+    }
+    i += 1
   }
+  if rest.contains("--fn") {
+    watches.append(PttWatch(label: "paste", keyCode: 63, modifiers: [], fnKey: true))
+  }
+  if watches.isEmpty {
+    // Legacy default: ⌘⇧D, 0x02 is the 'D' key.
+    watches = [PttWatch(label: "paste", keyCode: 0x02, modifiers: [.maskCommand, .maskShift], fnKey: false)]
+  }
+  cmdPtt(watches: watches)
 case "trust":
   cmdTrust(prompt: rest.contains("--prompt"))
 case "decode-audio":
