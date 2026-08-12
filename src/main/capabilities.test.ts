@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
 import { capabilitiesFor, type Capability, type CapabilityReport } from './capabilities'
 
 /**
@@ -44,6 +45,15 @@ describe('capabilitiesFor', () => {
       autostart: 'supported',
       pinAcrossWorkspaces: 'supported'
     })
+  })
+
+  it('matches the contract CI holds the shipped Windows build to', () => {
+    // The same file .github/workflows/windows.yml diffs the installed exe's --doctor
+    // output against. Checking it from here too means a Windows capability cannot be
+    // changed on a Linux machine without the contract being updated in the same
+    // commit — you find out in `pnpm test`, not twenty minutes into CI.
+    const expected = JSON.parse(readFileSync('.github/expected-capabilities.win32.json', 'utf8'))
+    expect(states(capabilitiesFor('win32', 'x64'))).toEqual(expected)
   })
 
   it('does not depend on arch except for local transcription', () => {
