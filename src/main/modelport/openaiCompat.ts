@@ -13,6 +13,10 @@ interface CompatConfig {
   baseUrl: string
   keyEnv: string
   model: string
+  /** OpenAI renamed this; Fireworks still wants the original. */
+  maxTokensParam?: 'max_completion_tokens' | 'max_tokens'
+  /** Extra body fields this provider needs. */
+  extra?: Record<string, unknown>
 }
 
 /**
@@ -34,7 +38,16 @@ const CONFIGS: Record<CompatProvider, CompatConfig> = {
   fireworks: {
     baseUrl: 'https://api.fireworks.ai/inference/v1',
     keyEnv: 'FIREWORKS_API_KEY',
-    model: 'accounts/fireworks/models/deepseek-v4-flash-0731'
+    model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+    // Fireworks never adopted the max_completion_tokens rename; sending only the new
+    // name leaves the request unbounded from its point of view.
+    maxTokensParam: 'max_tokens',
+    // DeepSeek v4 is a REASONING model, and reasoning is pure latency for a cleanup
+    // pass. Measured on the dictation prompt: 2772ms with reasoning on and an empty
+    // `content` whenever the token budget ran out first, against 876ms and a correct
+    // answer with it off — which also beats gpt-4.1-mini's 1285ms. Without this the
+    // provider is both slower than what it replaces and prone to returning nothing.
+    extra: { reasoning_effort: 'none' }
   }
 }
 
@@ -75,7 +88,8 @@ export async function openaiCompatComplete(
       ...(req.system ? [{ role: 'system', content: req.system }] : []),
       { role: 'user', content: userContent }
     ],
-    max_completion_tokens: req.maxTokens ?? 2048
+    [cfg.maxTokensParam ?? 'max_completion_tokens']: req.maxTokens ?? 2048,
+    ...(cfg.extra ?? {})
   }
   if (req.json) body.response_format = { type: 'json_object' }
 
