@@ -767,7 +767,12 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       // re-armed here, and the GNOME keybinding is rewritten by setupHotkeys (that
       // binding is derived from the same setting — see hotkeys.ts). Linux only;
       // macOS dictation is the Fn key via the helper and ignores this entirely.
-      if (LINUX && chordsOf(s) !== lastChords) {
+      // `!== 'darwin'`, not `=== 'linux'`. On Windows the chord edit was persisted
+      // and then nothing re-registered it, so Settings accepted a new dictation key
+      // that never fired — and the old one kept working, which makes it look like
+      // the edit was ignored rather than half-applied. macOS is excluded because
+      // dictation there is the Fn key via the helper and ignores the setting.
+      if (!MACOS && chordsOf(s) !== lastChords) {
         lastChords = chordsOf(s)
         pttActive = startPushToTalk(pttHandlers)
         void setupHotkeys(actions)

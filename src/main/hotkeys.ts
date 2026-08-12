@@ -3,8 +3,14 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 import { getSettings } from './settings'
-import { parseChord, parseChordOrDefault, toGnomeBinding } from '@shared/chord'
-import { MACOS, LINUX } from './platform'
+import {
+  effectiveDictateChord,
+  parseChord,
+  parseChordOrDefault,
+  toAccelerator,
+  toGnomeBinding
+} from '@shared/chord'
+import { MACOS, LINUX, WIN32 } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -68,16 +74,102 @@ export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
     }
     return
   }
+  if (WIN32) {
+    setupWindowsHotkeys(actions)
+    return
+  }
   if (!LINUX) {
-    // Explicit, because the alternative is what used to happen: Windows fell through
-    // to ensureGnomeKeybindings(), which shells out to `gsettings`, gets ENOENT, and
-    // logs "failed to register GNOME keybindings" — naming a desktop environment
-    // that is not installed and cannot be. A hotkey backend lands in a later step;
-    // until then the honest answer is that there isn't one.
-    console.log('[hotkeys] no hotkey backend on this platform yet; use the tray')
+    // Explicit, because the alternative is what used to happen: an unknown platform
+    // fell through to ensureGnomeKeybindings(), which shells out to `gsettings`,
+    // gets ENOENT, and logs "failed to register GNOME keybindings" — naming a
+    // desktop environment that is not installed and cannot be.
+    console.log('[hotkeys] no hotkey backend on this platform; use the tray')
     return
   }
   await ensureGnomeKeybindings()
+}
+
+/**
+ * The accelerators Windows registers, and why they are not the Linux ones.
+ *
+ * Ctrl+Shift, never Ctrl+Alt. On most non-US layouts Ctrl+Alt IS AltGr, so
+ * registering Ctrl+Alt+V system-wide silently destroys the user's ability to type
+ * `@`, `€` or `ł` EVERYWHERE on the machine for as long as this app runs. That is
+ * the only change in this port capable of breaking something outside the app, and it
+ * would present as "my keyboard is broken", with nothing pointing here.
+ *
+ * `rewrite` is absent deliberately. Windows cannot read the current selection (see
+ * capabilities.ts), so registering a global Ctrl+Shift+R would take a shortcut away
+ * from every other app in exchange for a key that can only ever apologise.
+ */
+export function windowsShortcuts(settings: {
+  dictateChord?: string
+  dictateEnhanceChord?: string
+  dictateAgentChord?: string
+}): Array<[string, keyof HotkeyActions]> {
+  const out: Array<[string, keyof HotkeyActions]> = [
+    ['Control+Shift+V', 'toggle'],
+    ['Control+Shift+S', 'screenshot'],
+    ['Control+Shift+E', 'scratchpad'],
+    ['Control+Shift+N', 'notes'],
+    ['Control+Shift+A', 'agents']
+  ]
+  // The dictation keys come from settings, exactly as they do on Linux, so the one
+  // chord the user can edit stays the one that fires.
+  const dictation: Array<[string | undefined, keyof HotkeyActions]> = [
+    [effectiveDictateChord(settings.dictateChord, 'win32'), 'dictate'],
+    [settings.dictateEnhanceChord, 'dictateEnhance'],
+    [settings.dictateAgentChord, 'dictateAgent']
+  ]
+  for (const [raw, action] of dictation) {
+    const chord = parseChord(raw?.trim() ?? '')
+    if (!chord) continue // unbound by default; an empty chord registers nothing
+    const accel = toAccelerator(chord)
+    if (!accel) {
+      console.error(`[hotkeys] "${raw}" cannot be expressed as an Electron accelerator; ${action} not bound`)
+      continue
+    }
+    out.push([accel, action])
+  }
+  return out
+}
+
+/** Failures the UI can show. A packaged Windows app has no console to print to. */
+let hotkeyFailures: string[] = []
+
+export function hotkeyRegistrationFailures(): string[] {
+  return hotkeyFailures
+}
+
+function setupWindowsHotkeys(actions: HotkeyActions): void {
+  // Re-registering without this leaves the old accelerators bound to the old
+  // closures, so editing a chord in Settings adds a second live hotkey.
+  globalShortcut.unregisterAll()
+  hotkeyFailures = []
+  const wanted = windowsShortcuts(getSettings())
+  for (const [accelerator, action] of wanted) {
+    let ok = false
+    try {
+      ok = globalShortcut.register(accelerator, actions[action])
+    } catch (err) {
+      // register() THROWS on an accelerator it cannot parse and RETURNS FALSE on one
+      // that is taken. Both must be reported, and only the second is the user's to fix.
+      console.error(`[hotkeys] ${accelerator} is not a valid accelerator:`, err)
+    }
+    if (!ok) hotkeyFailures.push(accelerator)
+  }
+  if (hotkeyFailures.length > 0) {
+    // RegisterHotKey is first-come-first-served on Windows, so a conflict can appear
+    // on one boot and not the next depending on what started first. Surfaced in
+    // Settings as well as logged, because a packaged app here has no console at all
+    // and "the shortcut just stopped working" is otherwise unexplainable.
+    console.error(
+      `[hotkeys] could not register ${hotkeyFailures.join(', ')} — another running app already ` +
+        'owns them. Windows grants a hotkey to whoever asks first; close the other app or ' +
+        'change the shortcut.'
+    )
+  }
+  console.log(`[hotkeys] registered ${wanted.length - hotkeyFailures.length}/${wanted.length} global shortcuts`)
 }
 
 interface Binding {

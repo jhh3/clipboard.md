@@ -103,7 +103,9 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
         // below is a feature we could half-implement and choose not to, because a
         // half-implemented one of these is indistinguishable from a broken hand.
         pasteInjection: no('Not implemented yet. The clip is put on the clipboard and you press Ctrl+V.'),
-        holdToTalk: no('Not implemented yet — Windows has no hotkey backend at all in this build.'),
+        holdToTalk: meh(
+          'Press to start, press again to stop. Windows global hotkeys only ever report key-down, and reading a real key-up needs a machine-wide keyboard hook — which this app will not install to save you one keypress.'
+        ),
         primarySelection: no(
           'Windows has no “current selection” to read, so the rewrite hotkey refuses rather than rewriting whatever you last copied.'
         ),
@@ -116,7 +118,7 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
         concealedFormatHints: ok(
           'The ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory / CanUploadToCloudClipboard markers are honoured.'
         ),
-        autostart: no('Not implemented yet — the Linux .desktop writer must not run here.'),
+        autostart: ok('Registry Run entry via app.setLoginItemSettings. Task Manager ▸ Startup can still switch it off, and the log says so when it has.'),
         pinAcrossWorkspaces: no(
           'Electron cannot pin a window across Windows virtual desktops — the palette appears on the desktop it was last shown on.'
         )

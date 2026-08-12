@@ -1,11 +1,11 @@
 {
   "pasteInjection": "unsupported",
-  "holdToTalk": "unsupported",
+  "holdToTalk": "degraded",
   "primarySelection": "unsupported",
   "screenshotRegion": "unsupported",
   "localTranscribe": "unsupported",
   "sourceApp": "supported",
   "concealedFormatHints": "supported",
-  "autostart": "unsupported",
+  "autostart": "supported",
   "pinAcrossWorkspaces": "unsupported"
 }
