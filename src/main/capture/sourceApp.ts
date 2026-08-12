@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { macFrontmost } from '../mac/helper'
+import { MACOS, LINUX } from '../platform'
 
 /**
  * Best-effort "which app did this copy come from".
@@ -50,7 +51,7 @@ export interface SourceApp {
  */
 export async function getSourceApp(): Promise<SourceApp | undefined> {
   try {
-    if (process.platform === 'darwin') {
+    if (MACOS) {
       const front = await macFrontmost()
       if (!front) return undefined
       // Prefer the localized name for display, but never return an empty string — a
@@ -58,7 +59,7 @@ export async function getSourceApp(): Promise<SourceApp | undefined> {
       const name = front.name || front.bundleId
       return name ? { name, id: front.bundleId || undefined } : undefined
     }
-    if (process.platform === 'linux') {
+    if (LINUX) {
       const name = await linuxActiveApp()
       return name ? { name } : undefined
     }

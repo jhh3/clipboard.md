@@ -1,6 +1,7 @@
 import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
+import { MACOS, LINUX } from './platform'
 
 /**
  * Under native Wayland the compositor owns window placement: setBounds x/y is a
@@ -8,12 +9,11 @@ import { getSettings, updateSettings } from './settings'
  * out. Mutter places and lets you drag these windows like any other app's.
  */
 const WAYLAND =
-  process.platform === 'linux' &&
+  LINUX &&
   process.env.XDG_SESSION_TYPE === 'wayland' &&
   // Only true when we are a NATIVE Wayland client. Under Xwayland (which we force
   // on GNOME/KDE so we can place the HUD) positioning works normally.
   app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
-const MACOS = process.platform === 'darwin'
 
 /**
  * The display a summoned window should appear on.
@@ -47,7 +47,7 @@ let lastPaletteShow = 0
 // corners for us. Carrying the margin there produced two shadows: the CSS one, plus
 // AppKit's around the full invisible frame, which read as a boxy halo floating well
 // off the palette. Window is sized to the content and the native shadow is the only one.
-const MAC_PALETTE = process.platform === 'darwin'
+const MAC_PALETTE = MACOS
 const PALETTE_W = MAC_PALETTE ? 880 : 960
 const PALETTE_H = MAC_PALETTE ? 560 : 640
 

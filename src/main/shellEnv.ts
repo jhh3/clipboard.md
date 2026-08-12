@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { MACOS, WIN32 } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -75,11 +76,11 @@ function absorb(body: string): number {
 }
 
 export async function importShellEnv(): Promise<void> {
-  if (process.platform === 'win32') return
+  if (WIN32) return
   // Already have everything? Don't spawn a shell for nothing.
   if (WANTED.every((k) => process.env[k])) return
 
-  const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash')
+  const shell = process.env.SHELL || (MACOS ? '/bin/zsh' : '/bin/bash')
   // -ilc first: an interactive login shell runs ~/.zshrc / ~/.bashrc, where most people
   // export keys. -lc is the fallback: a login shell runs ~/.zprofile / ~/.zshenv (zsh
   // does NOT read .zshrc non-interactively), catching keys set there and covering the

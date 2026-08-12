@@ -11,6 +11,7 @@ import { upsertClip, enqueueEnrichment } from '../store/items'
 import { runFilters } from './filters'
 import { getSettings } from '../settings'
 import { considerSnapshot } from '../corrections'
+import { MACOS, LINUX } from '../platform'
 
 export interface CaptureEvents {
   onItem: (id: number, created: boolean) => void
@@ -62,14 +63,14 @@ export class CaptureService {
     if (this.timer || this.watcher) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     void this.tick(true)
-    if (process.platform === 'linux') {
+    if (LINUX) {
       // Every failure path below must fall back to polling: silently capturing
       // nothing for a whole session is the worst possible outcome for this app.
       this.startXFixesPush().then((ok) => {
         if (ok) console.log('[capture] event-driven (XFixes); polling disabled')
         else this.startPolling('XFixes unavailable')
       })
-    } else if (process.platform === 'darwin') {
+    } else if (MACOS) {
       this.startPasteboardWatcher().then((ok) => {
         if (ok) console.log('[capture] event-driven (pasteboard watcher); polling disabled')
         else this.startPolling('pasteboard watcher unavailable')

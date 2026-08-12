@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, mkdirSync } from 'fs'
 import { createRequire } from 'module'
 import { dirname, join, sep } from 'path'
+import { MACOS, WIN32 } from '../platform'
 
 /**
  * Resolve the CLI binaries the subscription-lane SDKs spawn.
@@ -61,7 +62,7 @@ export function unpackedPath(p: string): string {
  */
 export function resolveVendoredCli(packagePrefix: string, binary: string): string | undefined {
   const platform =
-    process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux'
+    MACOS ? 'darwin' : WIN32 ? 'win32' : 'linux'
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   const candidates = [`${packagePrefix}-${platform}-${arch}`, `${packagePrefix}-${platform}-${arch}-musl`]
   for (const pkg of candidates) {

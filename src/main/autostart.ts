@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { MACOS } from './platform'
 
 /**
  * Keep the app resident. The global hotkeys are GNOME custom keybindings that run
@@ -16,7 +17,7 @@ function autostartFile(): string {
 }
 
 export function isAutostartEnabled(): boolean {
-  if (process.platform === 'darwin') return app.getLoginItemSettings().openAtLogin
+  if (MACOS) return app.getLoginItemSettings().openAtLogin
   return existsSync(autostartFile())
 }
 
@@ -35,7 +36,7 @@ export function isAutostartEnabled(): boolean {
  * existing on disk.
  */
 export function autostartIsStale(): boolean {
-  if (process.platform === 'darwin') return false
+  if (MACOS) return false
   const file = autostartFile()
   if (!existsSync(file)) return false
   try {
@@ -63,7 +64,7 @@ function launchCommand(): string {
 }
 
 export function setAutostart(enabled: boolean): void {
-  if (process.platform === 'darwin') {
+  if (MACOS) {
     // openAsHidden is the macOS way to say "start without showing a window"; the
     // --background argv flag is still passed because routeArgsOnLaunch reads it, and
     // openAsHidden alone is advisory (and ignored outside a packaged .app).

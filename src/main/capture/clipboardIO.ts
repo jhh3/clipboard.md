@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process'
 import { clipboard, nativeImage } from 'electron'
+import { LINUX } from '../platform'
 
 /**
  * Off-main-thread clipboard reads (Linux).
@@ -58,7 +59,7 @@ async function readLinux(): Promise<ClipboardSnapshot> {
 
 /** Read the clipboard without blocking the UI thread. */
 export async function readClipboard(): Promise<ClipboardSnapshot> {
-  if (process.platform === 'linux') return readLinux()
+  if (LINUX) return readLinux()
   const formats = clipboard.availableFormats()
   if (formats.some((f) => f.startsWith('image/'))) {
     const img = clipboard.readImage()
@@ -69,7 +70,7 @@ export async function readClipboard(): Promise<ClipboardSnapshot> {
 
 /** HTML flavor, fetched only when a text clip reports one (also off-thread on Linux). */
 export async function readHtml(): Promise<string | undefined> {
-  if (process.platform !== 'linux') return clipboard.readHTML() || undefined
+  if (!LINUX) return clipboard.readHTML() || undefined
   const html = (await xclip(['-selection', 'clipboard', '-o', '-t', 'text/html'], 'utf8')) as
     | string
     | null
@@ -88,7 +89,7 @@ export async function readHtml(): Promise<string | undefined> {
  * nothing to do but serve the bytes.
  */
 export function writeClipboardText(text: string): Promise<void> {
-  if (process.platform !== 'linux') {
+  if (!LINUX) {
     clipboard.writeText(text)
     return Promise.resolve()
   }
@@ -96,7 +97,7 @@ export function writeClipboardText(text: string): Promise<void> {
 }
 
 export function writeClipboardImage(png: Buffer): Promise<void> {
-  if (process.platform !== 'linux') {
+  if (!LINUX) {
     clipboard.writeImage(nativeImage.createFromBuffer(png))
     return Promise.resolve()
   }
@@ -104,7 +105,7 @@ export function writeClipboardImage(png: Buffer): Promise<void> {
 }
 
 export function writeClipboardHtml(html: string, text: string): Promise<void> {
-  if (process.platform !== 'linux') {
+  if (!LINUX) {
     clipboard.write({ text, html })
     return Promise.resolve()
   }
@@ -145,7 +146,7 @@ function spawnOwner(args: string[], data: Buffer): Promise<void> {
  * clips appeared to work while longer ones silently failed.
  */
 export async function waitForClipboard(expected: string, timeoutMs = 800): Promise<boolean> {
-  if (process.platform !== 'linux') return true
+  if (!LINUX) return true
   const deadline = Date.now() + timeoutMs
   const head = expected.slice(0, 64)
   while (Date.now() < deadline) {
@@ -174,7 +175,7 @@ export function markOwnedByUs(ms = 1500): void {
 
 /** PRIMARY selection (what is highlighted right now) — used by the rewrite hotkey. */
 export async function readPrimarySelection(): Promise<string> {
-  if (process.platform !== 'linux') return clipboard.readText()
+  if (!LINUX) return clipboard.readText()
   const text = (await xclip(['-selection', 'primary', '-o'], 'utf8')) as string | null
   return text ?? ''
 }

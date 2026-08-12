@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
 import { getSettings } from './settings'
 import { formatChord, parseChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from '@shared/chord'
+import { MACOS } from './platform'
 
 /**
  * Real push-to-talk, from evdev key events.
@@ -119,7 +120,7 @@ function keyboardDevices(): KbdDevice[] {
  */
 export function startPushToTalk(handlers: PttHandlers): boolean {
   stopPushToTalk()
-  if (process.platform === 'darwin') return startMacPushToTalk(handlers)
+  if (MACOS) return startMacPushToTalk(handlers)
 
   const s = getSettings()
   // The primary chord always has a value; the other two are opt-in and empty by

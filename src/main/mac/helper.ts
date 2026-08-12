@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { execFile } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import { MACOS } from '../platform'
 
 /**
  * The single door to `clipmd-helper`, the macOS side-car (src/native/mac).
@@ -13,7 +14,7 @@ import { join } from 'path'
  * and every caller degrades the same way when it isn't.
  */
 
-const DARWIN = process.platform === 'darwin'
+const DARWIN = MACOS
 
 /** Exit code the helper uses for "Accessibility permission not granted". */
 const EXIT_UNTRUSTED = 3

@@ -17,10 +17,11 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { openReadOnlyDb } from '../main/store/db'
 import { searchKeyword, getItem, sessionsList } from '../main/store/items'
+import { MACOS } from '../main/platform'
 
 function dataDir(): string {
   // Electron userData for productName "clipboard.md" per platform.
-  if (process.platform === 'darwin')
+  if (MACOS)
     return join(homedir(), 'Library', 'Application Support', 'clipboard.md', 'data')
   return join(homedir(), '.config', 'clipboard.md', 'data')
 }
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
 function systemCopy(text: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const cmd =
-      process.platform === 'darwin'
+      MACOS
         ? ['pbcopy']
         : process.env.WAYLAND_DISPLAY && !process.env.CLIPMD_FORCE_XCLIP
           ? ['wl-copy']

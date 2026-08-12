@@ -10,6 +10,7 @@ import { getSettings } from './settings'
 import { openaiTranscribe } from './modelport/openaiCompat'
 import { macDecodeAudio } from './mac/helper'
 import { audioExtension } from './audioFormat'
+import { MACOS } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -101,7 +102,7 @@ export function saveRecording(audio: Buffer, mime: string): string {
  */
 async function decodeToWav(path: string): Promise<string> {
   const wav = path.replace(/\.[^.]+$/, '.16k.wav')
-  if (process.platform === 'darwin') {
+  if (MACOS) {
     try {
       await macDecodeAudio(path, wav)
       return wav

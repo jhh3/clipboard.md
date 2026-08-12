@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { LINUX } from './platform'
 
 /**
  * Which application is about to receive our injected keystroke.
@@ -112,7 +113,7 @@ export function noteDictationTarget(): void {
   dictationTarget = null
   // xprop exists only under X11/Xwayland. On macOS this spawned a process that could
   // never succeed, once per dictation, purely to throw it away.
-  if (process.platform !== 'linux') return
+  if (!LINUX) return
   void focusedWmClass().then((c) => {
     dictationTarget = c
   })

@@ -3,6 +3,7 @@ import { execFile } from 'child_process'
 import { existsSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import { portalScreenshot } from './portal'
+import { MACOS } from './platform'
 
 /**
  * Interactive region capture, per platform.
@@ -53,6 +54,6 @@ function macScreenshot(): Promise<string | null> {
 }
 
 export async function takeScreenshot(): Promise<string | null> {
-  if (process.platform === 'darwin') return macScreenshot()
+  if (MACOS) return macScreenshot()
   return portalScreenshot()
 }

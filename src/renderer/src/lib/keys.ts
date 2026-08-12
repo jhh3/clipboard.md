@@ -5,6 +5,13 @@
  */
 export const IS_MAC = (window.clipmd?.platform ?? '') === 'darwin'
 
+/**
+ * Windows. Kept as its own flag rather than `!IS_MAC`, because most of the copy in
+ * Settings says "GNOME" — literally, in the shortcut help — and on Windows that is
+ * not merely wrong, it names a mechanism the user cannot go and look at.
+ */
+export const IS_WIN = (window.clipmd?.platform ?? '') === 'win32'
+
 /** Primary modifier glyph: ⌘ on macOS, ⌃ elsewhere. */
 export const MOD = IS_MAC ? '⌘' : '⌃'
 

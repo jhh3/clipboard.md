@@ -9,6 +9,7 @@ import {
   showPalette
 } from './windows'
 import { lastDictationId } from './corrections'
+import { MACOS } from './platform'
 
 
 /**
@@ -59,11 +60,11 @@ const ICON_WHITE_B64 =
  * stays crisp on Retina.
  */
 function trayIcon(): Electron.NativeImage {
-  const b64 = process.platform === 'darwin' ? ICON_BLACK_B64 : ICON_WHITE_B64
+  const b64 = MACOS ? ICON_BLACK_B64 : ICON_WHITE_B64
   const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'), { scaleFactor: 2 })
   // Template mode is what makes macOS invert it for a dark menu bar. It is ignored on
   // Linux, which is exactly why the glyph itself has to be the right colour there.
-  if (process.platform === 'darwin') img.setTemplateImage(true)
+  if (MACOS) img.setTemplateImage(true)
   return img
 }
 
@@ -81,7 +82,7 @@ export function buildTrayMenu(): void {
   // Accelerator labels teach the hotkeys, but only macOS gets ⌘⇧ combos — on
   // Linux the real bindings are GNOME-level ⌃⌥ ones the Menu API can't render.
   const acc = (mac: string): { accelerator?: string } =>
-    process.platform === 'darwin' ? { accelerator: mac } : {}
+    MACOS ? { accelerator: mac } : {}
   // The one reliable correction path for dictations we can't observe (terminals like
   // WezTerm, or any app we didn't paste into via our own field): reopen the last
   // transcript here, fix the word, and the scratchpad-edit path learns the rule.

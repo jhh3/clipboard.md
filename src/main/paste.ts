@@ -14,6 +14,7 @@ import { getSettings } from './settings'
 import { portalPaste } from './portal'
 import { focusedWmClass, getDictationTarget, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
+import { MACOS, LINUX } from './platform'
 
 /**
  * Destination-aware paste (macOS): the palette is a non-activating panel, so the
@@ -67,7 +68,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
  * too tight on a loaded system. macOS hands focus back faster, and the helper adds its
  * own 30ms drain after posting.
  */
-const FOCUS_SETTLE_MS = process.platform === 'darwin' ? 120 : 300
+const FOCUS_SETTLE_MS = MACOS ? 120 : 300
 
 /**
  * Paste tiers (see docs/DESIGN.md §2):
@@ -96,7 +97,7 @@ export class PasteService {
     // setting BEFORE the helper call: with the toggle off (or the helper broken),
     // the hottest path in the app must not pay a helper round-trip.
     const dest =
-      forPaste && process.platform === 'darwin' && getSettings().smartPaste !== false
+      forPaste && MACOS && getSettings().smartPaste !== false
         ? await macFrontmost()
         : null
     const shaped = shapeForDestination(item, plain, dest)
@@ -105,7 +106,7 @@ export class PasteService {
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
       await writeClipboardImage(readFileSync(item.content))
-    } else if (item.html && !shaped.plain && process.platform !== 'linux') {
+    } else if (item.html && !shaped.plain && !LINUX) {
       // Linux cannot publish HTML and plain text at once (see writeClipboardHtml), and
       // routing here also skipped the waitForClipboard guard below — so a rich clip
       // was both unpastable and unverified.
@@ -175,7 +176,7 @@ export class PasteService {
   }
 
   private async deliver(): Promise<PasteOutcome> {
-    if (process.platform === 'darwin') {
+    if (MACOS) {
       // Hide first: macOS returns key focus to the previously active app, and the
       // ⌘V has to arrive *there*, not at our palette.
       this.hideWindow()

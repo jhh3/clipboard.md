@@ -4,6 +4,7 @@ import { promisify } from 'util'
 import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 import { getSettings } from './settings'
 import { parseChord, parseChordOrDefault, toGnomeBinding } from '@shared/chord'
+import { MACOS, LINUX } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -48,7 +49,7 @@ const MAC_SHORTCUTS: Array<[string, keyof HotkeyActions]> = [
 ]
 
 export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
-  if (process.platform === 'darwin') {
+  if (MACOS) {
     // register() returns false when something else already owns the combination —
     // another app, or a system shortcut. Ignoring that return value is how a hotkey
     // ends up "just not working" with nothing anywhere to explain why. macOS has no
@@ -235,7 +236,7 @@ export interface KeyRepeat {
  */
 export async function keyRepeatTiming(): Promise<KeyRepeat> {
   const fallback: KeyRepeat = { delay: 500, interval: 30, enabled: true }
-  if (process.platform !== 'linux') return fallback
+  if (!LINUX) return fallback
   const read = async (key: string, dflt: number): Promise<number> => {
     try {
       const out = await gsettings(['get', 'org.gnome.desktop.peripherals.keyboard', key])

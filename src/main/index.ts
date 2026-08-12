@@ -52,6 +52,7 @@ import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
+import { MACOS, LINUX } from './platform'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
 // Push-to-talk opens one descriptor per real keyboard, and a machine with several
@@ -61,7 +62,7 @@ process.env.UV_THREADPOOL_SIZE ||= '16'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
-if (process.platform === 'linux') {
+if (LINUX) {
   // Backend choice per compositor.
   //
   // Native Wayland refuses to let a client position its own windows, so the
@@ -328,7 +329,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       // reports the real release, so a short press is simply a short recording — and
       // swallowing it is why dictation sometimes never stopped listening: the latch
       // was entered and only a second press could leave it.
-      if (process.platform === 'darwin' && Date.now() - dictateStartedAt < MIN_HOLD_MS) return
+      if (MACOS && Date.now() - dictateStartedAt < MIN_HOLD_MS) return
       endDictation()
     }
   }
@@ -345,7 +346,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    * trust check + re-spawn when it's actually down, so no one can stay stuck un-armed.
    */
   const ensurePttArmed = async (): Promise<void> => {
-    if (process.platform !== 'darwin') return
+    if (!MACOS) return
     if (isPushToTalkActive()) return
     try {
       if (!(await isTrusted())) return
@@ -547,7 +548,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
 
   async function currentSelection(): Promise<string> {
-    if (process.platform !== 'darwin') return readPrimarySelection()
+    if (!MACOS) return readPrimarySelection()
     const { text, untrusted } = await macSelectedText()
     if (untrusted) {
       new Notification({
@@ -610,7 +611,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // No Dock icon and no ⌘-Tab entry: this is a background app summoned by a hotkey,
     // and a Dock bounce on every launch is exactly the "it feels like an app" texture
     // Maccy avoids. Windows that genuinely need activation call app.focus() instead.
-    if (process.platform === 'darwin') app.dock?.hide()
+    if (MACOS) app.dock?.hide()
     openDb(join(app.getPath('userData'), 'data'))
 
     capture = new CaptureService({
@@ -667,7 +668,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       }
     })
     // Hotkeys talk to us over D-Bus so a held key doesn't cold-start Electron.
-    if (process.platform === 'linux') {
+    if (LINUX) {
       await startDbusService((action) => routeArgs([`--${action}`], actions))
     }
     // Real hold-to-talk from key up/down: evdev on Linux, a listen-only event tap via
@@ -736,7 +737,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       // re-armed here, and the GNOME keybinding is rewritten by setupHotkeys (that
       // binding is derived from the same setting — see hotkeys.ts). Linux only;
       // macOS dictation is the Fn key via the helper and ignores this entirely.
-      if (process.platform === 'linux' && chordsOf(s) !== lastChords) {
+      if (LINUX && chordsOf(s) !== lastChords) {
         lastChords = chordsOf(s)
         pttActive = startPushToTalk(pttHandlers)
         void setupHotkeys(actions)
@@ -760,7 +761,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     powerMonitor.on('lock-screen', () => capture.stop())
     powerMonitor.on('unlock-screen', () => capture.start())
 
-    if (process.platform === 'darwin') void ensureAccessibility()
+    if (MACOS) void ensureAccessibility()
 
     // Stay resident so the hotkeys are instant instead of cold-starting Electron.
     // Only from a packaged build: in dev this would register the Electron binary
