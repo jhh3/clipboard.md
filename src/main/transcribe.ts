@@ -1,15 +1,15 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'path'
-import { mkdirSync, writeFileSync, existsSync, createWriteStream, rmSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { pipeline as streamPipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { getSettings } from './settings'
 import { openaiTranscribe } from './modelport/openaiCompat'
 import { macDecodeAudio } from './mac/helper'
 import { audioExtension } from './audioFormat'
+import { extractTarBz2 } from './archive'
 import { MACOS } from './platform'
 import { capabilities } from './capabilities'
 
@@ -57,23 +57,19 @@ export async function ensureLocalModel(): Promise<boolean> {
     try {
       const root = modelRoot()
       mkdirSync(root, { recursive: true })
-      const archive = join(root, 'parakeet.tar.bz2')
       console.log('[transcribe] downloading Parakeet model (~490MB, one time)…')
       const res = await fetch(MODEL_URL)
       if (!res.ok || !res.body) throw new Error(`download HTTP ${res.status}`)
-      await streamPipeline(Readable.fromWeb(res.body as never), createWriteStream(archive))
-      // tar is present on both target platforms and handles bz2 via -j.
-      await execFileP('tar', ['xjf', archive, '-C', root])
+      await extractTarBz2(Readable.fromWeb(res.body as never), root)
       console.log('[transcribe] Parakeet model ready')
       return localModelReady()
     } catch (err) {
       console.error('[transcribe] local model setup failed:', err)
       return false
     } finally {
-      // The archive is 490MB and was never removed on ANY platform — download the
-      // model once and half a gigabyte sits in userData for the life of the install,
-      // for a file that has already been extracted. Removed in `finally` so a failed
-      // extraction does not leave it behind either.
+      // The archive is never written now (see extractTarBz2), but an install that
+      // ran an older build has half a gigabyte of it sitting in userData for a file
+      // that was extracted months ago. Clean it up on the way past.
       rmSync(join(modelRoot(), 'parakeet.tar.bz2'), { force: true })
       downloading = null
     }
