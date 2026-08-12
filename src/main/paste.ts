@@ -13,17 +13,25 @@ import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { focusedWmClass, getDictationTarget, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
+import { restoreForeground, targetExe } from './win/foreground'
+import { sendPaste } from './win/inject'
 import { MACOS, LINUX, WIN32 } from './platform'
 
 /**
- * Destination-aware paste (macOS): the palette is a non-activating panel, so the
- * frontmost app at paste time IS the paste target — we can look at it before
- * touching the clipboard and adapt the payload.
+ * Destination-aware paste: we know what the paste target will be before we touch the
+ * clipboard, so the payload can be adapted to it.
+ *
+ * On macOS the palette is a non-activating panel, so the frontmost app AT PASTE TIME
+ * is the target. On Windows there is no such panel — we take focus — so the target is
+ * the window remembered before we showed ourselves (win/foreground.ts).
  *
  * Two rules, both boring on purpose:
  *  - terminals get plain text (rich-text paste into a terminal is never wanted)
  *  - chat apps get code clips fenced, so they arrive as code blocks
  */
+export type DestinationRole = 'terminal' | 'chat' | null
+
+/** macOS bundle identifiers. */
 const TERMINAL_BUNDLES = new Set([
   'com.apple.Terminal',
   'com.googlecode.iterm2',
@@ -35,20 +43,66 @@ const TERMINAL_BUNDLES = new Set([
 ])
 const CHAT_BUNDLES = new Set(['com.tinyspeck.slackmacgap', 'com.hnc.Discord'])
 
+/**
+ * Windows executable basenames.
+ *
+ * Without this table the Smart-paste setting is visible in Settings on Windows and
+ * changes nothing, which is the same "control that silently does nothing" this port
+ * keeps deleting.
+ *
+ * ApplicationFrameHost.exe is here because a UWP window's foreground process is the
+ * frame host rather than the app — it is a terminal only sometimes, and treating it
+ * as one costs at worst a rich clip pasted as plain text, which is the safe error.
+ */
+const TERMINAL_EXES = new Set([
+  'windowsterminal.exe',
+  'conhost.exe',
+  'openconsole.exe',
+  'cmd.exe',
+  'powershell.exe',
+  'pwsh.exe',
+  'mintty.exe',
+  'putty.exe',
+  'wezterm-gui.exe',
+  'alacritty.exe',
+  'kitty.exe'
+])
+const CHAT_EXES = new Set(['slack.exe', 'discord.exe', 'teams.exe', 'ms-teams.exe'])
+
+/**
+ * What kind of destination this is, from a platform-appropriate identifier.
+ *
+ * Pure and platform-parameterised so the macOS table can be asserted to produce
+ * exactly the results it produced before Windows existed.
+ */
+export function destinationRole(id: string | null, platform: string): DestinationRole {
+  if (!id) return null
+  if (platform === 'win32') {
+    const exe = id.toLowerCase()
+    if (TERMINAL_EXES.has(exe)) return 'terminal'
+    if (CHAT_EXES.has(exe)) return 'chat'
+    return null
+  }
+  if (TERMINAL_BUNDLES.has(id)) return 'terminal'
+  if (CHAT_BUNDLES.has(id)) return 'chat'
+  return null
+}
+
 interface PasteShaping {
   plain: boolean
   /** Replacement text content (e.g. fenced code), when the destination wants one. */
   text?: string
 }
 
-function shapeForDestination(
+export function shapeForDestination(
   item: ClipItem,
   plain: boolean,
-  dest: { bundleId: string } | null
+  role: DestinationRole,
+  smartPaste: boolean
 ): PasteShaping {
-  if (!dest || !getSettings().smartPaste) return { plain }
-  if (TERMINAL_BUNDLES.has(dest.bundleId)) return { plain: true }
-  if (CHAT_BUNDLES.has(dest.bundleId) && item.kind === 'code' && !plain) {
+  if (!role || !smartPaste) return { plain }
+  if (role === 'terminal') return { plain: true }
+  if (role === 'chat' && item.kind === 'code' && !plain) {
     // Already fenced? Leave it alone.
     if (!item.content.trimStart().startsWith('```')) {
       const lang = item.language ?? ''
@@ -59,6 +113,19 @@ function shapeForDestination(
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Tell the user the paste did not happen.
+ *
+ * The window is already hidden by the time we know, so a renderer toast would never
+ * be seen — this is the only channel left. On Windows it only works because
+ * index.ts sets an AppUserModelID at startup: without one, `new Notification()` is
+ * itself a silent no-op, which would make the message that exists specifically to
+ * explain a silent failure fail silently.
+ */
+function notifyFallback(body: string): void {
+  new Notification({ title: 'Copied', body, silent: true }).show()
+}
 
 /**
  * How long to wait after hiding our window before injecting the paste keystroke.
@@ -95,11 +162,18 @@ export class PasteService {
     // clipboard verbatim — the user may be heading anywhere with it. Gated on the
     // setting BEFORE the helper call: with the toggle off (or the helper broken),
     // the hottest path in the app must not pay a helper round-trip.
-    const dest =
-      forPaste && MACOS && getSettings().smartPaste !== false
-        ? await macFrontmost()
+    const smart = getSettings().smartPaste !== false
+    // Windows reads the REMEMBERED window, not the current one: by now the current
+    // one is us. macOS asks the helper, exactly as before.
+    const destId =
+      forPaste && smart
+        ? MACOS
+          ? ((await macFrontmost())?.bundleId ?? null)
+          : WIN32
+            ? targetExe()
+            : null
         : null
-    const shaped = shapeForDestination(item, plain, dest)
+    const shaped = shapeForDestination(item, plain, destinationRole(destId, MACOS ? 'darwin' : 'win32'), smart)
     const text = shaped.text ?? item.content
     markOwnedByUs()
     if (item.kind === 'image') {
@@ -218,7 +292,23 @@ export class PasteService {
     // a settings migration across every existing Linux install, which is exactly the
     // regression shape this port must not create.
     if (WIN32) {
-      return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
+      // Hide first, then put focus back where it was, and only inject once the
+      // foreground window really IS the one we remembered. Windows has no
+      // non-activating panel and no compositor handing focus back, so this is the
+      // hard part — see win/foreground.ts. A bounded poll replaces the fixed sleep
+      // the other platforms use, because a sleep cannot tell "focus took 40ms" from
+      // "focus never came back", and on Windows the second happens routinely
+      // (the foreground lock).
+      this.hideWindow()
+      if (!(await restoreForeground())) {
+        console.error('[paste] focus did not return to the previous window; not injecting')
+        return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
+      }
+      const { injected, reason } = sendPaste(targetExe())
+      if (injected) return { method: 'injected' }
+      console.error(`[paste] not injected: ${reason}`)
+      notifyFallback(reason ?? 'Press Ctrl+V to paste')
+      return { method: 'copied', message: reason ?? 'Copied — press Ctrl+V to paste' }
     }
 
     // Linux tier 1: hide (mutter refocuses the previous surface), then inject

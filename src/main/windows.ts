@@ -3,6 +3,7 @@ import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
 import { MACOS, LINUX, WIN32 } from './platform'
 import { existsSync } from 'fs'
+import { rememberForeground } from './win/foreground'
 
 /**
  * Under native Wayland the compositor owns window placement: setBounds x/y is a
@@ -154,6 +155,11 @@ export function getPalette(): BrowserWindow | null {
 }
 
 export function showPalette(collection?: string): void {
+  // BEFORE anything is shown. Windows has no non-activating panel: the moment we
+  // show, WE are the foreground window, and the app the user was typing in is only
+  // recoverable if it was recorded first. Everything a paste can follow goes through
+  // here or showDictationHud. A no-op off Windows.
+  if (WIN32) rememberForeground()
   const win = createPaletteWindow()
   // On Wayland the compositor positions us (it centres popups sensibly). Elsewhere we
   // place it ourselves — see activeDisplay() for why the choice of display differs.
@@ -323,6 +329,10 @@ export function getDictationWindow(): BrowserWindow | null {
 let dictationActive = false
 
 export function showDictationHud(): void {
+  // Same reason as showPalette. The HUD is focusable:false, but on Windows that is a
+  // hint rather than a guarantee, and the transcript is pasted into whatever had
+  // focus when dictation STARTED — which is precisely what this records.
+  if (WIN32) rememberForeground()
   dictationActive = true
   // Deliberately small: on Wayland the compositor decides where this lands (our
   // setBounds x/y is a no-op), so it will be centred no matter what we ask for.

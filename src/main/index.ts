@@ -52,7 +52,7 @@ import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
-import { MACOS, LINUX } from './platform'
+import { MACOS, LINUX, WIN32 } from './platform'
 import { runDoctor } from './doctor'
 import { capabilities } from './capabilities'
 
@@ -629,6 +629,12 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   })
 
   app.whenReady().then(async () => {
+    // Windows groups taskbar entries and — critically here — routes notifications by
+    // AppUserModelID. Without one, `new Notification()` is a SILENT NO-OP on Windows.
+    // The notification that matters most is the one in paste.ts that exists purely to
+    // say "nothing was injected, press Ctrl+V yourself": a silent fallback for a
+    // silent failure. Must match electron-builder.yml's appId.
+    if (WIN32) app.setAppUserModelId('md.clipboard.app')
     const logFile = initLogging()
     console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()

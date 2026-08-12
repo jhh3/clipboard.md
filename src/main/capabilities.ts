@@ -102,7 +102,9 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
         // Windows v1 deliberately ships the honest, narrow set. Each 'unsupported'
         // below is a feature we could half-implement and choose not to, because a
         // half-implemented one of these is indistinguishable from a broken hand.
-        pasteInjection: no('Not implemented yet. The clip is put on the clipboard and you press Ctrl+V.'),
+        pasteInjection: meh(
+          'Ctrl+V is sent with SendInput once the window you were using is back in the foreground. It refuses — and leaves the clip on the clipboard — if focus does not return, or if the target runs as administrator, because Windows blocks input from a lower-integrity process.'
+        ),
         holdToTalk: meh(
           'Press to start, press again to stop. Windows global hotkeys only ever report key-down, and reading a real key-up needs a machine-wide keyboard hook — which this app will not install to save you one keypress.'
         ),
