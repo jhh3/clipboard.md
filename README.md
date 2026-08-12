@@ -12,6 +12,13 @@ or handed to an agent — all on your own machine, on your existing Claude subsc
 
 ---
 
+Linux and macOS are the shipping platforms. A Windows build exists and is produced
+by CI, but nobody has run it yet — see [docs/WINDOWS.md](docs/WINDOWS.md) for what it
+does, what it deliberately does not do, and the list of things that still need
+confirming on a real machine.
+
+---
+
 ## Install (macOS)
 
 **Option A — build it (recommended, no warnings).** A locally-built app is trusted by
