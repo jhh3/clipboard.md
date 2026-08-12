@@ -111,6 +111,14 @@ export class PasteService {
       // was both unpastable and unverified.
       this.capture.markSelfWrite(item.content)
       await writeClipboardHtml(item.html, item.content)
+      // The richest clips were the only unverified ones. On Windows a write can be
+      // dropped silently (see verifyClipboardText), so this branch could hand back
+      // success having put nothing on the clipboard — and then inject Ctrl+V, which
+      // pastes the previous clip. macOS keeps its existing unverified path.
+      if (WIN32 && !(await waitForClipboard(item.content))) {
+        console.error('[paste] clipboard did not take the HTML write in time')
+        return false
+      }
     } else {
       this.capture.markSelfWrite(text)
       await writeClipboardText(text)

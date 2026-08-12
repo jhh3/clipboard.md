@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'child_process'
 import { clipboard, nativeImage } from 'electron'
-import { LINUX } from '../platform'
+import { LINUX, WIN32, currentPlatform, type Platform } from '../platform'
 
 /**
  * Off-main-thread clipboard reads (Linux).
@@ -37,13 +37,44 @@ function xclip(args: string[], encoding: 'utf8' | 'buffer'): Promise<Buffer | st
   })
 }
 
+/**
+ * Which flavour of a multi-format clip we should actually store.
+ *
+ * This is the highest-frequency silent data-loss item in the Windows port, and it is
+ * one line of ordering. Excel, Word, Outlook and PowerPoint put a CF_DIB bitmap on
+ * the clipboard alongside CF_UNICODETEXT for an ORDINARY TEXT copy — select three
+ * cells, press Ctrl+C, and Chromium reports both `image/png` and `text/plain`. The
+ * image-first rule then stores a picture of the cells and throws the text away: no
+ * search, no enrichment, nothing to paste into an editor. The user copied text and
+ * the history shows a screenshot.
+ *
+ * X11 and NSPasteboard do not behave this way — an image copy there is an image copy
+ * — so the existing image-first rule is kept verbatim for linux and darwin. This is
+ * a pure function precisely so that can be asserted.
+ *
+ * UNVERIFIED, and the whole basis of the win32 rule: that Chromium really does
+ * report `image/png` for a CF_DIB accompanying an Excel text copy. It needs one
+ * manual confirmation on a real Windows box.
+ */
+export type PayloadKind = 'image' | 'text'
+
+export function pickPayloadKind(formats: string[], platform: Platform): PayloadKind {
+  if (!formats.some((f) => f.startsWith('image/'))) return 'text'
+  if (platform !== 'win32') return 'image'
+  const alsoText = formats.includes('text/plain') || formats.includes('text/html')
+  return alsoText ? 'text' : 'image'
+}
+
 async function readLinux(): Promise<ClipboardSnapshot> {
   const targets = (await xclip(['-selection', 'clipboard', '-o', '-t', 'TARGETS'], 'utf8')) as
     | string
     | null
   const formats = targets ? targets.split('\n').map((s) => s.trim()).filter(Boolean) : []
 
-  const imageTarget = formats.find((f) => f === 'image/png') ?? formats.find((f) => f.startsWith('image/'))
+  const imageTarget =
+    pickPayloadKind(formats, 'linux') === 'image'
+      ? (formats.find((f) => f === 'image/png') ?? formats.find((f) => f.startsWith('image/')))
+      : undefined
   if (imageTarget) {
     const buf = (await xclip(['-selection', 'clipboard', '-o', '-t', imageTarget], 'buffer')) as
       | Buffer
@@ -61,7 +92,7 @@ async function readLinux(): Promise<ClipboardSnapshot> {
 export async function readClipboard(): Promise<ClipboardSnapshot> {
   if (LINUX) return readLinux()
   const formats = clipboard.availableFormats()
-  if (formats.some((f) => f.startsWith('image/'))) {
+  if (pickPayloadKind(formats, currentPlatform()) === 'image') {
     const img = clipboard.readImage()
     if (!img.isEmpty()) return { formats, text: '', image: img.toPNG() }
   }
@@ -146,13 +177,51 @@ function spawnOwner(args: string[], data: Buffer): Promise<void> {
  * clips appeared to work while longer ones silently failed.
  */
 export async function waitForClipboard(expected: string, timeoutMs = 800): Promise<boolean> {
-  if (!LINUX) return true
-  const deadline = Date.now() + timeoutMs
-  const head = expected.slice(0, 64)
-  while (Date.now() < deadline) {
-    const got = (await xclip(['-selection', 'clipboard', '-o'], 'utf8')) as string | null
-    if (got !== null && got.slice(0, 64) === head) return true
-    await new Promise((r) => setTimeout(r, 25))
+  if (LINUX) {
+    const deadline = Date.now() + timeoutMs
+    const head = expected.slice(0, 64)
+    while (Date.now() < deadline) {
+      const got = (await xclip(['-selection', 'clipboard', '-o'], 'utf8')) as string | null
+      if (got !== null && got.slice(0, 64) === head) return true
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    return false
+  }
+  if (WIN32) {
+    return verifyClipboardText(() => clipboard.readText(), expected)
+  }
+  return true
+}
+
+/**
+ * Read the clipboard back on Windows and confirm it holds what we just wrote.
+ *
+ * `clipboard.writeText` returns void whether or not it worked. Underneath, Chromium's
+ * ScopedClipboardWriter retries OpenClipboard five times at 5ms and then GIVES UP —
+ * no exception, no return value, nothing. OpenClipboard contention is real and
+ * routine on Windows (any app can hold it, and several poll it), so the write simply
+ * does not happen sometimes. Injecting Ctrl+V after that pastes the PREVIOUS clip
+ * into whatever the user is typing in, which is worse than not pasting at all.
+ *
+ * A read-back costs microseconds here — unlike Linux, where the same question means
+ * an X selection round-trip — so three tries at 15ms is cheap insurance.
+ *
+ * Line endings are normalised before comparing. Windows clipboard text is CRLF by
+ * convention, and a mismatch on `\r` alone would make every multi-line paste report
+ * a failed write.
+ */
+export async function verifyClipboardText(
+  read: () => string,
+  expected: string,
+  tries = 3,
+  waitMs = 15,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+): Promise<boolean> {
+  const norm = (s: string): string => s.replace(/\r\n/g, '\n').slice(0, 64)
+  const head = norm(expected)
+  for (let i = 0; i < tries; i++) {
+    if (norm(read()) === head) return true
+    await sleep(waitMs)
   }
   return false
 }
@@ -163,13 +232,29 @@ export async function waitForClipboard(expected: string, timeoutMs = 800): Promi
  * compositor down with it. Callers skip reads when this is true.
  */
 export function weOwnClipboard(): boolean {
+  if (WIN32) return false
   return ownedUntil > Date.now()
 }
 
 let ownedUntil = 0
 
-/** Mark that we (or our detached owner process) just took the clipboard. */
+/**
+ * Mark that we (or our detached owner process) just took the clipboard.
+ *
+ * A no-op on Windows, and only on Windows. The hazard this guards against is an X11
+ * one: requesting a selection we own means asking ourselves for data, and a
+ * self-request that stalls takes mutter's selection bridge down with it. Windows has
+ * no selection ownership and no such deadlock — the clipboard is a system-owned
+ * buffer — so all this did there was blind the capture loop for 1500ms after every
+ * copy and paste. Echo suppression on Windows is markSelfWrite's job, which is
+ * content-addressed and therefore precise.
+ *
+ * macOS has no such hazard either and is left alone DELIBERATELY: changing it is a
+ * behaviour change to a shipping platform, which this port is not allowed to make.
+ * Filed separately.
+ */
 export function markOwnedByUs(ms = 1500): void {
+  if (WIN32) return
   ownedUntil = Date.now() + ms
 }
 
