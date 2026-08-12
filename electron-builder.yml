@@ -41,11 +41,6 @@ asarUnpack:
   - '**/node_modules/@anthropic-ai/claude-agent-sdk-*/**'
   - '**/node_modules/@openai/codex-sdk/**'
   - '**/node_modules/@openai/codex-*/**'
-  # The glob above never matched: pnpm's real directory is node_modules/@openai/codex
-  # (no suffix), and `codex-*` requires one. So the CLI the codex lane spawns was
-  # still inside app.asar in every packaged build on every platform — a pre-existing
-  # all-platform bug, fixed here because the Windows port is what made it visible.
-  - '**/node_modules/@openai/codex/**'
   # sherpa-onnx loads its .node addon and dylibs by path at runtime; from inside
   # app.asar those paths don't exist, which is exactly how sqlite-vec silently
   # disabled semantic search in the installed build only.
@@ -85,41 +80,6 @@ linux:
 
 deb:
   afterInstall: null
-
-win:
-  # The two positive patterns are REQUIRED, exactly as in linux: and mac: above. A
-  # platform files: list of nothing but negations makes electron-builder fall back to
-  # `**/*` and silently discard the top-level allowlist — the asar then holds the
-  # whole working tree. scripts/verify-package.mjs asserts this did not happen.
-  files:
-    - out/**
-    - package.json
-    - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**'
-    # DirectML is onnxruntime's Windows GPU provider (~38MB). The embedding worker
-    # pins provider 'cpu', so this is pure download weight that can never execute.
-    - '!**/node_modules/onnxruntime-node/bin/napi-v6/win32/*/DirectML.dll'
-    - '!**/node_modules/onnxruntime-node/bin/napi-v6/win32/*/dxcompiler.dll'
-    - '!**/node_modules/onnxruntime-node/bin/napi-v6/win32/*/dxil.dll'
-  # Same reason as linux/mac: claude spawns the bridge by PATH, and a path inside
-  # app.asar is a path into a file. Omitting this is the verbatim repeat of the Linux
-  # regression where agent sessions came up with tools and no channel.
-  extraResources:
-    - from: resources/plugin
-      to: plugin
-  # NOT build/icon.png: electron-builder auto-detects that name for linux and mac
-  # too, which would change those artifacts' icons. This port must not touch them.
-  icon: build/icon-win.png
-  target:
-    - nsis
-
-nsis:
-  # The clipboard history, the settings and the learned dictation corrections live in
-  # %APPDATA%. Deleting them on uninstall would make "reinstall to fix it" — the first
-  # thing anyone tries on Windows — destroy everything the app was for.
-  deleteAppDataOnUninstall: false
-  oneClick: false
-  allowToChangeInstallationDirectory: true
-  perMachine: false
 
 mac:
   # Keep only this platform's onnxruntime binding — see the note in `files` above.
