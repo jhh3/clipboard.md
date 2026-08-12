@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { spawn, execFile } from 'child_process'
-import { claudeBin } from './claudeBin'
+import { claudeBin, claudeSpawnOpts } from './claudeBin'
 import { promisify } from 'util'
 import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -205,7 +205,10 @@ function spawnDetached(
   opts: { cwd: string; env: NodeJS.ProcessEnv }
 ): Promise<ReturnType<typeof spawn>> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { ...opts, detached: true, stdio: 'ignore' })
+    // claudeSpawnOpts() is `{}` everywhere except a Windows .cmd shim, where Node
+    // ≥18.20 refuses to spawn a batch file without a shell and throws EINVAL from a
+    // path that plainly exists — which reads like a corrupt install, not a flag.
+    const child = spawn(cmd, args, { ...claudeSpawnOpts(), ...opts, detached: true, stdio: 'ignore' })
     child.once('error', reject)
     child.once('spawn', () => {
       child.removeListener('error', reject)

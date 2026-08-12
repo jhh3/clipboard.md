@@ -2,8 +2,9 @@ import { app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
-import { claudeBin } from './claudeBin'
+import { join, win32 } from 'path'
+import { claudeBin, claudeSpawnOpts } from './claudeBin'
+import { currentPlatform, type Platform } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -83,6 +84,46 @@ export async function ensureMcpServer(): Promise<void> {
   if (out !== null) console.log('[mcp] registered "clipboard" with Claude Code')
 }
 
+const HOOK_DESCRIPTION =
+  "Mirror each finished turn into clipboard.md's inbox, so a reply the agent didn't explicitly send through a tool is still visible."
+
+/**
+ * The Stop hook, per shell.
+ *
+ * The GUARD is the load-bearing part, not the command. Installing this plugin
+ * enables it GLOBALLY, so it fires at the end of every turn in every Claude Code
+ * session on the machine — not only the ones clipboard.md spawned. agents.ts injects
+ * CLIPMD_HOOK_NODE and CLIPMD_SESSION_KEY into our own sessions only, so everywhere
+ * else the command must expand to nothing at all.
+ *
+ * On Linux and macOS that is the POSIX `[ -n "$VAR" ]` test, and this function emits
+ * it byte-for-byte as it shipped. On Windows the hook runs under cmd.exe, where that
+ * line is not a weaker guard — it is not a guard: `[` is not a command, so cmd
+ * reports "'[' is not recognized" and then RUNS the rest anyway on every turn of
+ * every unrelated session. `if not "%VAR%"==""` is the cmd equivalent.
+ *
+ * Windows also gets an absolute path instead of ${CLAUDE_PLUGIN_ROOT}. Whether that
+ * placeholder is expanded by Claude Code or by the shell is not something we can
+ * verify from here, and the two answers need different syntax on cmd; the path is
+ * known at generation time, so the question does not have to be asked.
+ */
+export function hooksJson(platform: Platform, dir: string): string {
+  const command =
+    platform === 'win32'
+      ? `if not "%CLIPMD_HOOK_NODE%"=="" if not "%CLIPMD_SESSION_KEY%"=="" "%CLIPMD_HOOK_NODE%" "${win32.join(dir, 'hooks', 'mirror-turn.mjs')}"`
+      : 'if [ -n "$CLIPMD_HOOK_NODE" ] && [ -n "$CLIPMD_SESSION_KEY" ]; then "$CLIPMD_HOOK_NODE" "${CLAUDE_PLUGIN_ROOT}/hooks/mirror-turn.mjs"; fi'
+  return (
+    JSON.stringify(
+      {
+        description: HOOK_DESCRIPTION,
+        hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] }
+      },
+      null,
+      2
+    ) + '\n'
+  )
+}
+
 export function pluginRoot(): string {
   return join(app.getPath('userData'), 'plugin')
 }
@@ -131,9 +172,15 @@ export async function ensurePlugin(): Promise<boolean> {
     )
     // Hooks DO get copied — they are dependency-free scripts claude runs directly.
     mkdirSync(join(pluginDir(), 'hooks'), { recursive: true })
-    for (const f of ['hooks.json', 'mirror-turn.mjs']) {
-      copyFileSync(join(src, 'plugins', PLUGIN, 'hooks', f), join(pluginDir(), 'hooks', f))
-    }
+    copyFileSync(
+      join(src, 'plugins', PLUGIN, 'hooks', 'mirror-turn.mjs'),
+      join(pluginDir(), 'hooks', 'mirror-turn.mjs')
+    )
+    // hooks.json is GENERATED rather than copied, because its command is a shell
+    // fragment and the shell is not the same on every platform — see hooksJson().
+    // The linux and darwin output is byte-identical to the file that used to be
+    // copied; agentPlugin.test.ts asserts exactly that.
+    writeFileSync(join(pluginDir(), 'hooks', 'hooks.json'), hooksJson(currentPlatform(), pluginDir()))
 
     // The bridge is NOT copied here. It is an ESM bundle with externalised
     // dependencies (the MCP SDK, better-sqlite3), so away from the app's
@@ -186,7 +233,8 @@ export async function ensurePlugin(): Promise<boolean> {
 
 async function run(args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execFileP(claudeBin(), args, { timeout: 60_000 })
+    // See claudeSpawnOpts: `{}` off Windows, `{ shell: true }` for a .cmd shim.
+    const { stdout } = await execFileP(claudeBin(), args, { timeout: 60_000, ...claudeSpawnOpts() })
     return stdout
   } catch (err) {
     // Expected on re-run ("already added"), so this is informational, not an error.

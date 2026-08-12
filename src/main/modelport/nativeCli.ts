@@ -61,15 +61,23 @@ export function unpackedPath(p: string): string {
  * path — correct in dev, where there is no asar and nothing to rewrite.
  */
 export function resolveVendoredCli(packagePrefix: string, binary: string): string | undefined {
-  const platform =
-    MACOS ? 'darwin' : WIN32 ? 'win32' : 'linux'
+  const platform = MACOS ? 'darwin' : WIN32 ? 'win32' : 'linux'
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   const candidates = [`${packagePrefix}-${platform}-${arch}`, `${packagePrefix}-${platform}-${arch}-musl`]
+  // Windows executables carry an extension, and these packages ship `claude.exe`, not
+  // a bare `claude`. Every probe below therefore missed on win32 and the function
+  // returned undefined unconditionally — the SDK then resolved its own path, which
+  // points inside app.asar, and the subscription lanes failed on every request in the
+  // packaged app. Appended only on win32, so the linux and darwin names are the exact
+  // strings they were.
+  const names = WIN32 ? [`${binary}.exe`, binary] : [binary]
   for (const pkg of candidates) {
     try {
       const manifest = require_.resolve(`${pkg}/package.json`)
-      const candidate = unpackedPath(join(dirname(manifest), binary))
-      if (existsSync(candidate)) return candidate
+      for (const name of names) {
+        const candidate = unpackedPath(join(dirname(manifest), name))
+        if (existsSync(candidate)) return candidate
+      }
     } catch {
       /* not installed for this platform/arch — try the next shape */
     }
