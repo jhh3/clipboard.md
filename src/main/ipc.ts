@@ -297,9 +297,13 @@ export function registerIpc(
   handle('capture:screenshot', async () => {
     // Hide the palette so it isn't in the shot, then invoke the system picker.
     hidePalette()
-    const path = await takeScreenshot()
-    if (!path) return { ok: false, error: 'Capture cancelled' }
-    const result = capture.ingestImageFile(path)
+    const shot = await takeScreenshot()
+    // Three outcomes, three messages. These used to share one `null`, so on a
+    // platform with no region capture at all the app said "Capture cancelled" —
+    // blaming the user for a dismissal that never happened.
+    if ('unavailable' in shot) return { ok: false, error: shot.unavailable }
+    if ('cancelled' in shot) return { ok: false, error: 'Capture cancelled' }
+    const result = capture.ingestImageFile(shot.path)
     if (!result) return { ok: false, error: 'Could not read captured image' }
     return { ok: true, id: result.id }
   })

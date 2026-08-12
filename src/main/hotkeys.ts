@@ -68,6 +68,15 @@ export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
     }
     return
   }
+  if (!LINUX) {
+    // Explicit, because the alternative is what used to happen: Windows fell through
+    // to ensureGnomeKeybindings(), which shells out to `gsettings`, gets ENOENT, and
+    // logs "failed to register GNOME keybindings" — naming a desktop environment
+    // that is not installed and cannot be. A hotkey backend lands in a later step;
+    // until then the honest answer is that there isn't one.
+    console.log('[hotkeys] no hotkey backend on this platform yet; use the tray')
+    return
+  }
   await ensureGnomeKeybindings()
 }
 

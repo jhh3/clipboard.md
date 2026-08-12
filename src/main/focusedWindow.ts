@@ -40,6 +40,10 @@ function xprop(args: string[]): Promise<string> {
  * retry is far cheaper than the failure it prevents.
  */
 export async function focusedWmClass(): Promise<string | null> {
+  // xprop exists only under X11/Xwayland. Off Linux this spawned two processes that
+  // could never succeed and slept 60ms between them, on the paste path, for a value
+  // that was always going to be null.
+  if (!LINUX) return null
   const first = await readWmClass()
   if (first) return first
   await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))

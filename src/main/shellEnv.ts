@@ -76,7 +76,14 @@ function absorb(body: string): number {
 }
 
 export async function importShellEnv(): Promise<void> {
-  if (WIN32) return
+  if (WIN32) {
+    // Correct to skip, and worth saying so. A Windows GUI process inherits
+    // HKCU\Environment, so there is no login-shell gap to close — but the guard also
+    // has to stay, because process.env.SHELL IS set under Git Bash, and removing it
+    // would spawn MSYS bash with a Unix `env` on a machine that has neither.
+    console.log('[env] Windows inherits the user environment directly; no shell import needed')
+    return
+  }
   // Already have everything? Don't spawn a shell for nothing.
   if (WANTED.every((k) => process.env[k])) return
 

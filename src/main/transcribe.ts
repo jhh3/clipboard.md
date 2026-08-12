@@ -1,6 +1,6 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'path'
-import { mkdirSync, writeFileSync, existsSync, createWriteStream } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, createWriteStream, rmSync } from 'fs'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -11,6 +11,7 @@ import { openaiTranscribe } from './modelport/openaiCompat'
 import { macDecodeAudio } from './mac/helper'
 import { audioExtension } from './audioFormat'
 import { MACOS } from './platform'
+import { capabilities } from './capabilities'
 
 const execFileP = promisify(execFile)
 
@@ -69,6 +70,11 @@ export async function ensureLocalModel(): Promise<boolean> {
       console.error('[transcribe] local model setup failed:', err)
       return false
     } finally {
+      // The archive is 490MB and was never removed on ANY platform — download the
+      // model once and half a gigabyte sits in userData for the life of the install,
+      // for a file that has already been extracted. Removed in `finally` so a failed
+      // extraction does not leave it behind either.
+      rmSync(join(modelRoot(), 'parakeet.tar.bz2'), { force: true })
       downloading = null
     }
   })()
@@ -194,6 +200,12 @@ async function localTranscribe(path: string): Promise<string> {
 export async function transcribeFile(path: string, audio?: Buffer, mime?: string): Promise<string> {
   const provider = getSettings().transcription.provider
   if (provider === 'local') {
+    // Refuse loudly rather than fail three steps in. Without ffmpeg the decode
+    // throws ENOENT from deep inside localTranscribe, which surfaces as "local model
+    // setup failed" — a message that sends the user off to re-download 490MB of
+    // model that was never the problem.
+    const local = capabilities().localTranscribe
+    if (local.state === 'unsupported') throw new Error(local.reason)
     // No silent local→cloud fallback: choosing local transcription is a privacy
     // decision, and quietly uploading the recording would violate it.
     return localTranscribe(path)

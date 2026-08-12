@@ -173,9 +173,22 @@ export function markOwnedByUs(ms = 1500): void {
   ownedUntil = Date.now() + ms
 }
 
-/** PRIMARY selection (what is highlighted right now) — used by the rewrite hotkey. */
-export async function readPrimarySelection(): Promise<string> {
-  if (!LINUX) return clipboard.readText()
+/**
+ * PRIMARY selection (what is highlighted right now) — used by the rewrite hotkey.
+ *
+ * Returns null where there is no such thing, and callers MUST refuse rather than
+ * substitute. The old fallback here was `clipboard.readText()`, which is not a
+ * degraded answer to "what is selected" — it is a confident answer to a different
+ * question. Press the rewrite hotkey with nothing selected and the app would take
+ * whatever you last copied, rewrite it with a model, and paste the result over your
+ * cursor. That is the worst failure in this whole port: silent, destructive, and
+ * indistinguishable from working.
+ *
+ * macOS reaches the real selection through the helper's accessibility chain and
+ * never calls this (see index.ts currentSelection).
+ */
+export async function readPrimarySelection(): Promise<string | null> {
+  if (!LINUX) return null
   const text = (await xclip(['-selection', 'primary', '-o'], 'utf8')) as string | null
   return text ?? ''
 }

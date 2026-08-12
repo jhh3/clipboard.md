@@ -54,6 +54,7 @@ import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
 import { MACOS, LINUX } from './platform'
 import { runDoctor } from './doctor'
+import { capabilities } from './capabilities'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
 // Push-to-talk opens one descriptor per real keyboard, and a machine with several
@@ -556,7 +557,12 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     }, 2500)
   }
 
-  async function currentSelection(): Promise<string> {
+  /**
+   * Returns null when this platform cannot tell us what is selected, which is NOT
+   * the same as an empty selection: the caller must refuse the rewrite and say why,
+   * rather than fall back to the clipboard and rewrite the wrong text.
+   */
+  async function currentSelection(): Promise<string | null> {
     if (!MACOS) return readPrimarySelection()
     const { text, untrusted } = await macSelectedText()
     if (untrusted) {
@@ -579,6 +585,15 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     },
     rewrite: () => {
       void currentSelection().then((text) => {
+        if (text === null) {
+          // No way to read the selection here. Opening the palette silently would
+          // look like the hotkey misfired, and rewriting the clipboard instead is
+          // the destructive option — so name the limitation.
+          const why = capabilities().primarySelection.reason
+          new Notification({ title: 'Rewrite is unavailable', body: why, silent: true }).show()
+          console.log(`[rewrite] refused: ${why}`)
+          return
+        }
         if (!text.trim()) {
           showPalette()
           return
@@ -590,8 +605,14 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     },
     screenshot: () => {
       void (async () => {
-        const path = await takeScreenshot()
-        if (path) capture.ingestImageFile(path)
+        const shot = await takeScreenshot()
+        if ('path' in shot) capture.ingestImageFile(shot.path)
+        // The hotkey has no window to report into, so an unavailable capture would
+        // otherwise be a keypress that does nothing at all — the exact shape of
+        // failure this port is about.
+        else if ('unavailable' in shot) {
+          new Notification({ title: 'clipboard.md', body: shot.unavailable, silent: true }).show()
+        }
       })()
     },
     scratchpad: () => openScratchpadWindow(),

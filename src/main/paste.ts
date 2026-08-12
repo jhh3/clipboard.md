@@ -11,10 +11,9 @@ import type { ClipItem, PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
 import { getItem } from './store/items'
 import { getSettings } from './settings'
-import { portalPaste } from './portal'
 import { focusedWmClass, getDictationTarget, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
-import { MACOS, LINUX } from './platform'
+import { MACOS, LINUX, WIN32 } from './platform'
 
 /**
  * Destination-aware paste (macOS): the palette is a non-activating panel, so the
@@ -201,6 +200,19 @@ export class PasteService {
       }
     }
 
+    // Windows, above the pasteInjection check on purpose.
+    //
+    // `pasteInjection` is a Linux setting: its values name the XDG RemoteDesktop
+    // portal, and the stored default is 'portal'. Falling through to that check on
+    // Windows meant hiding the window, sleeping 300ms and then calling into D-Bus —
+    // a dead path that cost a third of a second and ended in nothing, every time.
+    // Interpreting the stored value per-platform is deliberate; RENAMING it would be
+    // a settings migration across every existing Linux install, which is exactly the
+    // regression shape this port must not create.
+    if (WIN32) {
+      return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
+    }
+
     // Linux tier 1: hide (mutter refocuses the previous surface), then inject
     // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
     if (getSettings().pasteInjection === 'portal') {
@@ -214,6 +226,9 @@ export class PasteService {
       // a plain Ctrl+V in a terminal does nothing at all.
       const dest = (await focusedWmClass()) ?? getDictationTarget()
       const shift = isTerminalClass(dest)
+      // Lazily imported: portal.ts opens a D-Bus session bus at module load, and a
+      // top-level import pulled that whole Linux-only stack into every Windows boot.
+      const { portalPaste } = await import('./portal')
       if (await portalPaste(shift)) {
         console.log(`[paste] injected via portal (${shift ? 'Ctrl+Shift+V' : 'Ctrl+V'}${dest ? ` → ${dest}` : ''})`)
         return { method: 'injected' }
