@@ -27,6 +27,7 @@ import {
 import { getDictationTarget } from './focusedWindow'
 import { enhanceTranscript } from './enhance'
 import { detectSecret } from './capture/filters'
+import { capabilities } from './capabilities'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import {
@@ -278,6 +279,9 @@ export function registerIpc(
   handle('dictation:suggestion:dismiss', (_e, key: string) => dismissSuggestion(key))
 
   handle('providers:status', () => providersStatus())
+  // What this platform can actually do, so Settings can render the reason next to a
+  // control instead of showing a toggle that changes nothing.
+  handle('capabilities:get', () => capabilities())
   handle('enrichment:status', () => {
     const stats = enrichQueueStats()
     const run = enrichmentRunStats()

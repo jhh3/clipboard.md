@@ -53,6 +53,7 @@ import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
 import { MACOS, LINUX } from './platform'
+import { runDoctor } from './doctor'
 
 // Blocking evdev reads live on libuv worker threads, and the default pool is four.
 // Push-to-talk opens one descriptor per real keyboard, and a machine with several
@@ -255,7 +256,13 @@ const MCP_MODE = process.argv.includes('--mcp')
 // --bridge is the per-session channel server (see agentPlugin), registered against
 // this binary for the same reason --mcp is: the path outlives the process.
 const BRIDGE_MODE = process.argv.includes('--bridge')
-const gotLock = MCP_MODE || BRIDGE_MODE || app.requestSingleInstanceLock()
+// --doctor prints the capability registry and resolved paths as JSON and exits. It
+// skips the lock for the same reason --mcp does, and for one more: the question it
+// answers ("what does this build think it can do?") is most often asked while the
+// app IS running, and taking the lock would make it wake the running copy and print
+// nothing at all.
+const DOCTOR_MODE = process.argv.includes('--doctor')
+const gotLock = MCP_MODE || BRIDGE_MODE || DOCTOR_MODE || app.requestSingleInstanceLock()
 if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   // The bridge is a CHANNEL into a session clipboard.md launched — it has nothing to
   // do for anyone else. But it is declared by a plugin, and installing a plugin
@@ -268,6 +275,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   // CLIPMD_SESSION_KEY into our own sessions only, so its absence means "not ours".
   process.stderr.write('[bridge] no CLIPMD_SESSION_KEY: not a clipboard.md session; exiting\n')
   app.exit(0)
+} else if (DOCTOR_MODE) {
+  runDoctor()
 } else if (MCP_MODE || BRIDGE_MODE) {
   void startStdioServer(MCP_MODE ? 'mcp.mjs' : 'bridge.mjs')
 } else if (!gotLock) {
