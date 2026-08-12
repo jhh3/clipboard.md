@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { execFile } from 'child_process'
 import { existsSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
-import { MACOS, LINUX } from './platform'
+import { MACOS, LINUX, WIN32 } from './platform'
 
 /**
  * Interactive region capture, per platform.
@@ -70,6 +70,14 @@ export async function takeScreenshot(): Promise<ScreenshotResult> {
     // boot, to reach code that can never run there.
     const { portalScreenshot } = await import('./portal')
     const path = await portalScreenshot()
+    return path ? { path } : { cancelled: true }
+  }
+  if (WIN32) {
+    // Our own overlay, not `explorer ms-screenclip:` — that one puts the result on
+    // the CLIPBOARD with no completion signal and no path, and our own capture loop
+    // would race to ingest it as a separate clip. See win/regionCapture.ts.
+    const { captureRegion } = await import('./win/regionCapture')
+    const path = await captureRegion(shotPath())
     return path ? { path } : { cancelled: true }
   }
   // Explicitly NOT the Linux branch. See capabilities.ts.

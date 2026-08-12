@@ -5,8 +5,9 @@ import Scratchpad from './components/Scratchpad'
 import DictationHud from './components/DictationHud'
 import Notes from './components/Notes'
 import Agents from './components/Agents'
+import RegionOverlay from './components/RegionOverlay'
 
-type Route = 'palette' | 'settings' | 'scratchpad' | 'dictation' | 'notes' | 'agents'
+type Route = 'palette' | 'settings' | 'scratchpad' | 'dictation' | 'notes' | 'agents' | 'region'
 
 function routeFromHash(): Route {
   const h = window.location.hash
@@ -15,12 +16,14 @@ function routeFromHash(): Route {
   if (h === '#dictation') return 'dictation'
   if (h === '#notes') return 'notes'
   if (h === '#agents') return 'agents'
+  if (h === '#region') return 'region'
   return 'palette'
 }
 
 /**
  * Tiny hash router: '' / '#palette' → palette, '#settings' → settings,
- * '#scratchpad' → scratchpad, '#dictation' → the always-on-top dictation HUD.
+ * '#scratchpad' → scratchpad, '#dictation' → the always-on-top dictation HUD,
+ * '#region' → the full-screen crop overlay used by region capture.
  */
 export default function App() {
   const [route, setRoute] = useState<Route>(routeFromHash)
@@ -42,5 +45,6 @@ export default function App() {
   if (route === 'dictation') return <DictationHud />
   if (route === 'notes') return <Notes />
   if (route === 'agents') return <Agents />
+  if (route === 'region') return <RegionOverlay />
   return <Palette />
 }

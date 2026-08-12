@@ -471,6 +471,8 @@ export interface IpcInvokeMap {
   'providers:status': () => ProviderStatus[]
   /** What this platform can do, so the UI can explain a control instead of hiding it. */
   'capabilities:get': () => Record<string, { state: 'supported' | 'degraded' | 'unsupported'; reason: string }>
+  /** Region-capture overlay reporting its selection, or null when cancelled. */
+  'region:result': (sel: { x: number; y: number; width: number; height: number } | null) => void
   'enrichment:status': () => EnrichmentStatus
   /** GNOME interactive screenshot portal (area/window/screen picker) -> new image clip id. */
   'capture:screenshot': () => { ok: boolean; id?: number; error?: string }
@@ -531,6 +533,8 @@ export interface IpcEventMap {
   'dictation:suggestions:changed': { suggestions: DictationSuggestion[] }
   /** Broadcast after any settings change so every window/service picks it up live. */
   'settings:changed': { settings: AppSettings }
+  /** Hands the region overlay the frozen screen grab for its display. */
+  'region:begin': { image: string; scaleFactor: number }
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

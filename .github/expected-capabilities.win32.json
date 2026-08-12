@@ -2,7 +2,7 @@
   "pasteInjection": "degraded",
   "holdToTalk": "degraded",
   "primarySelection": "unsupported",
-  "screenshotRegion": "unsupported",
+  "screenshotRegion": "degraded",
   "localTranscribe": "unsupported",
   "sourceApp": "supported",
   "concealedFormatHints": "supported",

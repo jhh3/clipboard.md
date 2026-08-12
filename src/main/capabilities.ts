@@ -111,7 +111,9 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
         primarySelection: no(
           'Windows has no “current selection” to read, so the rewrite hotkey refuses rather than rewriting whatever you last copied.'
         ),
-        screenshotRegion: no('Not implemented yet. The screenshot hotkey says so instead of reporting a cancel you never made.'),
+        screenshotRegion: meh(
+          'Our own overlay, captured with desktopCapturer. Protected (DRM) windows come out black and the mouse cursor is not included.'
+        ),
         localTranscribe:
           arch === 'arm64'
             ? no('sherpa-onnx publishes no win32-arm64 build, so offline transcription is impossible on ARM64 Windows. Use the OpenAI backend.')
