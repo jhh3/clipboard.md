@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { ProviderId, ProviderLane, ProviderStatus } from '@shared/types'
 import { getSettings } from '../settings'
 import { openaiCompatComplete, openaiCompatAvailable } from './openaiCompat'
+import { apiKeyFor } from './keys'
 import { claudeAgentComplete, claudeAgentAvailable } from './claudeAgent'
 import { codexComplete, codexAvailable } from './codex'
 
@@ -29,11 +30,32 @@ const BACKENDS: Record<ProviderId, Backend> = {
   'claude-agent': claudeAgentComplete,
   codex: codexComplete,
   openai: (req) => openaiCompatComplete('openai', req),
-  gemini: (req) => openaiCompatComplete('gemini', req)
+  gemini: (req) => openaiCompatComplete('gemini', req),
+  fireworks: (req) => openaiCompatComplete('fireworks', req)
 }
 
 const SUBSCRIPTION_LANE: ProviderId[] = ['claude-agent', 'codex']
-const API_LANE: ProviderId[] = ['openai', 'gemini']
+const API_LANE: ProviderId[] = ['openai', 'gemini', 'fireworks']
+
+/**
+ * Providers that cannot accept an image. Routing a vision request to one is not a
+ * degraded answer, it is a wrong one: the image is dropped and the model confidently
+ * describes nothing.
+ */
+const TEXT_ONLY: ProviderId[] = ['fireworks']
+
+/**
+ * Fireworks/DeepSeek v4 Flash is the preferred engine for transforms when a key
+ * exists — the transform lane is short prompts on demand (rewrites, the dictation
+ * cleanup pass), exactly where cheap and fast beats capable, and this model is both.
+ *
+ * Only for transforms, and only without an image. Enrichment stays where the user put
+ * it, because it classifies clips and OCRs screenshots.
+ */
+function preferredTransformProvider(req: PortRequest): ProviderId | null {
+  if (req.imagePath) return null
+  return apiKeyFor('fireworks') ? 'fireworks' : null
+}
 
 function laneOf(p: ProviderId): ProviderLane {
   return SUBSCRIPTION_LANE.includes(p) ? 'subscription' : 'api'
@@ -96,7 +118,9 @@ export async function complete(
   providerOverride?: ProviderId
 ): Promise<string> {
   const routed = route(feature)
-  const primary = providerOverride ?? routed.primary
+  const fast = feature === 'transforms' && !providerOverride ? preferredTransformProvider(req) : null
+  if (fast) console.log(`[modelport] transforms: using ${fast} (fast lane)`)
+  const primary = providerOverride ?? fast ?? routed.primary
   const lane = providerOverride ? laneOf(providerOverride) : routed.lane
   const order = [primary, ...fallbacksFor(primary)]
   // Graceful last resort, ONE direction only. An api-lane feature (transforms
@@ -111,6 +135,7 @@ export async function complete(
   let attempted = false
   for (const provider of order) {
     try {
+      if (req.imagePath && TEXT_ONLY.includes(provider)) continue
       const avail = await isAvailable(provider)
       if (!avail) continue
       attempted = true
@@ -136,7 +161,7 @@ export async function complete(
   // So try the configured provider anyway and let the real call be the judge: it
   // either works, or it fails with an error that says what is actually wrong instead
   // of our guess about it.
-  if (!attempted) {
+  if (!attempted && !(req.imagePath && TEXT_ONLY.includes(primary))) {
     try {
       console.log(`[modelport] ${feature}: nothing detected as available; trying ${primary} anyway`)
       return await BACKENDS[primary](req)
@@ -211,6 +236,9 @@ export async function isAvailable(provider: ProviderId): Promise<boolean> {
       case 'gemini':
         ;({ ok, detail } = openaiCompatAvailable('gemini'))
         break
+      case 'fireworks':
+        ;({ ok, detail } = openaiCompatAvailable('fireworks'))
+        break
       case 'claude-agent':
         ;({ ok, detail } = await claudeAgentAvailable())
         break
@@ -226,7 +254,7 @@ export async function isAvailable(provider: ProviderId): Promise<boolean> {
 }
 
 export async function providersStatus(): Promise<ProviderStatus[]> {
-  const ids: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini']
+  const ids: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini', 'fireworks']
   return Promise.all(
     ids.map(async (id) => {
       const ok = await isAvailable(id)

@@ -228,7 +228,7 @@ export interface TransformResult {
 export type EnhancePreset = 'standard' | 'positive' | 'custom'
 
 export type ProviderLane = 'subscription' | 'api'
-export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini'
+export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini' | 'fireworks'
 
 export interface ProviderStatus {
   id: ProviderId
@@ -290,7 +290,7 @@ export interface AppSettings {
    * session never sees keys exported in a shell rc; the environment is still read as
    * a fallback. See modelport/openaiCompat.ts.
    */
-  apiKeys?: { openai?: string; gemini?: string }
+  apiKeys?: { openai?: string; gemini?: string; fireworks?: string }
   sessionsEnabled: boolean
   /** Per-provider model overrides (fast models by default). */
   models: Partial<Record<ProviderId, string>>

@@ -21,7 +21,8 @@ const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
   { id: 'claude-agent', label: 'Claude (agent)' },
   { id: 'codex', label: 'Codex' },
   { id: 'openai', label: 'OpenAI' },
-  { id: 'gemini', label: 'Gemini' }
+  { id: 'gemini', label: 'Gemini' },
+  { id: 'fireworks', label: 'Fireworks (DeepSeek)' }
 ]
 
 /** Placeholder = the default model used when no override is set. */
@@ -29,7 +30,8 @@ const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
   'claude-agent': 'haiku',
   codex: '(codex default)',
   openai: 'gpt-5.6-luna',
-  gemini: 'gemini-flash-lite-latest'
+  gemini: 'gemini-flash-lite-latest',
+  fireworks: 'accounts/fireworks/models/deepseek-v4-flash-0731'
 }
 
 /**
@@ -45,7 +47,8 @@ const MODEL_CHOICES: Record<ProviderId, string[]> = {
   // models are both slower AND returned empty — their reasoning tokens consume the
   // completion budget — so they are deliberately absent.
   openai: ['gpt-4.1-mini', 'gpt-5.6-luna', 'gpt-5.6', 'gpt-5.1', 'gpt-5', 'gpt-4.1-nano'],
-  gemini: ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-pro-latest']
+  gemini: ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-pro-latest'],
+  fireworks: ['accounts/fireworks/models/deepseek-v4-flash-0731']
 }
 
 const CUSTOM = '__custom__'
@@ -1274,6 +1277,19 @@ export default function Settings() {
                   placeholder="sk-…"
                   onCommit={(v) =>
                     patch({ apiKeys: { ...(s.apiKeys ?? {}), openai: v || undefined } })
+                  }
+                />
+              </Row>
+              <Row
+                label="Fireworks API key"
+                sub="Enables DeepSeek v4 Flash for quick transformations — rewrites and the AI dictation cleanup — which are short prompts where cheap and fast wins. Used automatically for those when set; enrichment and anything with an image stay on your chosen provider, since this model is text-only."
+              >
+                <TextField
+                  value={s.apiKeys?.fireworks ?? ''}
+                  password
+                  placeholder="fw_…"
+                  onCommit={(v) =>
+                    patch({ apiKeys: { ...(s.apiKeys ?? {}), fireworks: v || undefined } })
                   }
                 />
               </Row>

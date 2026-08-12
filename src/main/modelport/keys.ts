@@ -21,7 +21,8 @@ import { importShellEnv } from '../shellEnv'
  */
 const ENV_VAR = {
   openai: 'OPENAI_API_KEY',
-  gemini: 'GEMINI_API_KEY'
+  gemini: 'GEMINI_API_KEY',
+  fireworks: 'FIREWORKS_API_KEY'
 } as const
 
 export type KeyedProvider = keyof typeof ENV_VAR

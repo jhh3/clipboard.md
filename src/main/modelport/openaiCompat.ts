@@ -15,7 +15,12 @@ interface CompatConfig {
   model: string
 }
 
-const CONFIGS: Record<'openai' | 'gemini', CompatConfig> = {
+/**
+ * Fireworks is OpenAI-compatible, so it needs no backend of its own — only an entry
+ * here. DeepSeek v4 Flash is the cheap, fast model this exists for; it is TEXT ONLY,
+ * which complete() enforces by never routing a request carrying an image to it.
+ */
+const CONFIGS: Record<CompatProvider, CompatConfig> = {
   openai: {
     baseUrl: 'https://api.openai.com/v1',
     keyEnv: 'OPENAI_API_KEY',
@@ -25,10 +30,17 @@ const CONFIGS: Record<'openai' | 'gemini', CompatConfig> = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     keyEnv: 'GEMINI_API_KEY',
     model: 'gemini-flash-lite-latest'
+  },
+  fireworks: {
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    keyEnv: 'FIREWORKS_API_KEY',
+    model: 'accounts/fireworks/models/deepseek-v4-flash-0731'
   }
 }
 
-export function openaiCompatAvailable(provider: 'openai' | 'gemini'): { ok: boolean; detail: string } {
+export type CompatProvider = 'openai' | 'gemini' | 'fireworks'
+
+export function openaiCompatAvailable(provider: CompatProvider): { ok: boolean; detail: string } {
   const key = apiKeyFor(provider)
   return key
     ? { ok: true, detail: `${getSettings().models[provider] ?? CONFIGS[provider].model} via ${apiKeySource(provider)}` }
@@ -36,7 +48,7 @@ export function openaiCompatAvailable(provider: 'openai' | 'gemini'): { ok: bool
 }
 
 export async function openaiCompatComplete(
-  provider: 'openai' | 'gemini',
+  provider: CompatProvider,
   req: PortRequest
 ): Promise<string> {
   const cfg = CONFIGS[provider]
