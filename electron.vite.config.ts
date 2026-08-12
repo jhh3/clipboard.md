@@ -23,6 +23,9 @@ export default defineConfig({
           'tesseract.js',
           'x11',
           'sherpa-onnx-node',
+          // Native addon, loaded lazily and only on Windows. Bundling it would make
+          // every platform's main bundle import a binary only one of them has.
+          'koffi',
           '@huggingface/transformers',
           '@anthropic-ai/claude-agent-sdk',
           '@openai/codex-sdk'

@@ -534,7 +534,12 @@ export interface IpcEventMap {
 export const DEFAULT_SETTINGS: AppSettings = {
   captureEnabled: true,
   pollIntervalMs: 400,
-  ignoreApps: ['1password', 'keepassxc', 'bitwarden', 'gnome-keyring'],
+  // Matched as a case-insensitive SUBSTRING of the source app's name and id, which
+  // is why there are no `.exe` variants here: `1password` already matches Windows'
+  // `1password.exe`, and adding both would only suggest the matching is exact.
+  // dashlane and lastpass are new — they have Windows desktop apps and were simply
+  // missing, on every platform.
+  ignoreApps: ['1password', 'keepassxc', 'bitwarden', 'dashlane', 'lastpass', 'gnome-keyring'],
   secretAutoClear: false,
   retentionDays: 365,
   maxItems: 50000,

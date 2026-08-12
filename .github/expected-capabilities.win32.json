@@ -4,8 +4,8 @@
   "primarySelection": "unsupported",
   "screenshotRegion": "unsupported",
   "localTranscribe": "unsupported",
-  "sourceApp": "unsupported",
-  "concealedFormatHints": "unsupported",
+  "sourceApp": "supported",
+  "concealedFormatHints": "supported",
   "autostart": "unsupported",
   "pinAcrossWorkspaces": "unsupported"
 }

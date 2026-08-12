@@ -112,8 +112,10 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
           arch === 'arm64'
             ? no('sherpa-onnx publishes no win32-arm64 build, so offline transcription is impossible on ARM64 Windows. Use the OpenAI backend.')
             : no('The recording is decoded with ffmpeg, which Windows does not ship. Use the OpenAI backend.'),
-        sourceApp: no('Not implemented yet, so the password-manager ignore list cannot act on Windows.'),
-        concealedFormatHints: no('Not implemented yet, so the password-manager “don’t record this” markers are not seen.'),
+        sourceApp: ok('The foreground window’s process image name (GetForegroundWindow → QueryFullProcessImageNameW).'),
+        concealedFormatHints: ok(
+          'The ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory / CanUploadToCloudClipboard markers are honoured.'
+        ),
         autostart: no('Not implemented yet — the Linux .desktop writer must not run here.'),
         pinAcrossWorkspaces: no(
           'Electron cannot pin a window across Windows virtual desktops — the palette appears on the desktop it was last shown on.'

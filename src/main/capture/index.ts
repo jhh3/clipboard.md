@@ -2,6 +2,7 @@ import { app, nativeImage } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
 import { helperPath } from '../mac/helper'
+import { parseWatchLine, watcherCommand, watcherScript } from '../win/sequenceWatcher'
 import { getSourceApp, type SourceApp } from './sourceApp'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
@@ -11,7 +12,7 @@ import { upsertClip, enqueueEnrichment } from '../store/items'
 import { runFilters } from './filters'
 import { getSettings } from '../settings'
 import { considerSnapshot } from '../corrections'
-import { MACOS, LINUX } from '../platform'
+import { MACOS, LINUX, WIN32 } from '../platform'
 
 export interface CaptureEvents {
   onItem: (id: number, created: boolean) => void
@@ -49,6 +50,16 @@ export class CaptureService {
   private reading = false
   private paused = false
   private lastHash = ''
+  /**
+   * Whether the clipboard content this tick is marked "do not record" by Windows'
+   * concealed-content formats. Set by the sidecar immediately before the tick it
+   * describes; see runFilters' `concealedWin`.
+   *
+   * Defaults to false and is CLEARED after every tick, because a stale true would
+   * silently drop the next ordinary clip, and a stale false is the one thing we must
+   * never carry into a password.
+   */
+  private concealedWin = false
   /** Hash the service itself just wrote (paste/copy actions) — skip one echo. */
   private selfHash = ''
   private selfHashExpires = 0
@@ -74,6 +85,11 @@ export class CaptureService {
       this.startPasteboardWatcher().then((ok) => {
         if (ok) console.log('[capture] event-driven (pasteboard watcher); polling disabled')
         else this.startPolling('pasteboard watcher unavailable')
+      })
+    } else if (WIN32) {
+      this.startWindowsWatcher().then((ok) => {
+        if (ok) console.log('[capture] event-driven (clipboard sequence watcher); polling disabled')
+        else this.startPolling('clipboard sequence watcher unavailable')
       })
     } else {
       this.startPolling('platform has no clipboard events')
@@ -129,6 +145,84 @@ export class CaptureService {
           // A watcher that dies mid-session would silently stop all capture.
           if (!this.paused) {
             console.error(`[capture] pasteboard watcher exited (${code}); falling back to polling`)
+            this.startPolling('watcher exited')
+          }
+          done(false)
+        })
+        // If it never produces its baseline line, treat it as unusable.
+        setTimeout(() => done(false), 3000)
+      } catch {
+        done(false)
+      }
+    })
+  }
+
+  /**
+   * Event-driven capture on Windows.
+   *
+   * Same shape as the macOS pasteboard watcher, and for the same reason: polling
+   * from here means reading the whole clipboard every tick to discover nothing
+   * changed. The sidecar reads GetClipboardSequenceNumber, which — crucially — does
+   * NOT require OpenClipboard. A background tool that opens the clipboard on a timer
+   * is how another app ends up reporting "We couldn't free up space on the
+   * Clipboard"; we must never be the cause of that.
+   *
+   * The exit → polling fallback is mandatory, not defensive tidiness: `Add-Type` is
+   * blocked outright under Constrained Language Mode, AppLocker and several EDR
+   * products, which are common on exactly the managed machines where a clipboard
+   * manager silently capturing nothing for a whole session would go unnoticed.
+   */
+  private startWindowsWatcher(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const script = watcherScript(process.resourcesPath ?? '', __dirname)
+      if (!script) {
+        console.error('[capture] clipwatch.ps1 not found; falling back to polling')
+        return resolve(false)
+      }
+      let settled = false
+      const done = (ok: boolean): void => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      try {
+        const { cmd, args } = watcherCommand(script)
+        const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+        this.watcher = child
+        child.stdout.setEncoding('utf8')
+        // stderr is where Add-Type reports being blocked. Silence there would make an
+        // AppLocker machine indistinguishable from a working one.
+        child.stderr?.setEncoding('utf8')
+        child.stderr?.on('data', (chunk: string) => {
+          const text = chunk.trim()
+          if (text) console.error(`[capture] clipwatch: ${text}`)
+        })
+        // The first line is the baseline sequence number at startup, not a change.
+        let primed = false
+        let buffered = ''
+        child.stdout.on('data', (chunk: string) => {
+          done(true)
+          buffered += chunk
+          const lines = buffered.split('\n')
+          buffered = lines.pop() ?? ''
+          for (const line of lines) {
+            const ev = parseWatchLine(line)
+            if (!ev) continue
+            if (!primed) {
+              primed = true
+              continue
+            }
+            // Held for the duration of this tick only. It describes THIS clipboard
+            // content, and by the next event the user may have copied something else.
+            this.concealedWin = ev.concealed
+            void this.tick()
+          }
+        })
+        child.on('error', () => done(false))
+        child.on('exit', (code) => {
+          this.watcher = null
+          if (!this.paused) {
+            console.error(`[capture] clipboard watcher exited (${code}); falling back to polling`)
             this.startPolling('watcher exited')
           }
           done(false)
@@ -240,6 +334,21 @@ export class CaptureService {
     try {
       if (!getSettings().captureEnabled) return
 
+      // Windows resolves the source app BEFORE the read, not after.
+      //
+      // The sidecar's poll interval already puts up to 250ms between the copy and
+      // this tick, and reading the clipboard adds more; asking afterwards names
+      // whichever app the user has tabbed TO. A wrong answer here is worse than
+      // none, because "sourceApp: 1password.exe" is what the ignore list acts on —
+      // and the mirror of that, naming the wrong app, means the copy from the
+      // password manager is stored.
+      //
+      // linux and darwin keep the existing ordering deliberately. The same race
+      // exists there and is narrower (both have event-driven detection with no
+      // 250ms floor); changing it is a behaviour change to a shipping platform and
+      // belongs in its own commit.
+      const early = WIN32 ? await getSourceApp() : undefined
+
       const snap = await readClipboard()
       const hash = snap.image
         ? createHash('sha256').update('image').update(snap.image).digest('hex')
@@ -258,13 +367,16 @@ export class CaptureService {
       if (prime) return
 
       // Resolve the source app before storing so the ignore-list can actually act.
-      const sourceApp = await getSourceApp()
+      const sourceApp = early ?? (await getSourceApp())
       if (snap.image) this.captureImageBuffer(snap.image, snap.formats, sourceApp)
       else await this.captureText(snap.text, snap.formats, sourceApp)
     } catch (err) {
       console.error('[capture] tick failed:', err)
     } finally {
       this.reading = false
+      // One tick, one verdict. Not clearing this is how a single concealed copy
+      // would go on suppressing every clip after it.
+      this.concealedWin = false
     }
   }
 
@@ -275,6 +387,7 @@ export class CaptureService {
       formats,
       sourceApp: sourceApp?.name,
       sourceAppId: sourceApp?.id,
+      concealedWin: this.concealedWin,
       ignoreApps: settings.ignoreApps
     })
     if (verdict === 'skip') return
@@ -306,6 +419,7 @@ export class CaptureService {
       formats,
       sourceApp: sourceApp?.name,
       sourceAppId: sourceApp?.id,
+      concealedWin: this.concealedWin,
       ignoreApps: getSettings().ignoreApps
     })
     if (verdict === 'skip') return

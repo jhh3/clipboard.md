@@ -50,6 +50,12 @@ asarUnpack:
   # app.asar those paths don't exist, which is exactly how sqlite-vec silently
   # disabled semantic search in the installed build only.
   - '**/node_modules/sherpa-onnx*/**'
+  # koffi is an N-API addon that dlopens its own prebuilt binary by path, and its
+  # per-platform payload lives in a separate @koromix package. Both have to be real
+  # files on disk or the Windows clipboard source-app lookup and paste injection
+  # fail at load. Harmless on linux/mac, where the win32 payloads are not installed.
+  - '**/node_modules/koffi/**'
+  - '**/node_modules/@koromix/**'
 
 linux:
   # Keep only this platform's onnxruntime binding (~110MB per platform).
@@ -106,6 +112,11 @@ win:
   extraResources:
     - from: resources/plugin
       to: plugin
+    # The clipboard-change sidecar. It is a .ps1 that PowerShell must open by path,
+    # so it cannot live inside app.asar — that is a file, and -File would get
+    # ENOTDIR. Same reason the plugin scaffold is here.
+    - from: resources/win
+      to: win
   # NOT build/icon.png: electron-builder auto-detects that name for linux and mac
   # too, which would change those artifacts' icons. This port must not touch them.
   icon: build/icon-win.png

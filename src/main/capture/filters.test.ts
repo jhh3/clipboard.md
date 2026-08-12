@@ -134,3 +134,48 @@ describe('runFilters', () => {
     expect(runFilters({ ...base, text: '   ' }).verdict).toBe('skip')
   })
 })
+
+describe('Windows concealed-content markers', () => {
+  const base = { formats: [] as string[], ignoreApps: [] as string[] }
+
+  it('skips a clip the sidecar reported as concealed', () => {
+    // These formats are registered names with no MIME mapping, so
+    // clipboard.availableFormats() will never list them and the existing
+    // hasConcealedFormat() check cannot see them. Without this input the Windows
+    // build would record every password a manager copies while Settings displayed
+    // an ignore list suggesting otherwise.
+    expect(runFilters({ ...base, text: 'hunter2', concealedWin: true })).toEqual({
+      verdict: 'skip',
+      reason: 'concealed-format'
+    })
+  })
+
+  it('leaves ordinary clips alone', () => {
+    expect(runFilters({ ...base, text: 'hello', concealedWin: false }).verdict).toBe('store')
+    expect(runFilters({ ...base, text: 'hello' }).verdict).toBe('store')
+  })
+
+  it('outranks everything else, including the secret detector', () => {
+    // Concealed means "the application asked us not to record this", which is a
+    // stronger statement than any heuristic of ours — store-secret still writes the
+    // text to disk, and skip does not.
+    expect(
+      runFilters({ ...base, text: 'AKIAIOSFODNN7EXAMPLE', concealedWin: true }).verdict
+    ).toBe('skip')
+  })
+
+  it('matches a Windows password manager by exe name', () => {
+    // sourceApp on Windows is the exe basename, and the shipped ignore entry is
+    // `1password` — the match is substring, which is what makes the default work
+    // without a Windows-specific list.
+    expect(
+      runFilters({
+        formats: ['text/plain'],
+        text: 'hunter2',
+        sourceApp: '1password.exe',
+        sourceAppId: '1password.exe',
+        ignoreApps: ['1password']
+      }).verdict
+    ).toBe('skip')
+  })
+})
