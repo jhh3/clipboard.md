@@ -70,6 +70,17 @@ export function doctorReport(): DoctorReport {
  * remote session) where you most want to ask.
  */
 export function runDoctor(): void {
+  // stdout must carry the JSON and nothing else — CI parses it. Resolving the claude
+  // binary logs "[claude] using …" on the way past, which is useful information and
+  // fatal to a JSON.parse, so console goes to stderr for the duration. Same reason
+  // the MCP stdio mode does it, and the same one-line fix.
+  const toStderr = (...args: unknown[]): void => {
+    process.stderr.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n')
+  }
+  console.log = toStderr
+  console.info = toStderr
+  console.warn = toStderr
+  console.error = toStderr
   process.stdout.write(JSON.stringify(doctorReport(), null, 2) + '\n')
   app.exit(0)
 }

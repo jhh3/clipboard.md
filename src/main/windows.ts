@@ -1,7 +1,8 @@
-import { app, BrowserWindow, screen, shell } from 'electron'
+import { app, BrowserWindow, Menu, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
-import { MACOS, LINUX } from './platform'
+import { MACOS, LINUX, WIN32 } from './platform'
+import { existsSync } from 'fs'
 
 /**
  * Under native Wayland the compositor owns window placement: setBounds x/y is a
@@ -28,7 +29,11 @@ const WAYLAND =
  * beats an occasionally-wrong one. (Under real Wayland we don't place at all.)
  */
 function activeDisplay(): Electron.Display {
-  if (!MACOS) return screen.getPrimaryDisplay()
+  // Windows joins macOS here: getCursorScreenPoint() is accurate on Windows, so
+  // there is no reason for the palette to open on the primary monitor when the user
+  // is working on the second one. Only X11 keeps the primary-display rule, and only
+  // because cursor coordinates go stale over Wayland-native surfaces there.
+  if (!MACOS && !WIN32) return screen.getPrimaryDisplay()
   try {
     return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   } catch {
@@ -38,6 +43,23 @@ function activeDisplay(): Electron.Display {
 
 let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
+
+/**
+ * Whether a frameless window may ask for transparency.
+ *
+ * On Windows, a transparent frameless window under SOFTWARE rendering paints an
+ * opaque black rectangle — the full 960x640, over whatever the user is doing, with
+ * no error anywhere. index.ts drops to software rendering automatically after the
+ * GPU process crash-loops, so this is not a hypothetical configuration: it is the
+ * state the app deliberately puts itself into to survive a bad driver. An opaque
+ * palette with square corners is ugly; an opaque black slab is a broken app.
+ */
+function canBeTransparent(): boolean {
+  if (!WIN32) return true
+  const softwareGpu = existsSync(join(app.getPath('userData'), 'force-software-gpu'))
+  if (softwareGpu) console.log('[win] software rendering: palette will be opaque (transparency paints black)')
+  return !softwareGpu
+}
 
 // Content is 880x560. On Linux the window is 80px larger in each axis: that margin is
 // transparent, so the CSS drop shadow can fade to zero alpha instead of clipping into
@@ -59,7 +81,7 @@ export function createPaletteWindow(): BrowserWindow {
     height: PALETTE_H,
     show: false,
     frame: false,
-    transparent: true,
+    transparent: canBeTransparent(),
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -90,10 +112,19 @@ export function createPaletteWindow(): BrowserWindow {
   // Summon must land on whatever workspace the user is on right now. On macOS this
   // is what makes it follow you across Spaces instead of yanking you back to the one
   // it was first shown on.
-  palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Documented no-op on Windows, and there is no route to the behaviour from
+  // Electron at all: pinning across Windows virtual desktops needs the undocumented
+  // IVirtualDesktopManager COM interface, whose GUIDs change with every Windows
+  // build. The palette therefore appears on the desktop it was last shown on. Said
+  // out loud in capabilities.ts rather than left as a call that quietly does nothing.
+  if (!WIN32) palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // The default 'floating' level sits below a fullscreen app's window, so the palette
-  // would be invisible over one no matter what visibleOnFullScreen says.
-  if (MACOS) palette.setAlwaysOnTop(true, 'screen-saver')
+  // would be invisible over one no matter what visibleOnFullScreen says. Windows has
+  // the same problem with a maximised full-screen app, and the same fix works.
+  if (MACOS || WIN32) palette.setAlwaysOnTop(true, 'screen-saver')
+  // Alt would otherwise reveal Electron's default File/Edit/View menu on a frameless
+  // window that has no business having one.
+  if (WIN32) Menu.setApplicationMenu(null)
 
   // Hide-on-blur, but never within the first moments of a show: on a cold start
   // (and on some WM focus hand-offs) the window blurs before it is ever really
@@ -138,7 +169,7 @@ export function showPalette(collection?: string): void {
   // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   lastPaletteShow = Date.now()
 
   const reveal = (): void => {
@@ -305,7 +336,7 @@ export function showDictationHud(): void {
       height: H,
       show: false,
       frame: false,
-      transparent: true,
+      transparent: canBeTransparent(),
       resizable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
@@ -328,10 +359,10 @@ export function showDictationHud(): void {
     }
   }
   const win = dictationWin!
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Same reasoning as the palette: the HUD belongs where the user is working, and it
   // must float over a fullscreen app rather than behind it.
-  if (MACOS) win.setAlwaysOnTop(true, 'screen-saver')
+  if (MACOS || WIN32) win.setAlwaysOnTop(true, 'screen-saver')
   const area = activeDisplay().workArea
   win.setBounds({
     width: W,

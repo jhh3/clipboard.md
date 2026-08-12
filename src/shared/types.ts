@@ -469,6 +469,8 @@ export interface IpcInvokeMap {
   'settings:get': () => AppSettings
   'settings:set': (patch: Partial<AppSettings>) => AppSettings
   'providers:status': () => ProviderStatus[]
+  /** What this platform can do, so the UI can explain a control instead of hiding it. */
+  'capabilities:get': () => Record<string, { state: 'supported' | 'degraded' | 'unsupported'; reason: string }>
   'enrichment:status': () => EnrichmentStatus
   /** GNOME interactive screenshot portal (area/window/screen picker) -> new image clip id. */
   'capture:screenshot': () => { ok: boolean; id?: number; error?: string }
