@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join, win32 } from 'path'
-import { claudeBin, claudeSpawnOpts } from './claudeBin'
+import { claudeInvocation } from './claudeBin'
 import { currentPlatform, type Platform } from './platform'
 
 const execFileP = promisify(execFile)
@@ -233,8 +233,14 @@ export async function ensurePlugin(): Promise<boolean> {
 
 async function run(args: string[]): Promise<string | null> {
   try {
-    // See claudeSpawnOpts: `{}` off Windows, `{ shell: true }` for a .cmd shim.
-    const { stdout } = await execFileP(claudeBin(), args, { timeout: 60_000, ...claudeSpawnOpts() })
+    // See claudeInvocation: a pass-through off Windows, and a fully quoted
+    // `cmd.exe /d /s /c` line for a .cmd shim. It matters here too — pluginRoot() is
+    // under %APPDATA%, so it contains the user's name and very often a space.
+    const invocation = claudeInvocation(args)
+    const { stdout } = await execFileP(invocation.file, invocation.args, {
+      timeout: 60_000,
+      ...invocation.options
+    })
     return stdout
   } catch (err) {
     // Expected on re-run ("already added"), so this is informational, not an error.

@@ -3,6 +3,7 @@ import { homedir } from 'os'
 import { extname, posix, win32 } from 'path'
 import type { Platform } from './platform'
 import { currentPlatform } from './platform'
+import { cmdInvocation } from './win/cmdLine'
 
 /**
  * Absolute path to the `claude` CLI.
@@ -153,15 +154,41 @@ export function claudeBin(): string {
   return resolve()?.path ?? 'claude'
 }
 
+export interface ClaudeInvocation {
+  file: string
+  args: string[]
+  options: { windowsVerbatimArguments?: true }
+}
+
 /**
- * Spawn options every `claude` call site must spread.
+ * Exactly what to hand `spawn`/`execFile` for a claude call, as a pure function of
+ * the resolved binary.
  *
- * `{ shell: true }` when the resolved path is a .cmd/.bat shim, and `{}` otherwise —
- * so the Linux and macOS call sites pass an empty object and are byte-for-byte
- * unchanged, while Windows stops throwing EINVAL from a file that plainly exists.
+ * This used to be `claudeSpawnOpts()`, which returned `{ shell: true }` for a .cmd
+ * shim. That option does not do what its name suggests on Windows: Node joins
+ * `[file, ...args]` with SPACES and gives the result to `cmd.exe /d /s /c` with no
+ * per-argument quoting at all. So every space in an argument split it in two, and
+ * every `&`, `|` or `>` in an argument became live cmd syntax — on arguments that
+ * carry `--append-system-prompt <prose>` and an opening prompt built out of
+ * clipboard content. See win/cmdLine.ts for the full mechanism and the demo.
+ *
+ * Off Windows, and on Windows whenever the CLI resolved to a real .exe, this returns
+ * the file and args untouched with empty options: the Linux and macOS spawns are
+ * byte-for-byte the ones that shipped, which the tests assert directly.
  */
-export function claudeSpawnOpts(): { shell?: boolean } {
-  return resolve()?.needsShell ? { shell: true } : {}
+export function claudeInvocationFor(
+  bin: ResolvedBin | null,
+  args: string[],
+  comspec?: string
+): ClaudeInvocation {
+  const file = bin?.path ?? 'claude'
+  if (!bin?.needsShell) return { file, args, options: {} }
+  return cmdInvocation(file, args, comspec)
+}
+
+/** The invocation for the machine we are running on. */
+export function claudeInvocation(args: string[]): ClaudeInvocation {
+  return claudeInvocationFor(resolve(), args)
 }
 
 /** True when we actually located the binary, rather than falling back to the name. */
