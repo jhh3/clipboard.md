@@ -1,5 +1,6 @@
 import { getSettings, updateSettings } from '../settings'
 import { importShellEnv } from '../shellEnv'
+import { PROVIDER_ENV_VARS, type KeyedProvider } from './providerEnv'
 
 /**
  * API keys come from Settings. Only Settings.
@@ -19,13 +20,7 @@ import { importShellEnv } from '../shellEnv'
  * Seeding makes the key visible and editable in Settings, and identical no matter how
  * the app was started.
  */
-const ENV_VAR = {
-  openai: 'OPENAI_API_KEY',
-  gemini: 'GEMINI_API_KEY',
-  fireworks: 'FIREWORKS_API_KEY'
-} as const
 
-export type KeyedProvider = keyof typeof ENV_VAR
 
 /** The key for a provider, or undefined. Settings is the only source. */
 export function apiKeyFor(provider: KeyedProvider): string | undefined {
@@ -42,10 +37,10 @@ export function apiKeyFor(provider: KeyedProvider): string | undefined {
 export async function seedApiKeys(): Promise<void> {
   // Nothing missing? Do not spawn a login shell just to confirm that.
   const have = getSettings().apiKeys ?? {}
-  const missing = (Object.keys(ENV_VAR) as KeyedProvider[]).filter((p) => !have[p]?.trim())
+  const missing = (Object.keys(PROVIDER_ENV_VARS) as KeyedProvider[]).filter((p) => !have[p]?.trim())
   if (missing.length === 0) return
   // Only worth the shell round-trip if the environment we already have is no help.
-  if (missing.some((p) => !process.env[ENV_VAR[p]]?.trim())) await importShellEnv()
+  if (missing.some((p) => !process.env[PROVIDER_ENV_VARS[p]]?.trim())) await importShellEnv()
   seedFromEnv()
 }
 
@@ -53,9 +48,9 @@ function seedFromEnv(): void {
   const current = getSettings().apiKeys ?? {}
   const next = { ...current }
   const seeded: string[] = []
-  for (const provider of Object.keys(ENV_VAR) as KeyedProvider[]) {
+  for (const provider of Object.keys(PROVIDER_ENV_VARS) as KeyedProvider[]) {
     if (next[provider]?.trim()) continue
-    const fromEnv = process.env[ENV_VAR[provider]]?.trim()
+    const fromEnv = process.env[PROVIDER_ENV_VARS[provider]]?.trim()
     if (!fromEnv) continue
     next[provider] = fromEnv
     seeded.push(provider)
@@ -67,5 +62,7 @@ function seedFromEnv(): void {
 
 /** Human-readable state, for status text that has to be actionable. */
 export function apiKeySource(provider: KeyedProvider): string {
-  return apiKeyFor(provider) ? 'Settings' : `no key — add one in Settings (or export ${ENV_VAR[provider]})`
+  return apiKeyFor(provider) ? 'Settings' : `no key — add one in Settings (or export ${PROVIDER_ENV_VARS[provider]})`
 }
+
+export type { KeyedProvider }

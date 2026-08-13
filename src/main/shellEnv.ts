@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { PROVIDER_ENV_VARS } from './modelport/providerEnv'
 import { promisify } from 'util'
 import { MACOS, WIN32 } from './platform'
 
@@ -27,7 +28,17 @@ const execFileP = promisify(execFile)
  * both.
  */
 
-const WANTED = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'E2B_API_KEY']
+/**
+ * Derived from the provider table rather than restated, because restating it already
+ * broke once: adding Fireworks to the key lookup without adding it here meant the
+ * login shell was never asked for FIREWORKS_API_KEY. Worse, this function returns
+ * early when every WANTED name is already set — and the old three were — so the shell
+ * import was skipped entirely and the key silently never arrived in Settings.
+ *
+ * ANTHROPIC_API_KEY and E2B_API_KEY are not provider-table entries: the Agent SDK and
+ * the sandbox read them from the environment themselves.
+ */
+const WANTED = [...Object.values(PROVIDER_ENV_VARS), 'ANTHROPIC_API_KEY', 'E2B_API_KEY']
 const MARKER = '__CLIPMD_ENV__'
 
 /**
