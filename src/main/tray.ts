@@ -12,6 +12,7 @@ import { lastDictationId } from './corrections'
 import { execFileSync } from 'child_process'
 import { nativeTheme } from 'electron'
 import { MACOS, WIN32 } from './platform'
+import { windowsTrayFrames } from './trayIcon'
 
 
 /**
@@ -58,21 +59,11 @@ const ICON_WHITE_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAACwAAAAsCAMAAAApWqozAAAAqFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8ewE1eAAAAN3RSTlMAXARD3QFdgIh38MwhRZP4ZftytO8vc0Q8kiAFcZR/CIG5B7e1s+wtMdvQz84uQs0i0feV6yva07tQYgAAAAlwSFlzAAALEwAACxMBAJqcGAAAANdJREFUOMvllMcWgjAQRQMYOlhAwd57r+///0xWSBnQBQvUu0vOXbyZ5DzGyshwZFRCjMEkz+VjxJjyHNlCAilTFS0nKc89kXabGxCsfdKtgqS6T7vdLeDas3rUqzv2AtiJ1GyuyZhZU0NqwbmjU1O2gDaVzgYaqUsFUCiZvP8TmQtaBIHnynL8qeXiZC6oEd7EKN3qBP5WlmObKFJ+re6DGD/8n7OqoE9VgQfcOmn3FJTMIV1fD0DvawmugXskitTPKMbLkkp3Nyj3vMooc6mnJuhJIvtunnUpTiSkrTdoAAAAAElFTkSuQmCC'
 
 /**
- * The same glyph as a multi-frame Windows .ico (16/20/24/32/48, PNG-compressed
- * entries).
- *
- * Not the 44x44 bitmap above. Windows asks for a 16px icon in the notification area
- * and a 32px one in the overflow flyout, and downscaling a lone 44px bitmap to 16px
- * with a generic filter turns 1.5px strokes into grey mush. An .ico lets us ship a
- * bitmap rendered AT each size, which is the entire reason the format exists.
- *
- * Regenerate with scripts/make-tray-ico.mjs (run under system node, not Electron —
- * sharp's librsvg loader segfaults inside the Electron process; see the note above).
+ * The same glyph at each Windows notification-area size lives in ./trayIcon, which
+ * explains why those are PNG representations rather than the .ico this used to be.
+ * Not the 44x44 bitmap above: downscaling a lone 44px bitmap to 16px with a generic
+ * filter turns 1.5px strokes into grey mush.
  */
-const ICO_WHITE_B64 =
-  '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'
-const ICO_BLACK_B64 =
-  'AAABAAUAEBAAAAEAIADqAAAAVgAAABQUAAABACAAGAEAAEABAAAYGAAAAQAgADYBAABYAgAAICAAAAEAIAB9AQAAjgMAADAwAAABACAADQIAAAsFAACJUE5HDQoaCgAAAA1JSERSAAAAEAAAABAIBgAAAB/z/2EAAAAJcEhZcwAACxMAAAsTAQCanBgAAACcSURBVDjLY2CgEegF4udA/AKKn0PFCAI+IG4B4n9A/B8Ng8SaoWpwghVAvAuKX6NhkNhuIF6Oz4CnQGyER94IqgYnAPlXH4+8PlQNQQOUgNgFDSuRYkATEJ9Bw02kGECxF0qgIQ7CO4BYkVQDDIA4FIpDgJiLVAPI9sI9ILbFI28HxHfxGVALtWE3DvwSiKsI5QcLJP+jY3OqZ1sA6Yw6eI771l0AAAAASUVORK5CYIKJUE5HDQoaCgAAAA1JSERSAAAAFAAAABQIBgAAAI2JHQ0AAAAJcEhZcwAACxMAAAsTAQCanBgAAADKSURBVDjLY2CgIxAD4hognomGa6ByJIMNQPwbiP+g4d9QOaKBORBfBeL/BPAVIDYjZBgjED8C4j1AXArEJ4H4PhoGiZUA8V4gfgjVgxPIQW13IMInDlC1svgUKUMVWRNhoDVUrfKAGQhiT8OSbKZB5Ug20BSITwDxGTR8Aio38F4WAuIUIE5DwsqUGOgGxG+B+B0SLhhUsUwVA6WhipyJMNAZqlaakMLr0OSRhRYhyBgkdxaIrxFT2mhAM/4btAhBxm+gajQYhhwAAEp9WvsVggmqAAAAAElFTkSuQmCCiVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAACXBIWXMAAAsTAAALEwEAmpwYAAAA6ElEQVRIx2NgGARAHogDgTgUDYPE5Cg13B6IfwLxfxwYJGdHruH6QHwYj+EwfBiqliRQBcT/iDAchv8CcQWxhisB8R+oy0BBNAuIjwPxSTQMEpsJxA5QtSA9isRYEAp1lQ8JPvaF6gklRnEsVLErCRa4QvXEjjwL2IH4PBC/w4HPQtWQbQEzEC8E4t048EKomsEdB5xALIiG2ahlAcjwj1hy7mlq+qAAiDvQcMTIzgfhUMVeJFjgBdUTToxiDWhRvRVaOgoSwCA126B61Ih1US8JdQEM95Ba6TgDcT2WFISOQWqcGIYtAADoyoMLsEx+BgAAAABJRU5ErkJggolQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAAAAlwSFlzAAALEwAACxMBAJqcGAAAAS9JREFUWMNjYBgFxANBIO4G4p1AvBsHBsl1AbEALRxwGIj/E4kPUdNiRiC2JcFyGLaB6qUImAHxDTIsh+HrQGxKruVyQPwBatBfIP5FgsW/oHpA7PdALEOOAyZCDbgCxJJAzAbEuUC8BIhX4cBLoGpAaqWgekFm9FOS6LIoiMIsqBmHydF8Aao5lgIHxELNuDDqgGHhAF4grgXiDgK4FqqW6g5II6EcSKOFA0SBeAaeMgCGZ0DVjiZCqjuAHYgzgLgcC85FSng0c0AygYRXRWsHyALxWhwtoU1ArDlaEg47B5yDao6jwAHxUDPOkaN5JVTzdAocMBNqxgpyNIdDNf8D4qU48j8+vBSqF2RGKLk+mEVBixiGZ1DaNPcB4mlAvAtPjwgd74Lq8R7tUA56AADzYei+gqFdQgAAAABJRU5ErkJggolQTkcNChoKAAAADUlIRFIAAAAwAAAAMAgGAAAAVwL5hwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAb9JREFUaN7tmD8vBEEYxtfZgkIOnUKBUynEn6j4EnwASiKKi0Ih/lRycVdec+IioaKgQHFfQMIJEQmlUCGuoiG545lkNnkzzc3uzuyu5H2SX3N788z7XGbm3lnHYbFiVxrMgyIoaVKUY9JxFz8EXsBvQJ6lRyxqAbchive4kV6Ra8BA8R79URY+AcrgyWAA4bULxm0vmW3QMFi4ivDO2VpSmxYLV1m3sd5/yATvYAMsgMcQhT5ID+H1QT7/Bn0mA6wR80+QIc9SYBIsgRVNxHen5FhPg+CLzLNqMsARMd63uM8OyDyHJo0rxLhgMUCBzFOxFSBvMUCeA3AADsABfAfIgiq49klVjo01QG/I5q4hPWIL0AFqIQLUpEesS0j0Rcs++iCPRaWn4k3MAf5rgFYwDMaa0JPEAC649HHqZJMWIOPz2LxIWgBxJTzXLF7cc+eSuok7QVcT2vkU4gAcgAME1gkxLlkMsEPmOTZpnCPGr/JYNK1u8Ebm2TJpPqrcvO7AtEb/o8sMuFduaiOmf6G9CF+vl22sT/FPehZB8aegzdYmS8l+5grUDRZdl13trPLK3apcjf5HF9dhsViB9AeFqAvkTFtw2QAAAABJRU5ErkJggg=='
 
 /**
  * Which taskbar we are drawing on — NOT which theme the user's apps use.
@@ -109,11 +100,18 @@ function windowsTaskbarIsLight(): boolean {
  */
 function trayIcon(): Electron.NativeImage {
   if (WIN32) {
-    // Multi-frame .ico, and the colour chosen from the TASKBAR's theme. Windows has
-    // no template-image concept, so like Linux the glyph itself must be the right
-    // colour — but unlike Linux the taskbar is not dark in every theme.
-    const b64 = windowsTaskbarIsLight() ? ICO_BLACK_B64 : ICO_WHITE_B64
-    return nativeImage.createFromBuffer(Buffer.from(b64, 'base64'))
+    // One PNG per notification-area size, and the colour chosen from the TASKBAR's
+    // theme. Windows has no template-image concept, so like Linux the glyph itself
+    // must be the right colour — but unlike Linux the taskbar is not dark in every
+    // theme. addRepresentation rather than one bitmap because Windows asks for a
+    // different pixel size at each display scale; see ./trayIcon for why these are
+    // not the .ico they look like they should be.
+    const [base, ...rest] = windowsTrayFrames(windowsTaskbarIsLight())
+    const img = nativeImage.createFromBuffer(base.buffer, { scaleFactor: base.scaleFactor })
+    for (const rep of rest) {
+      img.addRepresentation({ scaleFactor: rep.scaleFactor, buffer: rep.buffer })
+    }
+    return img
   }
   const b64 = MACOS ? ICON_BLACK_B64 : ICON_WHITE_B64
   const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'), { scaleFactor: 2 })
