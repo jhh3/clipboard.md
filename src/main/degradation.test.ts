@@ -89,6 +89,21 @@ describe('no implicit fall-through into Linux mechanisms', () => {
     expect(capabilitiesFor('win32', 'x64').localTranscribe.state).toBe('unsupported')
   })
 
+  it('Windows says so when it falls back to polling and loses concealed formats', () => {
+    const src = read('src/main/capture/index.ts')
+    // `concealedWin` is assigned in exactly ONE place — the sidecar's stdout handler
+    // — so every polling tick passes false. Nothing else covers for it: the
+    // CONCEALED_FORMATS list is NSPasteboard and KDE names, and availableFormats()
+    // cannot enumerate Windows' registered formats at all. Silently recording every
+    // password copied out of a password manager is the worst outcome in this app, so
+    // the registry must stop claiming the feature the moment the sidecar is gone.
+    expect(src).toMatch(/private startPolling\([\s\S]{0,200}if \(WIN32\) \{/)
+    expect(src).toMatch(/downgradeCapability\('concealedFormatHints'/)
+    // Assigned in one place still, and cleared after every tick — a stale `true`
+    // would drop the next ordinary clip.
+    expect(src.match(/this\.concealedWin = /g)?.length).toBe(2)
+  })
+
   it('the shell-environment import stays skipped on Windows, and says so', () => {
     const src = read('src/main/shellEnv.ts')
     expect(src).toMatch(/if \(WIN32\) \{/)

@@ -13,6 +13,7 @@ import { runFilters } from './filters'
 import { getSettings } from '../settings'
 import { considerSnapshot } from '../corrections'
 import { MACOS, LINUX, WIN32 } from '../platform'
+import { downgradeCapability } from '../capabilities'
 
 export interface CaptureEvents {
   onItem: (id: number, created: boolean) => void
@@ -237,6 +238,23 @@ export class CaptureService {
 
   private startPolling(reason: string): void {
     if (this.timer) return
+    if (WIN32) {
+      // Polling on Windows means no sidecar, and no sidecar means no concealed-format
+      // detection AT ALL. `this.concealedWin` is assigned in exactly one place — the
+      // sidecar's stdout handler — so every polling tick passes false, and the other
+      // concealed check cannot cover for it either: CONCEALED_FORMATS lists
+      // NSPasteboard and KDE names, and clipboard.availableFormats() cannot see
+      // Windows' registered formats in the first place. The registry went on
+      // reporting this as supported while the app recorded every password copied out
+      // of a password manager. That is exactly the silent-failure shape this port
+      // exists to remove, so it is said out loud instead — in Settings, in --doctor,
+      // and in the log line downgradeCapability writes.
+      downgradeCapability('concealedFormatHints', {
+        state: 'unsupported',
+        reason:
+          'The clipboard sidecar is not running, so password managers’ “do not record” markers cannot be read this session — copies from them WILL be stored. Its own error is in the log above; Constrained Language Mode, AppLocker and some EDR products block the Add-Type it needs. Restart the app once the block is lifted.'
+      })
+    }
     console.log(`[capture] polling every ${getSettings().pollIntervalMs}ms (${reason})`)
     this.timer = setInterval(() => void this.tick(), getSettings().pollIntervalMs)
   }

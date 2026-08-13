@@ -144,9 +144,51 @@ export function capabilitiesFor(platform: Platform, arch: string = process.arch)
   }
 }
 
-/** The report for the machine we are running on. */
+/**
+ * Capabilities the platform table promises and THIS BOOT did not get.
+ *
+ * capabilitiesFor() is pure on purpose and must stay that way — it is the frozen
+ * contract CI holds the shipped build to. But "what this platform can do" and "what
+ * this run of it can do" are not always the same, and the gap is not theoretical:
+ * Windows' concealed-content markers are read by a PowerShell sidecar, `Add-Type` is
+ * blocked outright under Constrained Language Mode, AppLocker and several EDR
+ * products, and the polling fallback we drop to cannot see those markers at all
+ * (clipboard.availableFormats() never lists them — they are registered formats with
+ * no MIME mapping). Before this, the registry went on reporting concealedFormatHints
+ * as 'supported' on a machine that was quietly recording every password copied out
+ * of a password manager. Saying so is the whole point of the registry.
+ *
+ * Deliberately NOT applied to capabilitiesFor(): --doctor calls capabilities() and
+ * exits before capture ever starts, so the CI contract still sees the pure table.
+ */
+const downgrades = new Map<Capability, CapabilityInfo>()
+
+export function downgradeCapability(cap: Capability, info: CapabilityInfo): void {
+  const prev = downgrades.get(cap)
+  if (prev?.state === info.state && prev.reason === info.reason) return
+  downgrades.set(cap, info)
+  console.error(`[capabilities] ${cap} is ${info.state} on this boot: ${info.reason}`)
+}
+
+/** Overlay the boot's downgrades onto a platform table. Pure, so it can be tested. */
+export function applyDowngrades(
+  report: CapabilityReport,
+  over: ReadonlyMap<Capability, CapabilityInfo>
+): CapabilityReport {
+  if (over.size === 0) return report
+  const out = { ...report }
+  for (const [cap, info] of over) out[cap] = info
+  return out
+}
+
+/** The report for the machine we are running on, this boot. */
 export function capabilities(): CapabilityReport {
-  return capabilitiesFor(currentPlatform())
+  return applyDowngrades(capabilitiesFor(currentPlatform()), downgrades)
+}
+
+/** Test seam — nothing in the app clears a downgrade, because nothing un-breaks. */
+export function resetDowngrades(): void {
+  downgrades.clear()
 }
 
 export function supports(cap: Capability): boolean {

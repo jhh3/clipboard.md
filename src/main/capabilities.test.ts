@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
-import { capabilitiesFor, type Capability, type CapabilityReport } from './capabilities'
+import {
+  applyDowngrades,
+  capabilitiesFor,
+  downgradeCapability,
+  resetDowngrades,
+  type Capability,
+  type CapabilityInfo,
+  type CapabilityReport
+} from './capabilities'
 
 /**
  * The regression tripwire for the whole Windows port.
@@ -73,6 +81,19 @@ describe('capabilitiesFor', () => {
     expect(capabilitiesFor('win32', 'arm64').localTranscribe.state).toBe('unsupported')
   })
 
+  it('stays pure when a downgrade is recorded, so the CI contract still holds', () => {
+    // The contract file is diffed against the SHIPPED build's --doctor output. If a
+    // runtime downgrade could reach capabilitiesFor(), a managed Windows box with
+    // AppLocker would fail the build instead of telling its user something useful.
+    const before = states(capabilitiesFor('win32', 'x64'))
+    downgradeCapability('concealedFormatHints', { state: 'unsupported', reason: 'sidecar blocked' })
+    try {
+      expect(states(capabilitiesFor('win32', 'x64'))).toEqual(before)
+    } finally {
+      resetDowngrades()
+    }
+  })
+
   it('gives every capability a reason, on every platform', () => {
     // A state with no reason is the failure this registry exists to prevent: the UI
     // would render a disabled control with nothing next to it explaining why.
@@ -81,5 +102,40 @@ describe('capabilitiesFor', () => {
         expect(info.reason.length, `${platform}.${cap}`).toBeGreaterThan(10)
       }
     }
+  })
+})
+
+/**
+ * "What this platform can do" and "what this run of it got" are not the same thing.
+ *
+ * Windows reads password managers' concealed-content markers through a PowerShell
+ * sidecar, and Add-Type is blocked outright under Constrained Language Mode,
+ * AppLocker and several EDR products — common on exactly the managed machines where
+ * a clipboard manager quietly storing every password would go unnoticed. The polling
+ * fallback cannot see those markers at all, so the registry has to stop claiming it.
+ */
+describe('applyDowngrades', () => {
+  const blocked: CapabilityInfo = { state: 'unsupported', reason: 'sidecar blocked by AppLocker' }
+
+  it('replaces only the row that was downgraded', () => {
+    const base = capabilitiesFor('win32', 'x64')
+    const got = applyDowngrades(base, new Map([['concealedFormatHints', blocked]]))
+    expect(got.concealedFormatHints).toEqual(blocked)
+    for (const key of Object.keys(base) as Capability[]) {
+      if (key !== 'concealedFormatHints') expect(got[key]).toEqual(base[key])
+    }
+  })
+
+  it('returns the table itself when nothing was downgraded', () => {
+    const base = capabilitiesFor('linux')
+    expect(applyDowngrades(base, new Map())).toBe(base)
+  })
+
+  it('does not mutate the table it was given', () => {
+    // capabilitiesFor() builds a fresh object per call today; if that ever becomes a
+    // cached constant, a mutating overlay would poison every later reader.
+    const base = capabilitiesFor('win32', 'x64')
+    applyDowngrades(base, new Map([['concealedFormatHints', blocked]]))
+    expect(base.concealedFormatHints.state).toBe('supported')
   })
 })
