@@ -1,15 +1,25 @@
 #!/usr/bin/env node
 /**
- * Regenerate the Windows tray .ico blobs inlined in src/main/tray.ts.
+ * Regenerate the Windows tray bitmaps inlined in src/main/tray.ts.
  *
  * Run under SYSTEM node from the repo root, never under Electron: sharp's SVG
  * loader is librsvg, and librsvg inside the Electron process hits a GLib/GTK
- * conflict that takes the process down with SIGSEGV. Paste the two base64 lines
- * into ICO_WHITE_B64 / ICO_BLACK_B64.
+ * conflict that takes the process down with SIGSEGV. Paste the emitted lines into
+ * TRAY_PNG_WHITE / TRAY_PNG_BLACK.
  *
- * A multi-frame .ico rather than one bitmap because Windows asks for 16px in the
- * notification area and 32px in the overflow flyout, and downscaling a single
- * larger bitmap turns 1.5px strokes into grey mush.
+ * PNG frames, NOT an .ico container. This script used to emit a real multi-frame
+ * .ico and tray.ts fed it to `nativeImage.createFromBuffer`, which has no ICO
+ * decoder — it tries PNG, then JPEG, then a raw-pixel fallback that needs explicit
+ * width/height — so every Windows build got an empty image and no tray icon at all
+ * (verified against Electron 43.2.0: isEmpty() === true, size 0x0). ICO is only
+ * decoded by `createFromPath`, and only on Windows, which is untestable from here.
+ * One PNG per size fed through addRepresentation keeps the reason the .ico existed
+ * — a bitmap rendered AT each size rather than one downscaled with a generic filter
+ * — on a decoder that is platform-independent and provable.
+ *
+ * Sizes are the physical pixel sizes Windows asks the notification area for at
+ * 100/125/150/200/300% scaling, which is why the scale factors in tray.ts are
+ * size/16.
  */
 import sharp from 'sharp'
 
@@ -17,35 +27,12 @@ const svg = (c) => `<svg xmlns='http://www.w3.org/2000/svg' width='22' height='2
 
 const SIZES = [16, 20, 24, 32, 48]
 
-async function ico(colour) {
-  const pngs = []
-  for (const s of SIZES) {
-    pngs.push(await sharp(Buffer.from(svg(colour))).resize(s, s).png({ compressionLevel: 9 }).toBuffer())
-  }
-  const header = Buffer.alloc(6)
-  header.writeUInt16LE(0, 0)
-  header.writeUInt16LE(1, 2) // type: icon
-  header.writeUInt16LE(SIZES.length, 4)
-  const dir = Buffer.alloc(16 * SIZES.length)
-  let offset = 6 + dir.length
-  SIZES.forEach((s, i) => {
-    const o = i * 16
-    dir.writeUInt8(s === 256 ? 0 : s, o)
-    dir.writeUInt8(s === 256 ? 0 : s, o + 1)
-    dir.writeUInt8(0, o + 2) // palette
-    dir.writeUInt8(0, o + 3) // reserved
-    dir.writeUInt16LE(1, o + 4) // planes
-    dir.writeUInt16LE(32, o + 6) // bpp
-    dir.writeUInt32LE(pngs[i].length, o + 8)
-    dir.writeUInt32LE(offset, o + 12)
-    offset += pngs[i].length
-  })
-  return Buffer.concat([header, dir, ...pngs])
-}
-
 for (const [name, colour] of [['WHITE', 'white'], ['BLACK', 'black']]) {
-  const buf = await ico(colour)
-  console.log(`${name} ${buf.length} bytes`)
-  console.log(buf.toString('base64'))
-  console.log('---')
+  console.log(`const TRAY_PNG_${name}: Record<number, string> = {`)
+  for (const s of SIZES) {
+    const png = await sharp(Buffer.from(svg(colour))).resize(s, s).png({ compressionLevel: 9 }).toBuffer()
+    console.log(`  ${s}:`)
+    console.log(`    '${png.toString('base64')}',`)
+  }
+  console.log('}')
 }
