@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
 import { getSettings } from './settings'
 import { formatChord, parseChord, parseChordOrDefault, toEvdevChord, type EvdevChord } from '@shared/chord'
+import { MACOS, LINUX } from './platform'
 
 /**
  * Real push-to-talk, from evdev key events.
@@ -119,7 +120,16 @@ function keyboardDevices(): KbdDevice[] {
  */
 export function startPushToTalk(handlers: PttHandlers): boolean {
   stopPushToTalk()
-  if (process.platform === 'darwin') return startMacPushToTalk(handlers)
+  if (MACOS) return startMacPushToTalk(handlers)
+  if (!LINUX) {
+    // evdev is a Linux kernel interface. Everything below — /proc/bus/input/devices,
+    // /dev/input/eventN, struct input_event — exists nowhere else, so off Linux this
+    // silently found no devices and returned false. Saying so out loud matters
+    // because the caller uses the return value to decide whether the key-repeat
+    // fallback is needed, and that fallback reads GNOME's settings.
+    console.log('[ptt] evdev is Linux-only; hold-to-talk unavailable on this platform')
+    return false
+  }
 
   const s = getSettings()
   // The primary chord always has a value; the other two are opt-in and empty by

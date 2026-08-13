@@ -2953,3 +2953,62 @@ body.route-dictation #root {
   gap: 6px;
   white-space: nowrap;
 }
+
+
+/* ── Region capture overlay ─────────────────────────────────────────────────
+   Fills a full-screen, OPAQUE window showing the already-captured screen. Opaque
+   rather than transparent because a transparent frameless window under software
+   rendering paints solid black on Windows, and this has to work in exactly the
+   degraded state the app falls back to after a GPU crash-loop. */
+body.route-region {
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+  /* A real crosshair, not the default arrow: it is the only affordance telling the
+     user this window wants a drag rather than a click. */
+  cursor: crosshair;
+  user-select: none;
+}
+
+.region-overlay {
+  position: fixed;
+  inset: 0;
+}
+
+.region-shot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  /* The image is the screen at 1:1 CSS pixels; letting it scale would make the crop
+     maths in regionCapture.ts wrong by the scale ratio. */
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.region-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+/* The selection is a bright cut-out rather than a rectangle outline, so the user is
+   looking at the actual pixels they are about to take. */
+.region-sel {
+  position: absolute;
+  overflow: hidden;
+  outline: 1px solid rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+}
+
+.region-size {
+  position: absolute;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.75);
+  pointer-events: none;
+}

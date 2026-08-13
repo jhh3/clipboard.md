@@ -1,5 +1,7 @@
 import { execFile } from 'child_process'
 import { macFrontmost } from '../mac/helper'
+import { exeBasename, foregroundWindow, windowProcessPath } from '../win/user32'
+import { MACOS, LINUX, WIN32 } from '../platform'
 
 /**
  * Best-effort "which app did this copy come from".
@@ -50,7 +52,7 @@ export interface SourceApp {
  */
 export async function getSourceApp(): Promise<SourceApp | undefined> {
   try {
-    if (process.platform === 'darwin') {
+    if (MACOS) {
       const front = await macFrontmost()
       if (!front) return undefined
       // Prefer the localized name for display, but never return an empty string — a
@@ -58,9 +60,23 @@ export async function getSourceApp(): Promise<SourceApp | undefined> {
       const name = front.name || front.bundleId
       return name ? { name, id: front.bundleId || undefined } : undefined
     }
-    if (process.platform === 'linux') {
+    if (LINUX) {
       const name = await linuxActiveApp()
       return name ? { name } : undefined
+    }
+    if (WIN32) {
+      // Synchronous and in-process: GetForegroundWindow → GetWindowThreadProcessId →
+      // OpenProcess → QueryFullProcessImageNameW, about 20µs. This runs on every
+      // clipboard event, which is why it must not be a spawn — the `get-windows`
+      // package launches an executable per call, and a background clipboard manager
+      // that starts a process every time you press Ctrl+C is a different product.
+      const path = windowProcessPath(foregroundWindow())
+      if (!path) return undefined
+      const exe = exeBasename(path)
+      // Both keys: `id` is the stable one the ignore list should match on, `name` is
+      // what the UI shows. Windows has no display name available this cheaply, so
+      // the exe serves as both — better a truthful `1password.exe` than a blank.
+      return { name: exe, id: exe }
     }
   } catch {
     /* best effort only */

@@ -469,6 +469,19 @@ export interface IpcInvokeMap {
   'settings:get': () => AppSettings
   'settings:set': (patch: Partial<AppSettings>) => AppSettings
   'providers:status': () => ProviderStatus[]
+  /** What this platform can do, so the UI can explain a control instead of hiding it. */
+  'capabilities:get': () => Record<string, { state: 'supported' | 'degraded' | 'unsupported'; reason: string }>
+  /**
+   * Global shortcuts THIS BOOT could not register, as accelerator strings.
+   *
+   * Windows only in practice, and per-boot rather than per-platform, which is why it
+   * is not a capability: RegisterHotKey is first-come-first-served, so a shortcut can
+   * be taken on one boot and free on the next depending on what started first.
+   * Without this the user gets a key that silently does nothing.
+   */
+  'hotkeys:failures': () => string[]
+  /** Region-capture overlay reporting its selection, or null when cancelled. */
+  'region:result': (sel: { x: number; y: number; width: number; height: number } | null) => void
   'enrichment:status': () => EnrichmentStatus
   /** GNOME interactive screenshot portal (area/window/screen picker) -> new image clip id. */
   'capture:screenshot': () => { ok: boolean; id?: number; error?: string }
@@ -529,12 +542,19 @@ export interface IpcEventMap {
   'dictation:suggestions:changed': { suggestions: DictationSuggestion[] }
   /** Broadcast after any settings change so every window/service picks it up live. */
   'settings:changed': { settings: AppSettings }
+  /** Hands the region overlay the frozen screen grab for its display. */
+  'region:begin': { image: string; scaleFactor: number }
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   captureEnabled: true,
   pollIntervalMs: 400,
-  ignoreApps: ['1password', 'keepassxc', 'bitwarden', 'gnome-keyring'],
+  // Matched as a case-insensitive SUBSTRING of the source app's name and id, which
+  // is why there are no `.exe` variants here: `1password` already matches Windows'
+  // `1password.exe`, and adding both would only suggest the matching is exact.
+  // dashlane and lastpass are new — they have Windows desktop apps and were simply
+  // missing, on every platform.
+  ignoreApps: ['1password', 'keepassxc', 'bitwarden', 'dashlane', 'lastpass', 'gnome-keyring'],
   secretAutoClear: false,
   retentionDays: 365,
   maxItems: 50000,

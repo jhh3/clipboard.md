@@ -9,8 +9,9 @@ import type {
   SavedAction
 } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
-import { IS_MAC, GLOBAL_MOD } from '../lib/keys'
+import { IS_MAC, IS_WIN, GLOBAL_MOD } from '../lib/keys'
 import { DEFAULT_DICTATE_CHORD, chordWarning, formatChord, parseChord } from '@shared/chord'
+import { capabilityNotices, type CapabilityLike } from '@shared/capabilityNotices'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
@@ -183,6 +184,96 @@ function Row({
         {sub && <div className="set-sub">{sub}</div>}
       </div>
       <div className="set-control">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * What this platform cannot do, and why — read from the main process's capability
+ * registry rather than duplicated here.
+ *
+ * A control that silently does nothing is the failure mode this whole registry
+ * exists to prevent, and a control that is simply hidden is only a little better:
+ * the user goes looking for the feature and concludes the app is broken or that
+ * they have misremembered it. Saying "Rewrite: Windows has no current selection to
+ * read, so the hotkey refuses rather than rewriting whatever you last copied" costs
+ * one line and ends the search.
+ *
+ * Windows only — see capabilityNotices() in @shared for why the platform gate is not
+ * optional. Renders nothing at all on macOS and Linux, whose Settings pane this port
+ * does not change.
+ */
+const CAPABILITY_LABELS: Record<string, string> = {
+  pasteInjection: 'Automatic paste',
+  holdToTalk: 'Hold-to-talk dictation',
+  primarySelection: 'Rewrite selection',
+  screenshotRegion: 'Region screenshot',
+  localTranscribe: 'Offline transcription',
+  sourceApp: 'Source app detection',
+  concealedFormatHints: 'Password-manager markers',
+  autostart: 'Start at login',
+  pinAcrossWorkspaces: 'Follow me across desktops'
+}
+
+function CapabilityNotices() {
+  const [caps, setCaps] = useState<Record<string, CapabilityLike>>({})
+  useEffect(() => {
+    // Not even fetched off Windows: the IPC round trip has no reader there, and a
+    // capability report sitting in state is one edit away from being rendered again.
+    if (!IS_WIN) return
+    void invoke('capabilities:get').then(setCaps)
+  }, [])
+  const limited = capabilityNotices(caps, IS_WIN ? 'win32' : 'other')
+  if (limited.length === 0) return null
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-label">On this platform</div>
+        <div className="set-sub">
+          {limited.map((cap) => (
+            <div key={cap.key}>
+              <strong>{CAPABILITY_LABELS[cap.key] ?? cap.key}</strong>
+              {cap.state === 'degraded' ? ' (limited)' : ' (unavailable)'} — {cap.reason}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="set-control" />
+    </div>
+  )
+}
+
+/**
+ * The global shortcuts THIS BOOT could not take.
+ *
+ * The static Windows blurb above already warns that a conflict can appear on one
+ * boot and not the next; this says which keys it actually happened to. Windows grants
+ * a hotkey to whoever asks first and tells the loser nothing, so without this the
+ * user presses a documented shortcut, nothing happens, and there is no way to tell
+ * that from the app being broken.
+ *
+ * Not part of CapabilityNotices: the capability registry is a pure function of
+ * platform and arch by design, and this is a fact about what else was running.
+ * Renders nothing when every shortcut registered, which is the normal case, and
+ * nothing at all off Windows, where the list is always empty.
+ */
+function HotkeyConflicts() {
+  const [taken, setTaken] = useState<string[]>([])
+  useEffect(() => {
+    if (!IS_WIN) return
+    void invoke('hotkeys:failures').then(setTaken)
+  }, [])
+  if (taken.length === 0) return null
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-label">Shortcuts another app already owns</div>
+        <div className="set-sub">
+          {taken.join(' · ')} — Windows gives a shortcut to whichever app asked first,
+          so these do nothing until you close that app or restart clipboard.md before it.
+        </div>
+      </div>
+      <div className="set-control" />
     </div>
   )
 }
@@ -1160,17 +1251,26 @@ export default function Settings() {
                 sub={
                   IS_MAC
                     ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation, hold to talk: 🌐 (Fn) or ⌘⇧D plain · ⌘⌥D AI cleanup · ⌘⌥A to agent. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
-                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
+                    : IS_WIN
+                      ? // Ctrl+Shift and not Ctrl+Alt: on most non-US layouts Ctrl+Alt is
+                        // AltGr, and taking it system-wide would stop you typing @ or €
+                        // in every application on the machine.
+                        'Registered at launch: Ctrl+Shift+V palette · S screenshot · E scratchpad · N notes · A inbox, plus your dictation chord below. Ctrl+Shift rather than Ctrl+Alt, because Ctrl+Alt is AltGr on most layouts. Windows gives a shortcut to whichever app asks first, so a conflict can appear on one boot and not the next.'
+                      : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
                 }
               >
-                <kbd className="hotkey-kbd">{IS_MAC ? `${GLOBAL_MOD}V` : s.hotkeyHint}</kbd>
+                <kbd className="hotkey-kbd">
+                  {IS_MAC ? `${GLOBAL_MOD}V` : IS_WIN ? 'Ctrl+Shift+V' : s.hotkeyHint}
+                </kbd>
               </Row>
+              <HotkeyConflicts />
               {/*
                 Linux only. The chord drives both the GNOME keybinding that starts
                 dictation and the evdev codes that watch the hold, so it has to be one
                 setting — see shared/chord.ts. macOS dictation is the Fn/🌐 key via the
                 helper's event tap and is deliberately not configurable here.
               */}
+              <CapabilityNotices />
               {!IS_MAC && (
                 <Row
                   label="Hold-to-talk chord"

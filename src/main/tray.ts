@@ -9,6 +9,10 @@ import {
   showPalette
 } from './windows'
 import { lastDictationId } from './corrections'
+import { execFileSync } from 'child_process'
+import { nativeTheme } from 'electron'
+import { MACOS, WIN32 } from './platform'
+import { windowsTrayFrames } from './trayIcon'
 
 
 /**
@@ -55,15 +59,65 @@ const ICON_WHITE_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAACwAAAAsCAMAAAApWqozAAAAqFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8ewE1eAAAAN3RSTlMAXARD3QFdgIh38MwhRZP4ZftytO8vc0Q8kiAFcZR/CIG5B7e1s+wtMdvQz84uQs0i0feV6yva07tQYgAAAAlwSFlzAAALEwAACxMBAJqcGAAAANdJREFUOMvllMcWgjAQRQMYOlhAwd57r+///0xWSBnQBQvUu0vOXbyZ5DzGyshwZFRCjMEkz+VjxJjyHNlCAilTFS0nKc89kXabGxCsfdKtgqS6T7vdLeDas3rUqzv2AtiJ1GyuyZhZU0NqwbmjU1O2gDaVzgYaqUsFUCiZvP8TmQtaBIHnynL8qeXiZC6oEd7EKN3qBP5WlmObKFJ+re6DGD/8n7OqoE9VgQfcOmn3FJTMIV1fD0DvawmugXskitTPKMbLkkp3Nyj3vMooc6mnJuhJIvtunnUpTiSkrTdoAAAAAElFTkSuQmCC'
 
 /**
+ * The same glyph at each Windows notification-area size lives in ./trayIcon, which
+ * explains why those are PNG representations rather than the .ico this used to be.
+ * Not the 44x44 bitmap above: downscaling a lone 44px bitmap to 16px with a generic
+ * filter turns 1.5px strokes into grey mush.
+ */
+
+/**
+ * Which taskbar we are drawing on — NOT which theme the user's apps use.
+ *
+ * nativeTheme.shouldUseDarkColors maps to AppsUseLightTheme, and "dark apps with a
+ * light taskbar" is a common Windows configuration. Following it there paints a
+ * white glyph onto a white taskbar: present, clickable and invisible, which is
+ * exactly the black-on-black failure this file already documents for GNOME.
+ * SystemUsesLightTheme is the taskbar's own setting and the only correct source.
+ *
+ * reg.exe is used rather than a dependency because this is one value read at most a
+ * handful of times per session. windowsHide keeps a console window from flashing.
+ */
+function windowsTaskbarIsLight(): boolean {
+  try {
+    const out = execFileSync(
+      'reg.exe',
+      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize', '/v', 'SystemUsesLightTheme'],
+      { encoding: 'utf8', timeout: 2000, windowsHide: true }
+    )
+    // "    SystemUsesLightTheme    REG_DWORD    0x1"
+    return /0x1\s*$/m.test(out.trim())
+  } catch {
+    // The value is absent on some Server SKUs and on a fresh profile before the
+    // user has touched personalisation. Windows' own default there is a DARK
+    // taskbar, so a white glyph is the safer guess.
+    return false
+  }
+}
+
+/**
  * Decode the glyph. Tagged scaleFactor 2 so the 44x44 bitmap reads as a 22pt icon and
  * stays crisp on Retina.
  */
 function trayIcon(): Electron.NativeImage {
-  const b64 = process.platform === 'darwin' ? ICON_BLACK_B64 : ICON_WHITE_B64
+  if (WIN32) {
+    // One PNG per notification-area size, and the colour chosen from the TASKBAR's
+    // theme. Windows has no template-image concept, so like Linux the glyph itself
+    // must be the right colour — but unlike Linux the taskbar is not dark in every
+    // theme. addRepresentation rather than one bitmap because Windows asks for a
+    // different pixel size at each display scale; see ./trayIcon for why these are
+    // not the .ico they look like they should be.
+    const [base, ...rest] = windowsTrayFrames(windowsTaskbarIsLight())
+    const img = nativeImage.createFromBuffer(base.buffer, { scaleFactor: base.scaleFactor })
+    for (const rep of rest) {
+      img.addRepresentation({ scaleFactor: rep.scaleFactor, buffer: rep.buffer })
+    }
+    return img
+  }
+  const b64 = MACOS ? ICON_BLACK_B64 : ICON_WHITE_B64
   const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'), { scaleFactor: 2 })
   // Template mode is what makes macOS invert it for a dark menu bar. It is ignored on
   // Linux, which is exactly why the glyph itself has to be the right colour there.
-  if (process.platform === 'darwin') img.setTemplateImage(true)
+  if (MACOS) img.setTemplateImage(true)
   return img
 }
 
@@ -81,7 +135,7 @@ export function buildTrayMenu(): void {
   // Accelerator labels teach the hotkeys, but only macOS gets ⌘⇧ combos — on
   // Linux the real bindings are GNOME-level ⌃⌥ ones the Menu API can't render.
   const acc = (mac: string): { accelerator?: string } =>
-    process.platform === 'darwin' ? { accelerator: mac } : {}
+    MACOS ? { accelerator: mac } : {}
   // The one reliable correction path for dictations we can't observe (terminals like
   // WezTerm, or any app we didn't paste into via our own field): reopen the last
   // transcript here, fix the word, and the scratchpad-edit path learns the rule.
@@ -139,8 +193,11 @@ export function buildTrayMenu(): void {
       .filter(Boolean)
       .join(' — ')
   )
-  // macOS shows this next to the icon; it is how a blocked agent gets noticed.
-  tray.setTitle(unread > 0 ? String(unread) : '')
+  // macOS ONLY. setTitle is a documented no-op on Windows and Linux, so the unread
+  // badge — the only signal a blocked agent waiting on the user has — simply
+  // vanished there. Elsewhere the count rides in the tooltip above and in the menu
+  // item's own label, both of which are already built.
+  if (MACOS) tray.setTitle(unread > 0 ? String(unread) : '')
 }
 
 export function createTray(): void {
@@ -154,10 +211,25 @@ export function createTray(): void {
     // icon silently never appeared there was nothing to distinguish "created fine"
     // from "never got there" — which is exactly what happened.
     console.log('[tray] menu bar icon created')
-    // NO click handler. setContextMenu already makes macOS open the menu on left
-    // click; adding one on top of that summoned the palette AND the menu together,
-    // overlapping each other. The menu is what a menu bar icon is for — the palette
-    // has its own hotkey and a menu entry.
+    if (WIN32) {
+      // setContextMenu binds the RIGHT button only on Windows, so without this the
+      // left click — the one everybody tries first — does nothing at all, on the
+      // app's only discovery surface for a process with no window and no Dock icon.
+      tray.on('click', () => showPalette())
+      // The taskbar theme can change while we are running, and the icon does not
+      // repaint itself. nativeTheme fires for the apps setting, which is a good
+      // enough trigger to re-read the taskbar one.
+      nativeTheme.on('updated', () => {
+        try {
+          tray?.setImage(trayIcon())
+        } catch (err) {
+          console.error('[tray] could not refresh the icon for the new theme:', err)
+        }
+      })
+    }
+    // No click handler on macOS or Linux. setContextMenu already opens the menu on
+    // left click there; adding one on top summoned the palette AND the menu
+    // together, overlapping each other. Windows is the opposite case — see above.
   } catch (err) {
     // A missing tray must never be fatal — on Linux the appindicator support is
     // genuinely flaky (docs/DESIGN.md §6), and the app works fine without it.

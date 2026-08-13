@@ -217,8 +217,88 @@ export function toEvdevChord(c: Chord): EvdevChord | null {
   return { modifierGroups, key, watched }
 }
 
+/**
+ * Electron's accelerator grammar — the third output form, beside the GNOME binding
+ * and the evdev codes.
+ *
+ * Returns null for anything the grammar cannot express, rather than a
+ * plausible-looking string. `globalShortcut.register` throws on an unparseable
+ * accelerator and returns false on a taken one, and a caller cannot tell those apart
+ * from a chord it invented — so the honest answer for NumpadEnter, Pause, ScrollLock
+ * and Menu is "no", said here, once.
+ *
+ * The numpad names are Electron's own and are not guessable: `num0`, not `Numpad0`
+ * or `KP_0`. Writing the browser name registers nothing.
+ */
+export function toAccelerator(c: Chord): string | null {
+  const key = ACCELERATOR_KEYS[c.key]
+  // undefined = not a key we know at all; null = known and inexpressible. Both mean
+  // "do not register", and conflating them is how a null became the string "null".
+  if (key === undefined || key === null) return null
+  const parts: string[] = []
+  // 'Control', not 'CommandOrControl': this form is only ever used on Windows, and
+  // being explicit means a Mac reading this file is never in doubt about what it does.
+  if (c.ctrl) parts.push('Control')
+  if (c.alt) parts.push('Alt')
+  if (c.shift) parts.push('Shift')
+  if (c.meta) parts.push('Super')
+  parts.push(key)
+  return parts.join('+')
+}
+
+/** Main-key name → Electron accelerator token, or null where none exists. */
+const ACCELERATOR_KEYS: Record<string, string | null> = {
+  ...Object.fromEntries(Object.keys(KEYS).map((k) => [k, k])),
+  Numpad0: 'num0',
+  Numpad1: 'num1',
+  Numpad2: 'num2',
+  Numpad3: 'num3',
+  Numpad4: 'num4',
+  Numpad5: 'num5',
+  Numpad6: 'num6',
+  Numpad7: 'num7',
+  Numpad8: 'num8',
+  Numpad9: 'num9',
+  NumpadAdd: 'numadd',
+  NumpadSubtract: 'numsub',
+  NumpadMultiply: 'nummult',
+  NumpadDivide: 'numdiv',
+  NumpadDecimal: 'numdec',
+  // Electron has no accelerator token for these four. Returning a guess would
+  // register nothing and report success.
+  NumpadEnter: null,
+  Pause: null,
+  ScrollLock: null,
+  Menu: null
+}
+
 /** Chord names we ship as the default, in storage form. */
 export const DEFAULT_DICTATE_CHORD = 'Ctrl+Alt+Space'
+
+/**
+ * The Windows default, which is deliberately NOT the Linux one.
+ *
+ * On most non-US keyboard layouts Ctrl+Alt IS AltGr. Registering Ctrl+Alt+Space
+ * system-wide on Windows therefore takes AltGr+Space away from the user — and with
+ * other letters, AltGr is how you type `@`, `€`, `ł`, `ß`. This is the one change in
+ * the whole port that would damage something OUTSIDE this app: the keyboard, for as
+ * long as clipboard.md is running, with nothing to connect cause to effect.
+ */
+export const WIN_DEFAULT_DICTATE_CHORD = 'Ctrl+Shift+Space'
+
+/**
+ * The chord to actually register, given what is stored.
+ *
+ * Only substitutes when the stored value is the shipped default — i.e. the user has
+ * never chosen one. A chord they picked themselves is theirs, AltGr collision and
+ * all; we warn rather than override. And nothing is written back to settings, so a
+ * profile synced between a Linux and a Windows machine keeps working on both.
+ */
+export function effectiveDictateChord(stored: string | undefined, platform: string): string {
+  const value = stored?.trim() || DEFAULT_DICTATE_CHORD
+  if (platform === 'win32' && value === DEFAULT_DICTATE_CHORD) return WIN_DEFAULT_DICTATE_CHORD
+  return value
+}
 
 /**
  * Parse with a fallback to the default, so a corrupt or unsupported stored value can

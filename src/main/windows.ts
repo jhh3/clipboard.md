@@ -1,6 +1,9 @@
-import { app, BrowserWindow, screen, shell } from 'electron'
+import { app, BrowserWindow, Menu, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
+import { MACOS, LINUX, WIN32 } from './platform'
+import { existsSync } from 'fs'
+import { rememberForeground } from './win/foreground'
 
 /**
  * Under native Wayland the compositor owns window placement: setBounds x/y is a
@@ -8,12 +11,11 @@ import { getSettings, updateSettings } from './settings'
  * out. Mutter places and lets you drag these windows like any other app's.
  */
 const WAYLAND =
-  process.platform === 'linux' &&
+  LINUX &&
   process.env.XDG_SESSION_TYPE === 'wayland' &&
   // Only true when we are a NATIVE Wayland client. Under Xwayland (which we force
   // on GNOME/KDE so we can place the HUD) positioning works normally.
   app.commandLine.getSwitchValue('ozone-platform') !== 'x11'
-const MACOS = process.platform === 'darwin'
 
 /**
  * The display a summoned window should appear on.
@@ -28,7 +30,11 @@ const MACOS = process.platform === 'darwin'
  * beats an occasionally-wrong one. (Under real Wayland we don't place at all.)
  */
 function activeDisplay(): Electron.Display {
-  if (!MACOS) return screen.getPrimaryDisplay()
+  // Windows joins macOS here: getCursorScreenPoint() is accurate on Windows, so
+  // there is no reason for the palette to open on the primary monitor when the user
+  // is working on the second one. Only X11 keeps the primary-display rule, and only
+  // because cursor coordinates go stale over Wayland-native surfaces there.
+  if (!MACOS && !WIN32) return screen.getPrimaryDisplay()
   try {
     return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   } catch {
@@ -39,6 +45,23 @@ function activeDisplay(): Electron.Display {
 let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
 
+/**
+ * Whether a frameless window may ask for transparency.
+ *
+ * On Windows, a transparent frameless window under SOFTWARE rendering paints an
+ * opaque black rectangle — the full 960x640, over whatever the user is doing, with
+ * no error anywhere. index.ts drops to software rendering automatically after the
+ * GPU process crash-loops, so this is not a hypothetical configuration: it is the
+ * state the app deliberately puts itself into to survive a bad driver. An opaque
+ * palette with square corners is ugly; an opaque black slab is a broken app.
+ */
+function canBeTransparent(): boolean {
+  if (!WIN32) return true
+  const softwareGpu = existsSync(join(app.getPath('userData'), 'force-software-gpu'))
+  if (softwareGpu) console.log('[win] software rendering: palette will be opaque (transparency paints black)')
+  return !softwareGpu
+}
+
 // Content is 880x560. On Linux the window is 80px larger in each axis: that margin is
 // transparent, so the CSS drop shadow can fade to zero alpha instead of clipping into
 // a hard rectangle at the window edge.
@@ -47,7 +70,7 @@ let lastPaletteShow = 0
 // corners for us. Carrying the margin there produced two shadows: the CSS one, plus
 // AppKit's around the full invisible frame, which read as a boxy halo floating well
 // off the palette. Window is sized to the content and the native shadow is the only one.
-const MAC_PALETTE = process.platform === 'darwin'
+const MAC_PALETTE = MACOS
 const PALETTE_W = MAC_PALETTE ? 880 : 960
 const PALETTE_H = MAC_PALETTE ? 560 : 640
 
@@ -59,7 +82,7 @@ export function createPaletteWindow(): BrowserWindow {
     height: PALETTE_H,
     show: false,
     frame: false,
-    transparent: true,
+    transparent: canBeTransparent(),
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -90,10 +113,19 @@ export function createPaletteWindow(): BrowserWindow {
   // Summon must land on whatever workspace the user is on right now. On macOS this
   // is what makes it follow you across Spaces instead of yanking you back to the one
   // it was first shown on.
-  palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Documented no-op on Windows, and there is no route to the behaviour from
+  // Electron at all: pinning across Windows virtual desktops needs the undocumented
+  // IVirtualDesktopManager COM interface, whose GUIDs change with every Windows
+  // build. The palette therefore appears on the desktop it was last shown on. Said
+  // out loud in capabilities.ts rather than left as a call that quietly does nothing.
+  if (!WIN32) palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // The default 'floating' level sits below a fullscreen app's window, so the palette
-  // would be invisible over one no matter what visibleOnFullScreen says.
-  if (MACOS) palette.setAlwaysOnTop(true, 'screen-saver')
+  // would be invisible over one no matter what visibleOnFullScreen says. Windows has
+  // the same problem with a maximised full-screen app, and the same fix works.
+  if (MACOS || WIN32) palette.setAlwaysOnTop(true, 'screen-saver')
+  // Alt would otherwise reveal Electron's default File/Edit/View menu on a frameless
+  // window that has no business having one.
+  if (WIN32) Menu.setApplicationMenu(null)
 
   // Hide-on-blur, but never within the first moments of a show: on a cold start
   // (and on some WM focus hand-offs) the window blurs before it is ever really
@@ -123,6 +155,11 @@ export function getPalette(): BrowserWindow | null {
 }
 
 export function showPalette(collection?: string): void {
+  // BEFORE anything is shown. Windows has no non-activating panel: the moment we
+  // show, WE are the foreground window, and the app the user was typing in is only
+  // recoverable if it was recorded first. Everything a paste can follow goes through
+  // here or showDictationHud. A no-op off Windows.
+  if (WIN32) rememberForeground()
   const win = createPaletteWindow()
   // On Wayland the compositor positions us (it centres popups sensibly). Elsewhere we
   // place it ourselves — see activeDisplay() for why the choice of display differs.
@@ -138,7 +175,7 @@ export function showPalette(collection?: string): void {
   // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   lastPaletteShow = Date.now()
 
   const reveal = (): void => {
@@ -292,6 +329,10 @@ export function getDictationWindow(): BrowserWindow | null {
 let dictationActive = false
 
 export function showDictationHud(): void {
+  // Same reason as showPalette. The HUD is focusable:false, but on Windows that is a
+  // hint rather than a guarantee, and the transcript is pasted into whatever had
+  // focus when dictation STARTED — which is precisely what this records.
+  if (WIN32) rememberForeground()
   dictationActive = true
   // Deliberately small: on Wayland the compositor decides where this lands (our
   // setBounds x/y is a no-op), so it will be centred no matter what we ask for.
@@ -305,7 +346,7 @@ export function showDictationHud(): void {
       height: H,
       show: false,
       frame: false,
-      transparent: true,
+      transparent: canBeTransparent(),
       resizable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
@@ -328,10 +369,10 @@ export function showDictationHud(): void {
     }
   }
   const win = dictationWin!
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Same reasoning as the palette: the HUD belongs where the user is working, and it
   // must float over a fullscreen app rather than behind it.
-  if (MACOS) win.setAlwaysOnTop(true, 'screen-saver')
+  if (MACOS || WIN32) win.setAlwaysOnTop(true, 'screen-saver')
   const area = activeDisplay().workArea
   win.setBounds({
     width: W,

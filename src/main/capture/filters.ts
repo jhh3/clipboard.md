@@ -89,11 +89,24 @@ export interface FilterInput {
    * English substring the user put in their ignore list at all.
    */
   sourceAppId?: string
+  /**
+   * Windows' concealed-content markers, reported out of band by the clipboard
+   * sidecar (src/main/win/sequenceWatcher.ts).
+   *
+   * A separate input rather than three more names in `formats`, because
+   * `clipboard.availableFormats()` will NEVER list them: they are registered formats
+   * with no MIME mapping, so Chromium does not report them at all. Stuffing invented
+   * names into the formats array would make the filter pass while the thing it
+   * describes was never actually observed — a defence that tests green and does
+   * nothing.
+   */
+  concealedWin?: boolean
   ignoreApps: string[]
 }
 
 export function runFilters(input: FilterInput): { verdict: FilterVerdict; reason?: string } {
   if (hasConcealedFormat(input.formats)) return { verdict: 'skip', reason: 'concealed-format' }
+  if (input.concealedWin) return { verdict: 'skip', reason: 'concealed-format' }
 
   const haystacks = [input.sourceApp, input.sourceAppId]
     .filter((s): s is string => !!s)

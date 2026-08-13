@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { spawn, execFile } from 'child_process'
-import { claudeBin } from './claudeBin'
+import { claudeBin, claudeInvocation } from './claudeBin'
 import { promisify } from 'util'
 import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -204,8 +204,20 @@ function spawnDetached(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv }
 ): Promise<ReturnType<typeof spawn>> {
+  // claudeInvocation() is a pass-through everywhere except a Windows .cmd shim, where
+  // Node ≥18.20 refuses to spawn a batch file without a shell and throws EINVAL from
+  // a path that plainly exists. There it builds a properly quoted `cmd.exe /d /s /c`
+  // line instead of `{ shell: true }`, which quotes nothing — and these args carry an
+  // opening prompt made of clipboard content. It can throw (a multi-line argument has
+  // no cmd encoding); the Promise executor below is not the place to find that out.
+  const invocation = claudeInvocation(args)
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { ...opts, detached: true, stdio: 'ignore' })
+    const child = spawn(invocation.file, invocation.args, {
+      ...invocation.options,
+      ...opts,
+      detached: true,
+      stdio: 'ignore'
+    })
     child.once('error', reject)
     child.once('spawn', () => {
       child.removeListener('error', reject)

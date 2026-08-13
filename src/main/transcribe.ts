@@ -1,15 +1,17 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'path'
-import { mkdirSync, writeFileSync, existsSync, createWriteStream } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { pipeline as streamPipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { getSettings } from './settings'
 import { openaiTranscribe } from './modelport/openaiCompat'
 import { macDecodeAudio } from './mac/helper'
 import { audioExtension } from './audioFormat'
+import { extractTarBz2 } from './archive'
+import { MACOS } from './platform'
+import { capabilities } from './capabilities'
 
 const execFileP = promisify(execFile)
 
@@ -55,19 +57,20 @@ export async function ensureLocalModel(): Promise<boolean> {
     try {
       const root = modelRoot()
       mkdirSync(root, { recursive: true })
-      const archive = join(root, 'parakeet.tar.bz2')
       console.log('[transcribe] downloading Parakeet model (~490MB, one time)…')
       const res = await fetch(MODEL_URL)
       if (!res.ok || !res.body) throw new Error(`download HTTP ${res.status}`)
-      await streamPipeline(Readable.fromWeb(res.body as never), createWriteStream(archive))
-      // tar is present on both target platforms and handles bz2 via -j.
-      await execFileP('tar', ['xjf', archive, '-C', root])
+      await extractTarBz2(Readable.fromWeb(res.body as never), root)
       console.log('[transcribe] Parakeet model ready')
       return localModelReady()
     } catch (err) {
       console.error('[transcribe] local model setup failed:', err)
       return false
     } finally {
+      // The archive is never written now (see extractTarBz2), but an install that
+      // ran an older build has half a gigabyte of it sitting in userData for a file
+      // that was extracted months ago. Clean it up on the way past.
+      rmSync(join(modelRoot(), 'parakeet.tar.bz2'), { force: true })
       downloading = null
     }
   })()
@@ -101,7 +104,7 @@ export function saveRecording(audio: Buffer, mime: string): string {
  */
 async function decodeToWav(path: string): Promise<string> {
   const wav = path.replace(/\.[^.]+$/, '.16k.wav')
-  if (process.platform === 'darwin') {
+  if (MACOS) {
     try {
       await macDecodeAudio(path, wav)
       return wav
@@ -193,6 +196,12 @@ async function localTranscribe(path: string): Promise<string> {
 export async function transcribeFile(path: string, audio?: Buffer, mime?: string): Promise<string> {
   const provider = getSettings().transcription.provider
   if (provider === 'local') {
+    // Refuse loudly rather than fail three steps in. Without ffmpeg the decode
+    // throws ENOENT from deep inside localTranscribe, which surfaces as "local model
+    // setup failed" — a message that sends the user off to re-download 490MB of
+    // model that was never the problem.
+    const local = capabilities().localTranscribe
+    if (local.state === 'unsupported') throw new Error(local.reason)
     // No silent local→cloud fallback: choosing local transcription is a privacy
     // decision, and quietly uploading the recording would violate it.
     return localTranscribe(path)

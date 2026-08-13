@@ -1,0 +1,64 @@
+name: windows
+
+# The Windows port has no developer machine behind it. This workflow IS the Windows
+# machine: it is the only thing that proves `pnpm install` needs no node-gyp there,
+# that the packaged layout is right, and that the shipped build agrees with the
+# capability contract. Everything it cannot prove (UIPI, the terminal paste matrix,
+# whether a password manager's concealed markers are really set) is listed in
+# docs/WINDOWS.md as needing a human.
+
+on:
+  push:
+    branches: [main, windows-support]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # A green install here is the proof that no native dependency needs a compiler
+      # on Windows: better-sqlite3 ships prebuilds/win32-{x64,arm64}.node, and
+      # sqlite-vec, sherpa-onnx and sharp all publish win32 packages.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      - run: pnpm build:win
+
+      - name: Verify the packaged layout
+        run: node scripts/verify-package.mjs dist/win-unpacked
+
+      # Launch the BUILT binary and make it state what it can do. This is also the
+      # only check that the native addons actually load in a packaged app — a failure
+      # there is a hard throw, which is the good case.
+      - name: Doctor
+        shell: pwsh
+        run: |
+          $out = & "dist/win-unpacked/clipboard.md.exe" --doctor | Out-String
+          $out | Out-File -Encoding utf8 doctor.json
+          Write-Host $out
+
+      - name: Capabilities match the shipped contract
+        shell: pwsh
+        run: node scripts/check-doctor.mjs doctor.json .github/expected-capabilities.win32.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-build
+          path: |
+            dist/*.exe
+            doctor.json

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { MACOS, WIN32 } from './platform'
 
 /**
  * Keep the app resident. The global hotkeys are GNOME custom keybindings that run
@@ -16,8 +17,24 @@ function autostartFile(): string {
 }
 
 export function isAutostartEnabled(): boolean {
-  if (process.platform === 'darwin') return app.getLoginItemSettings().openAtLogin
+  if (MACOS) return app.getLoginItemSettings().openAtLogin
+  if (WIN32) return windowsLoginItem().openAtLogin
   return existsSync(autostartFile())
+}
+
+/**
+ * Windows login-item state, read back for the EXACT command we would write.
+ *
+ * `getLoginItemSettings()` with no arguments answers about the running executable's
+ * default registration, which is not what we wrote — we register with `--background`.
+ * Passing the same path and args back means a stale entry (an old install location,
+ * an upgrade that moved the exe) reports false, and the self-repair in index.ts
+ * rewrites it. Without that, the entry rots and the app silently stops starting at
+ * login while Settings still shows the toggle on. That is exactly the failure the
+ * Linux TryExec staleness check exists for.
+ */
+function windowsLoginItem(): Electron.LoginItemSettings {
+  return app.getLoginItemSettings({ path: process.execPath, args: ['--background'] })
 }
 
 /**
@@ -35,7 +52,11 @@ export function isAutostartEnabled(): boolean {
  * existing on disk.
  */
 export function autostartIsStale(): boolean {
-  if (process.platform === 'darwin') return false
+  if (MACOS) return false
+  // Windows has no separate staleness question: isAutostartEnabled() already asks
+  // about this exact executable and these exact args, so a stale entry shows up
+  // there as "not enabled" and is rewritten by the same self-repair.
+  if (WIN32) return false
   const file = autostartFile()
   if (!existsSync(file)) return false
   try {
@@ -63,7 +84,7 @@ function launchCommand(): string {
 }
 
 export function setAutostart(enabled: boolean): void {
-  if (process.platform === 'darwin') {
+  if (MACOS) {
     // openAsHidden is the macOS way to say "start without showing a window"; the
     // --background argv flag is still passed because routeArgsOnLaunch reads it, and
     // openAsHidden alone is advisory (and ignored outside a packaged .app).
@@ -72,6 +93,28 @@ export function setAutostart(enabled: boolean): void {
       openAsHidden: enabled,
       args: ['--background']
     })
+    return
+  }
+  if (WIN32) {
+    // The previous code fell through to the branch below and wrote an XDG
+    // `.desktop` file into %USERPROFILE%\.config\autostart — a directory Windows
+    // has never heard of. isAutostartEnabled() then found that file and reported
+    // autostart ENABLED, forever, while nothing whatsoever started at login.
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      path: process.execPath,
+      args: ['--background'],
+      name: 'clipboard.md'
+    })
+    const state = windowsLoginItem()
+    // Two different facts, and only the log can tell them apart: whether OUR registry
+    // entry exists, and whether Windows will actually honour it. Task Manager ▸
+    // Startup can disable a login item without removing it, so a user who switched
+    // it off there would otherwise see us "successfully" re-enable it every launch.
+    console.log(
+      `[autostart] windows login item: openAtLogin=${state.openAtLogin} ` +
+        `willLaunch=${state.executableWillLaunchAtLogin} items=${state.launchItems?.length ?? 0}`
+    )
     return
   }
   const file = autostartFile()

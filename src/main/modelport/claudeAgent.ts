@@ -7,6 +7,7 @@ import { join } from 'path'
 import type { PortRequest } from './index'
 import { getSettings } from '../settings'
 import { resolveVendoredCli, agentScratchDir } from './nativeCli'
+import { MACOS } from '../platform'
 
 const execFileP = promisify(execFile)
 
@@ -44,7 +45,7 @@ async function credentialsFilePresent(): Promise<boolean> {
  * token itself, so checking expiry here could only invent new false negatives.
  */
 async function keychainLoginPresent(): Promise<boolean> {
-  if (process.platform !== 'darwin') return false
+  if (!MACOS) return false
   try {
     await execFileP('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials'], {
       timeout: 5000

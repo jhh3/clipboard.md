@@ -27,6 +27,8 @@ import {
 import { getDictationTarget } from './focusedWindow'
 import { enhanceTranscript } from './enhance'
 import { detectSecret } from './capture/filters'
+import { capabilities } from './capabilities'
+import { hotkeyRegistrationFailures } from './hotkeys'
 import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import {
@@ -278,6 +280,13 @@ export function registerIpc(
   handle('dictation:suggestion:dismiss', (_e, key: string) => dismissSuggestion(key))
 
   handle('providers:status', () => providersStatus())
+  // What this platform can actually do, so Settings can render the reason next to a
+  // control instead of showing a toggle that changes nothing.
+  handle('capabilities:get', () => capabilities())
+  // Which shortcuts this boot lost, which the capability registry structurally
+  // cannot say: capabilitiesFor() is a pure function of platform and arch, and a
+  // hotkey conflict is a fact about what else happened to be running.
+  handle('hotkeys:failures', () => hotkeyRegistrationFailures())
   handle('enrichment:status', () => {
     const stats = enrichQueueStats()
     const run = enrichmentRunStats()
@@ -293,9 +302,13 @@ export function registerIpc(
   handle('capture:screenshot', async () => {
     // Hide the palette so it isn't in the shot, then invoke the system picker.
     hidePalette()
-    const path = await takeScreenshot()
-    if (!path) return { ok: false, error: 'Capture cancelled' }
-    const result = capture.ingestImageFile(path)
+    const shot = await takeScreenshot()
+    // Three outcomes, three messages. These used to share one `null`, so on a
+    // platform with no region capture at all the app said "Capture cancelled" —
+    // blaming the user for a dismissal that never happened.
+    if ('unavailable' in shot) return { ok: false, error: shot.unavailable }
+    if ('cancelled' in shot) return { ok: false, error: 'Capture cancelled' }
+    const result = capture.ingestImageFile(shot.path)
     if (!result) return { ok: false, error: 'Could not read captured image' }
     return { ok: true, id: result.id }
   })

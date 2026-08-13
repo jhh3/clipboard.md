@@ -13,16 +13,38 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { execFile } from 'child_process'
 import { homedir } from 'os'
-import { join } from 'path'
+import { join, posix, win32 } from 'path'
 import { existsSync } from 'fs'
 import { openReadOnlyDb } from '../main/store/db'
 import { searchKeyword, getItem, sessionsList } from '../main/store/items'
+import { currentPlatform, type Platform } from '../main/platform'
 
-function dataDir(): string {
-  // Electron userData for productName "clipboard.md" per platform.
-  if (process.platform === 'darwin')
-    return join(homedir(), 'Library', 'Application Support', 'clipboard.md', 'data')
-  return join(homedir(), '.config', 'clipboard.md', 'data')
+/**
+ * Where the running app keeps its database.
+ *
+ * This MUST agree with Electron's `app.getPath('userData')` for productName
+ * "clipboard.md" on each platform, and it is a separate process so nothing checks
+ * that it does. A wrong answer is not an error: the file is simply absent, and the
+ * server exits telling the user to "run the app once first" — on a machine where
+ * they have been running it for weeks.
+ *
+ * Pure over (platform, home, env) so all three can be asserted from any one of them.
+ */
+export function dataDir(
+  platform: Platform = currentPlatform(),
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  // The target platform's join, not the running one's: this is pure so it can be
+  // asserted for all three from any one of them, and a bare join would emit
+  // `C:\\Users\\Ada/clipboard.md` when the test runs on Linux.
+  if (platform === 'darwin') return posix.join(home, 'Library', 'Application Support', 'clipboard.md', 'data')
+  // Electron uses %APPDATA% (Roaming), not LOCALAPPDATA, and not ~/.config — which
+  // is where the previous `else` branch sent Windows, so the server looked for the
+  // database in a directory nothing ever creates.
+  if (platform === 'win32')
+    return win32.join(env.APPDATA ?? win32.join(home, 'AppData', 'Roaming'), 'clipboard.md', 'data')
+  return posix.join(home, '.config', 'clipboard.md', 'data')
 }
 
 function itemSummary(i: NonNullable<ReturnType<typeof getItem>>): Record<string, unknown> {
@@ -118,14 +140,27 @@ async function main(): Promise<void> {
   await server.connect(transport)
 }
 
+/**
+ * The command that takes text on stdin and puts it on the clipboard.
+ *
+ * Windows has no `xclip`, so the previous `else` sent it to one and every
+ * `clipboard_copy` from an agent failed with ENOENT. PowerShell's Set-Clipboard is
+ * the built-in equivalent; `-NoProfile` because a user's profile can print banners
+ * (and take a second to do it) and `$input` reads the piped text without needing it
+ * on the command line, where quoting would mangle it.
+ */
+export function copyCommand(platform: Platform, env: NodeJS.ProcessEnv): string[] {
+  if (platform === 'darwin') return ['pbcopy']
+  if (platform === 'win32')
+    return ['powershell', '-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard']
+  return env.WAYLAND_DISPLAY && !env.CLIPMD_FORCE_XCLIP
+    ? ['wl-copy']
+    : ['xclip', '-selection', 'clipboard', '-i']
+}
+
 function systemCopy(text: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const cmd =
-      process.platform === 'darwin'
-        ? ['pbcopy']
-        : process.env.WAYLAND_DISPLAY && !process.env.CLIPMD_FORCE_XCLIP
-          ? ['wl-copy']
-          : ['xclip', '-selection', 'clipboard', '-i']
+    const cmd = copyCommand(currentPlatform(), process.env)
     const child = execFile(cmd[0], cmd.slice(1), (err) => (err ? reject(err) : resolve()))
     child.stdin?.end(text)
   })
