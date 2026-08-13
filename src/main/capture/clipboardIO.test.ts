@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pickPayloadKind, verifyClipboardText } from './clipboardIO'
+import { pickPayloadKind, readPlan, snapshotFrom, verifyClipboardText } from './clipboardIO'
 
 /**
  * Format precedence is one line of ordering and the highest-frequency silent
@@ -38,6 +38,16 @@ const cases: Array<{ what: string; formats: string[]; win: 'image' | 'text'; oth
     win: 'image',
     other: 'image'
   },
+  {
+    // Right-click a picture in Chrome, "Copy image". Blink writes CF_DIB and a
+    // CF_HTML `<img src=…>` fragment and NO CF_UNICODETEXT, so calling this text
+    // meant readText() returned '' and the bitmap was dropped without a log line.
+    // CF_HTML is not evidence of text; CF_UNICODETEXT is.
+    what: 'an image copied from a browser, with its HTML fragment',
+    formats: ['text/html', 'image/png'],
+    win: 'image',
+    other: 'image'
+  },
   { what: 'plain text', formats: ['text/plain'], win: 'text', other: 'text' },
   { what: 'nothing at all', formats: [], win: 'text', other: 'text' },
   {
@@ -65,6 +75,89 @@ describe('pickPayloadKind', () => {
       expect(pickPayloadKind(c.formats, 'linux')).toBe(expected)
       expect(pickPayloadKind(c.formats, 'darwin')).toBe(expected)
     }
+  })
+})
+
+describe('readPlan', () => {
+  it('always leaves the other flavour as a fallback on win32', () => {
+    // The read was asymmetric: 'image' fell back to text, 'text' never looked at the
+    // image. Every win32 mis-guess therefore produced {text: ''}, and CaptureService
+    // returns on an empty hash before it logs anything at all.
+    expect(readPlan(['text/html', 'image/png'], 'win32')).toEqual(['image', 'text'])
+    expect(readPlan(['text/plain', 'image/png'], 'win32')).toEqual(['text', 'image'])
+    expect(readPlan(['image/png'], 'win32')).toEqual(['image', 'text'])
+  })
+
+  it('has nothing to fall back to when the clip holds no image', () => {
+    expect(readPlan(['text/plain'], 'win32')).toEqual(['text'])
+    expect(readPlan([], 'darwin')).toEqual(['text'])
+  })
+
+  it('reads exactly what it read before on linux and darwin', () => {
+    // The hard constraint on this file: the win32 fix must not add a single
+    // clipboard read on a platform that shipped. Image-first with a text fallback
+    // when the bitmap is empty, and text alone otherwise — nothing else.
+    for (const c of cases) {
+      const expected = c.formats.some((f) => f.startsWith('image/')) ? ['image', 'text'] : ['text']
+      expect(readPlan(c.formats, 'linux')).toEqual(expected)
+      expect(readPlan(c.formats, 'darwin')).toEqual(expected)
+    }
+  })
+})
+
+describe('snapshotFrom', () => {
+  const png = Buffer.from('fake png bytes')
+  const readers = (image: Buffer | null, text: string): { image: () => Buffer | null; text: () => string } => ({
+    image: () => image,
+    text: () => text
+  })
+
+  it('keeps an image whose only text flavour is CF_HTML', () => {
+    // The reported defect, end to end: Chrome's "Copy image" reports
+    // ['text/html','image/png'] and readText() is '' — this used to return
+    // {text: ''}, which the capture tick discards silently.
+    const snap = snapshotFrom(['text/html', 'image/png'], 'win32', readers(png, ''))
+    expect(snap.image).toEqual(png)
+    expect(snap.text).toBe('')
+  })
+
+  it('keeps the text of an Excel range copy, bitmap and all', () => {
+    const snap = snapshotFrom(['text/plain', 'text/html', 'image/png'], 'win32', readers(png, 'a\tb\tc'))
+    expect(snap.text).toBe('a\tb\tc')
+    expect(snap.image).toBeUndefined()
+  })
+
+  it('falls back to the bitmap when a win32 text guess reads back empty', () => {
+    const snap = snapshotFrom(['text/plain', 'image/png'], 'win32', readers(png, ''))
+    expect(snap.image).toEqual(png)
+  })
+
+  it('falls back to text when the bitmap will not decode', () => {
+    // Pre-existing behaviour, kept: an image format that yields an empty
+    // NativeImage must not shadow text that is really there.
+    const snap = snapshotFrom(['image/png', 'text/plain'], 'darwin', readers(null, 'hello'))
+    expect(snap.text).toBe('hello')
+  })
+
+  it('never asks darwin for a flavour the shipped code did not ask for', () => {
+    // Proof that the win32 fix did not reach the other platforms: for a text clip
+    // the image reader is not called at all, on darwin or linux.
+    for (const platform of ['darwin', 'linux'] as const) {
+      let imageReads = 0
+      const snap = snapshotFrom(['text/plain', 'text/html'], platform, {
+        image: () => {
+          imageReads++
+          return png
+        },
+        text: () => 'hello'
+      })
+      expect(imageReads).toBe(0)
+      expect(snap).toEqual({ formats: ['text/plain', 'text/html'], text: 'hello' })
+    }
+  })
+
+  it('reports an empty clip rather than inventing one', () => {
+    expect(snapshotFrom([], 'win32', readers(null, ''))).toEqual({ formats: [], text: '' })
   })
 })
 

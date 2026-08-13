@@ -52,6 +52,16 @@ function xclip(args: string[], encoding: 'utf8' | 'buffer'): Promise<Buffer | st
  * — so the existing image-first rule is kept verbatim for linux and darwin. This is
  * a pure function precisely so that can be asserted.
  *
+ * Only `text/plain` counts as that evidence. `text/html` used to count too, and it
+ * is the wrong signal in the one direction that loses the whole clip: Chromium's
+ * "Copy image" writes CF_DIB *and* CF_HTML (an `<img src=…>` fragment) with no
+ * CF_UNICODETEXT, so an image copied from a browser reported ['text/html',
+ * 'image/png'], was called text, and `clipboard.readText()` returned '' because
+ * Windows never synthesises plain text from CF_HTML. The capture tick then saw an
+ * empty hash and returned before it logged anything — the bitmap gone, silently.
+ * A rich-text copy that genuinely holds text always carries CF_UNICODETEXT beside
+ * its CF_HTML, so nothing that is really text is lost by ignoring the HTML flavour.
+ *
  * UNVERIFIED, and the whole basis of the win32 rule: that Chromium really does
  * report `image/png` for a CF_DIB accompanying an Excel text copy. It needs one
  * manual confirmation on a real Windows box.
@@ -61,8 +71,24 @@ export type PayloadKind = 'image' | 'text'
 export function pickPayloadKind(formats: string[], platform: Platform): PayloadKind {
   if (!formats.some((f) => f.startsWith('image/'))) return 'text'
   if (platform !== 'win32') return 'image'
-  const alsoText = formats.includes('text/plain') || formats.includes('text/html')
-  return alsoText ? 'text' : 'image'
+  return formats.includes('text/plain') ? 'text' : 'image'
+}
+
+/**
+ * Which flavours to actually try, in order, for a clip with these formats.
+ *
+ * The read used to be asymmetric: choosing 'image' fell back to text when the
+ * bitmap came back empty, but choosing 'text' never looked at the image even when
+ * the format list said one was there. So any win32 clip we mis-read as text
+ * produced `{text: ''}` and the payload was dropped without a log line. Whichever
+ * way the guess goes, the other flavour is now the fallback.
+ *
+ * This changes nothing on linux or darwin: there 'text' is only ever chosen when no
+ * image format is present at all, so the second step cannot exist. Asserted.
+ */
+export function readPlan(formats: string[], platform: Platform): Array<'image' | 'text'> {
+  if (pickPayloadKind(formats, platform) === 'image') return ['image', 'text']
+  return formats.some((f) => f.startsWith('image/')) ? ['text', 'image'] : ['text']
 }
 
 async function readLinux(): Promise<ClipboardSnapshot> {
@@ -88,15 +114,41 @@ async function readLinux(): Promise<ClipboardSnapshot> {
   return { formats, text: text ?? '' }
 }
 
+/**
+ * Walk the plan and keep the first flavour that actually produced something.
+ *
+ * The readers are injected for the same reason `verifyClipboardText`'s is: the
+ * ordering here is what silently discarded an entire image clip on Windows, and
+ * injected readers make it provable from a machine that is not Windows — including
+ * the negative, that darwin never reads a flavour it did not read before.
+ */
+export function snapshotFrom(
+  formats: string[],
+  platform: Platform,
+  read: { image: () => Buffer | null; text: () => string }
+): ClipboardSnapshot {
+  for (const flavour of readPlan(formats, platform)) {
+    if (flavour === 'image') {
+      const png = read.image()
+      if (png && png.length > 0) return { formats, text: '', image: png }
+    } else {
+      const text = read.text()
+      if (text !== '') return { formats, text }
+    }
+  }
+  return { formats, text: '' }
+}
+
 /** Read the clipboard without blocking the UI thread. */
 export async function readClipboard(): Promise<ClipboardSnapshot> {
   if (LINUX) return readLinux()
-  const formats = clipboard.availableFormats()
-  if (pickPayloadKind(formats, currentPlatform()) === 'image') {
-    const img = clipboard.readImage()
-    if (!img.isEmpty()) return { formats, text: '', image: img.toPNG() }
-  }
-  return { formats, text: clipboard.readText() }
+  return snapshotFrom(clipboard.availableFormats(), currentPlatform(), {
+    image: () => {
+      const img = clipboard.readImage()
+      return img.isEmpty() ? null : img.toPNG()
+    },
+    text: () => clipboard.readText()
+  })
 }
 
 /** HTML flavor, fetched only when a text clip reports one (also off-thread on Linux). */
