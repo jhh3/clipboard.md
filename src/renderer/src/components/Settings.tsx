@@ -244,6 +244,41 @@ function CapabilityNotices() {
 }
 
 /**
+ * The global shortcuts THIS BOOT could not take.
+ *
+ * The static Windows blurb above already warns that a conflict can appear on one
+ * boot and not the next; this says which keys it actually happened to. Windows grants
+ * a hotkey to whoever asks first and tells the loser nothing, so without this the
+ * user presses a documented shortcut, nothing happens, and there is no way to tell
+ * that from the app being broken.
+ *
+ * Not part of CapabilityNotices: the capability registry is a pure function of
+ * platform and arch by design, and this is a fact about what else was running.
+ * Renders nothing when every shortcut registered, which is the normal case, and
+ * nothing at all off Windows, where the list is always empty.
+ */
+function HotkeyConflicts() {
+  const [taken, setTaken] = useState<string[]>([])
+  useEffect(() => {
+    if (!IS_WIN) return
+    void invoke('hotkeys:failures').then(setTaken)
+  }, [])
+  if (taken.length === 0) return null
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-label">Shortcuts another app already owns</div>
+        <div className="set-sub">
+          {taken.join(' · ')} — Windows gives a shortcut to whichever app asked first,
+          so these do nothing until you close that app or restart clipboard.md before it.
+        </div>
+      </div>
+      <div className="set-control" />
+    </div>
+  )
+}
+
+/**
  * Dictation dictionary editor. Commits on blur rather than per keystroke: this writes
  * the settings file, and the main process re-reads it on change.
  */
@@ -1228,6 +1263,7 @@ export default function Settings() {
                   {IS_MAC ? `${GLOBAL_MOD}V` : IS_WIN ? 'Ctrl+Shift+V' : s.hotkeyHint}
                 </kbd>
               </Row>
+              <HotkeyConflicts />
               {/*
                 Linux only. The chord drives both the GNOME keybinding that starts
                 dictation and the evdev codes that watch the hold, so it has to be one

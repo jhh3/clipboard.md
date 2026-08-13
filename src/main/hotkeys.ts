@@ -134,35 +134,60 @@ export function windowsShortcuts(settings: {
   return out
 }
 
-/** Failures the UI can show. A packaged Windows app has no console to print to. */
+/**
+ * Shortcuts this boot could not take.
+ *
+ * Read over IPC by Settings (`hotkeys:failures`, wired in ipc.ts and rendered under
+ * the Global hotkeys row). It is NOT a capability: capabilitiesFor() is a pure
+ * function of platform and arch, and a hotkey conflict is a fact about what else
+ * happened to be running when we started — RegisterHotKey is first-come-first-served,
+ * so the same shortcut can be taken on one boot and free on the next.
+ */
 let hotkeyFailures: string[] = []
 
 export function hotkeyRegistrationFailures(): string[] {
   return hotkeyFailures
 }
 
+/**
+ * Register a list of accelerators and return the ones that did not take.
+ *
+ * The registrar is injected so this can be tested without Electron — the two failure
+ * modes are easy to get wrong and impossible to see: register() THROWS on an
+ * accelerator it cannot parse and RETURNS FALSE on one that is already taken. Only
+ * the second is the user's to fix, and both leave a key that does nothing at all.
+ */
+export function registerShortcuts(
+  wanted: Array<[string, keyof HotkeyActions]>,
+  register: (accelerator: string, action: keyof HotkeyActions) => boolean
+): string[] {
+  const failed: string[] = []
+  for (const [accelerator, action] of wanted) {
+    let ok = false
+    try {
+      ok = register(accelerator, action)
+    } catch (err) {
+      console.error(`[hotkeys] ${accelerator} is not a valid accelerator:`, err)
+    }
+    if (!ok) failed.push(accelerator)
+  }
+  return failed
+}
+
 function setupWindowsHotkeys(actions: HotkeyActions): void {
   // Re-registering without this leaves the old accelerators bound to the old
   // closures, so editing a chord in Settings adds a second live hotkey.
   globalShortcut.unregisterAll()
-  hotkeyFailures = []
   const wanted = windowsShortcuts(getSettings())
-  for (const [accelerator, action] of wanted) {
-    let ok = false
-    try {
-      ok = globalShortcut.register(accelerator, actions[action])
-    } catch (err) {
-      // register() THROWS on an accelerator it cannot parse and RETURNS FALSE on one
-      // that is taken. Both must be reported, and only the second is the user's to fix.
-      console.error(`[hotkeys] ${accelerator} is not a valid accelerator:`, err)
-    }
-    if (!ok) hotkeyFailures.push(accelerator)
-  }
+  hotkeyFailures = registerShortcuts(wanted, (accelerator, action) =>
+    globalShortcut.register(accelerator, actions[action])
+  )
   if (hotkeyFailures.length > 0) {
     // RegisterHotKey is first-come-first-served on Windows, so a conflict can appear
-    // on one boot and not the next depending on what started first. Surfaced in
-    // Settings as well as logged, because a packaged app here has no console at all
-    // and "the shortcut just stopped working" is otherwise unexplainable.
+    // on one boot and not the next depending on what started first. Read back by
+    // Settings through hotkeyRegistrationFailures as well as logged, because a
+    // packaged app here has no console at all and "the shortcut just stopped
+    // working" is otherwise unexplainable.
     console.error(
       `[hotkeys] could not register ${hotkeyFailures.join(', ')} — another running app already ` +
         'owns them. Windows grants a hotkey to whoever asks first; close the other app or ' +

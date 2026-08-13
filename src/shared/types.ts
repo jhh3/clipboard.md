@@ -471,6 +471,15 @@ export interface IpcInvokeMap {
   'providers:status': () => ProviderStatus[]
   /** What this platform can do, so the UI can explain a control instead of hiding it. */
   'capabilities:get': () => Record<string, { state: 'supported' | 'degraded' | 'unsupported'; reason: string }>
+  /**
+   * Global shortcuts THIS BOOT could not register, as accelerator strings.
+   *
+   * Windows only in practice, and per-boot rather than per-platform, which is why it
+   * is not a capability: RegisterHotKey is first-come-first-served, so a shortcut can
+   * be taken on one boot and free on the next depending on what started first.
+   * Without this the user gets a key that silently does nothing.
+   */
+  'hotkeys:failures': () => string[]
   /** Region-capture overlay reporting its selection, or null when cancelled. */
   'region:result': (sel: { x: number; y: number; width: number; height: number } | null) => void
   'enrichment:status': () => EnrichmentStatus
