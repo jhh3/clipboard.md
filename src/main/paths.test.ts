@@ -156,10 +156,25 @@ describe('hooks.json generator', () => {
     // `[` is not a command, cmd prints an error, and then runs the rest anyway on
     // every turn of every unrelated session on the machine.
     expect(cmd).not.toContain('[ -n')
-    expect(cmd).toContain('if not "%CLIPMD_HOOK_NODE%"==""')
-    expect(cmd).toContain('if not "%CLIPMD_SESSION_KEY%"==""')
+    expect(cmd).toContain('if defined CLIPMD_HOOK_NODE')
+    expect(cmd).toContain('if defined CLIPMD_SESSION_KEY')
     expect(cmd).toContain('mirror-turn.mjs')
     // Both env vars must be tested before the command runs, in either order.
-    expect(cmd.indexOf('mirror-turn.mjs')).toBeGreaterThan(cmd.indexOf('%CLIPMD_SESSION_KEY%'))
+    expect(cmd.indexOf('mirror-turn.mjs')).toBeGreaterThan(cmd.indexOf('CLIPMD_SESSION_KEY'))
+  })
+
+  it('does not guard with a %VAR% comparison, which fails open', () => {
+    // Claude Code runs a hook as an argument to `cmd.exe /d /s /c` — command-line
+    // mode, not batch mode. There an UNDEFINED %VAR% is left as the literal text
+    // `%VAR%`, so `if not "%CLIPMD_HOOK_NODE%"==""` compares a non-empty literal
+    // with "", passes, and cmd tries to run a program called %CLIPMD_HOOK_NODE%:
+    // an error and a non-zero exit at the end of every turn of every unrelated
+    // session on the machine. `if defined` tests the variable, not its expansion.
+    const cmd = JSON.parse(hooksJson('win32', 'C:\\x')).hooks.Stop[0].hooks[0].command as string
+    expect(cmd).not.toMatch(/"%[A-Z_]+%"\s*==\s*""/)
+    // The command body may still reference %VAR% — that is the expansion we want,
+    // and `if defined` has already established it will happen.
+    expect(cmd).toContain('"%CLIPMD_HOOK_NODE%"')
+    expect(cmd.indexOf('if defined')).toBeLessThan(cmd.indexOf('"%CLIPMD_HOOK_NODE%"'))
   })
 })

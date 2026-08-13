@@ -100,7 +100,19 @@ const HOOK_DESCRIPTION =
  * it byte-for-byte as it shipped. On Windows the hook runs under cmd.exe, where that
  * line is not a weaker guard — it is not a guard: `[` is not a command, so cmd
  * reports "'[' is not recognized" and then RUNS the rest anyway on every turn of
- * every unrelated session. `if not "%VAR%"==""` is the cmd equivalent.
+ * every unrelated session.
+ *
+ * `if defined VAR`, and NOT `if not "%VAR%"==""`, which was the first attempt and is
+ * a guard that fails OPEN. Claude Code runs a hook by passing the string as an
+ * argument to `cmd.exe /d /s /c` — command-line mode, not batch mode; both of the
+ * CLI's shell resolvers do this and neither writes a temp .cmd. In command-line mode
+ * an UNDEFINED `%VAR%` is left in place as the literal text `%VAR%` rather than
+ * collapsing to nothing, so `"%CLIPMD_HOOK_NODE%"==""` compares `"%CLIPMD_HOOK_NODE%"`
+ * with `""`, is false, `if not` therefore passes, and cmd goes looking for a program
+ * literally called %CLIPMD_HOOK_NODE% — an error and a non-zero exit at the end of
+ * every turn of every unrelated Claude Code session on the machine. `if defined`
+ * tests the variable itself instead of a string that may never have been expanded,
+ * and behaves the same in both modes.
  *
  * Windows also gets an absolute path instead of ${CLAUDE_PLUGIN_ROOT}. Whether that
  * placeholder is expanded by Claude Code or by the shell is not something we can
@@ -110,7 +122,7 @@ const HOOK_DESCRIPTION =
 export function hooksJson(platform: Platform, dir: string): string {
   const command =
     platform === 'win32'
-      ? `if not "%CLIPMD_HOOK_NODE%"=="" if not "%CLIPMD_SESSION_KEY%"=="" "%CLIPMD_HOOK_NODE%" "${win32.join(dir, 'hooks', 'mirror-turn.mjs')}"`
+      ? `if defined CLIPMD_HOOK_NODE if defined CLIPMD_SESSION_KEY "%CLIPMD_HOOK_NODE%" "${win32.join(dir, 'hooks', 'mirror-turn.mjs')}"`
       : 'if [ -n "$CLIPMD_HOOK_NODE" ] && [ -n "$CLIPMD_SESSION_KEY" ]; then "$CLIPMD_HOOK_NODE" "${CLAUDE_PLUGIN_ROOT}/hooks/mirror-turn.mjs"; fi'
   return (
     JSON.stringify(
