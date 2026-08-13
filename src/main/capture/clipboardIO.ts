@@ -279,6 +279,52 @@ export async function verifyClipboardText(
 }
 
 /**
+ * The image equivalent of waitForClipboard, and it exists for the same reason.
+ *
+ * `clipboard.writeImage` returns void whether or not it worked: Electron routes it
+ * through the same Chromium ScopedClipboardWriter that gives up after five
+ * OpenClipboard attempts at 5ms with no exception and no return value. The image
+ * paste path was the only one of the three that then injected Ctrl+V without
+ * checking — text and HTML both verify — so a dropped write pasted the PREVIOUS clip
+ * into whatever the user was typing in, and every step reported success.
+ *
+ * Dimensions rather than bytes, because bytes cannot round-trip: Windows carries the
+ * image as a CF_DIB and the PNG we read back is a re-encode. Matching dimensions
+ * still separates the two cases that matter — our image is there, versus the old
+ * clipboard content (text, nothing, or a different picture) still is.
+ *
+ * A no-op returning true anywhere but Windows. On Linux the write goes to a detached
+ * xclip owner and reading it back would be asking ourselves for a selection we own —
+ * the self-request that can take mutter's bridge down with it.
+ */
+export async function waitForClipboardImage(png: Buffer): Promise<boolean> {
+  if (!WIN32) return true
+  const expected = nativeImage.createFromBuffer(png).getSize()
+  // Nothing to compare against; the caller has bigger problems than verification.
+  if (expected.width === 0 || expected.height === 0) return true
+  return verifyClipboardImage(() => {
+    const img = clipboard.readImage()
+    return img.isEmpty() ? null : img.getSize()
+  }, expected)
+}
+
+/** The retry loop, with the read injected — see verifyClipboardText. */
+export async function verifyClipboardImage(
+  read: () => { width: number; height: number } | null,
+  expected: { width: number; height: number },
+  tries = 3,
+  waitMs = 15,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    const got = read()
+    if (got && got.width === expected.width && got.height === expected.height) return true
+    await sleep(waitMs)
+  }
+  return false
+}
+
+/**
  * True when our own process owns the X CLIPBOARD selection. Requesting a selection
  * we own means asking ourselves for data — a self-deadlock risk that can take the
  * compositor down with it. Callers skip reads when this is true.

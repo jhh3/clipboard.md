@@ -5,7 +5,8 @@ import {
   writeClipboardImage,
   writeClipboardHtml,
   markOwnedByUs,
-  waitForClipboard
+  waitForClipboard,
+  waitForClipboardImage
 } from './capture/clipboardIO'
 import type { ClipItem, PasteOutcome } from '@shared/types'
 import type { CaptureService } from './capture'
@@ -178,7 +179,16 @@ export class PasteService {
     markOwnedByUs()
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
-      await writeClipboardImage(readFileSync(item.content))
+      const png = readFileSync(item.content)
+      await writeClipboardImage(png)
+      // The last unverified branch of the three. writeImage is as silently
+      // droppable on Windows as writeText (same ScopedClipboardWriter, same five
+      // OpenClipboard tries then give up), and pasteItem treats `true` here as "the
+      // clipboard holds it" and injects Ctrl+V — pasting the previous clip.
+      if (!(await waitForClipboardImage(png))) {
+        console.error('[paste] clipboard did not take the image write in time')
+        return false
+      }
     } else if (item.html && !shaped.plain && !LINUX) {
       // Linux cannot publish HTML and plain text at once (see writeClipboardHtml), and
       // routing here also skipped the waitForClipboard guard below — so a rich clip
@@ -210,7 +220,14 @@ export class PasteService {
     markOwnedByUs()
     if (outputKind === 'image') {
       this.capture.markSelfWrite()
-      await writeClipboardImage(nativeImage.createFromDataURL(output).toPNG())
+      const png = nativeImage.createFromDataURL(output).toPNG()
+      await writeClipboardImage(png)
+      // Verified for the same reason the text branch below is: this return value is
+      // what decides whether a paste keystroke is injected.
+      if (!(await waitForClipboardImage(png))) {
+        console.error('[paste] clipboard did not take the image write in time')
+        return false
+      }
       return true
     }
     this.capture.markSelfWrite(output)

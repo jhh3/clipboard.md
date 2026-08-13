@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { pickPayloadKind, readPlan, snapshotFrom, verifyClipboardText } from './clipboardIO'
+import {
+  pickPayloadKind,
+  readPlan,
+  snapshotFrom,
+  verifyClipboardImage,
+  verifyClipboardText
+} from './clipboardIO'
 
 /**
  * Format precedence is one line of ordering and the highest-frequency silent
@@ -190,5 +196,32 @@ describe('verifyClipboardText', () => {
   it('compares only the head, so a large clip costs nothing', async () => {
     const big = 'x'.repeat(5000)
     expect(await verifyClipboardText(() => big, big + 'different tail', 1, 0, noSleep)).toBe(true)
+  })
+})
+
+describe('verifyClipboardImage', () => {
+  const noSleep = async (): Promise<void> => {}
+  const shot = { width: 1920, height: 1080 }
+
+  it('accepts an image write that landed', async () => {
+    expect(await verifyClipboardImage(() => shot, shot, 3, 0, noSleep)).toBe(true)
+  })
+
+  it('retries, because writeImage is dropped as silently as writeText', async () => {
+    // Same ScopedClipboardWriter, same five OpenClipboard tries at 5ms, same silent
+    // give-up. The image paste was the one branch of three that never checked.
+    let n = 0
+    const read = (): { width: number; height: number } | null => (++n < 3 ? null : shot)
+    expect(await verifyClipboardImage(read, shot, 3, 0, noSleep)).toBe(true)
+    expect(n).toBe(3)
+  })
+
+  it('gives up rather than letting a paste inject the previous clip', async () => {
+    // What actually happens on a dropped write: the clipboard still holds whatever
+    // was there before. Injecting Ctrl+V then pastes THAT into the user's document.
+    expect(await verifyClipboardImage(() => null, shot, 3, 0, noSleep)).toBe(false)
+    expect(
+      await verifyClipboardImage(() => ({ width: 640, height: 480 }), shot, 3, 0, noSleep)
+    ).toBe(false)
   })
 })
