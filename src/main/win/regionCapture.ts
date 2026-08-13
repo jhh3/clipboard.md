@@ -89,31 +89,101 @@ export function matchSource<T extends { display_id?: string; id: string }>(
   return sources[index]
 }
 
+export interface PixelSize {
+  width: number
+  height: number
+}
+
+/** What a display's grab should measure, in real pixels. */
+export function displayPixelSize(display: {
+  size: { width: number; height: number }
+  scaleFactor: number
+}): PixelSize {
+  return {
+    width: Math.round(display.size.width * display.scaleFactor),
+    height: Math.round(display.size.height * display.scaleFactor)
+  }
+}
+
+/**
+ * The distinct grab sizes a set of displays needs — one getSources call each.
+ *
+ * There is ONE thumbnailSize per getSources call, and Chromium aspect-FITS every
+ * frame into it: it scales up as readily as down (measured against the Electron we
+ * ship — a 1280x800 screen asked for 3840x2160 came back 3456x2160, and asked for
+ * 100x100 came back 100x63). Passing the per-axis maximum across all displays, as
+ * this did, therefore gave every display that was not the largest an UPSCALED grab:
+ * a 1920x1080 panel beside a 3840x2160 one returned a 3840x2160 image. The crop then
+ * indexed it as if it were 1920x1080 and extracted the wrong region entirely, with
+ * no error — the rect is always inside the bigger buffer.
+ *
+ * Almost every desk has one entry here, so this is almost always one call, exactly
+ * as before. Two mismatched monitors cost a second capture, which is the price of
+ * the right pixels.
+ */
+export function distinctPixelSizes(
+  displays: Array<{ size: { width: number; height: number }; scaleFactor: number }>
+): PixelSize[] {
+  const seen = new Map<string, PixelSize>()
+  for (const d of displays) {
+    const size = displayPixelSize(d)
+    seen.set(`${size.width}x${size.height}`, size)
+  }
+  return [...seen.values()]
+}
+
+/**
+ * CSS pixels → grab pixels, MEASURED from the image we actually got back.
+ *
+ * Electron's own docs say "there is no guarantee that the size of the thumbnail is
+ * the same as the thumbnailSize specified", and it is not a hypothetical: the fit is
+ * uniform, so a frame whose aspect ratio differs from the requested box comes back
+ * at neither the requested size nor the display's. Deriving the factor from
+ * display.scaleFactor assumes the guarantee that does not exist; dividing by the
+ * width we can see does not.
+ *
+ * Falls back to the declared scale factor only for a zero-width grab, which cannot
+ * be divided by and is already rejected upstream as an empty thumbnail.
+ */
+export function grabScale(cssWidth: number, grab: PixelSize, scaleFactor: number): number {
+  if (grab.width <= 0 || cssWidth <= 0) return scaleFactor
+  return grab.width / cssWidth
+}
+
 interface Grab {
   display: Electron.Display
   png: Buffer
   dataUrl: string
+  /** The grab's real pixel size — NOT display.size × scaleFactor. See grabScale. */
+  size: PixelSize
 }
 
 async function grabScreens(): Promise<Grab[]> {
   const displays = screen.getAllDisplays()
+  const out: Array<Grab & { index: number }> = []
   // Thumbnails at full source resolution: this is a screenshot, not a thumbnail, and
-  // the default 150x150 would return a postage stamp with no error.
-  const largest = displays.reduce(
-    (a, d) => ({
-      width: Math.max(a.width, Math.round(d.size.width * d.scaleFactor)),
-      height: Math.max(a.height, Math.round(d.size.height * d.scaleFactor))
-    }),
-    { width: 0, height: 0 }
-  )
-  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: largest })
-  const out: Grab[] = []
-  displays.forEach((display, i) => {
-    const source = matchSource(sources, display, i)
-    if (!source || source.thumbnail.isEmpty()) return
-    out.push({ display, png: source.thumbnail.toPNG(), dataUrl: source.thumbnail.toDataURL() })
-  })
-  return out
+  // the default 150x150 would return a postage stamp with no error. One call per
+  // distinct size rather than one for all — see distinctPixelSizes.
+  for (const thumbnailSize of distinctPixelSizes(displays)) {
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize })
+    displays.forEach((display, i) => {
+      if (out.some((g) => g.index === i)) return
+      const want = displayPixelSize(display)
+      if (want.width !== thumbnailSize.width || want.height !== thumbnailSize.height) return
+      const source = matchSource(sources, display, i)
+      if (!source || source.thumbnail.isEmpty()) return
+      out.push({
+        index: i,
+        display,
+        png: source.thumbnail.toPNG(),
+        dataUrl: source.thumbnail.toDataURL(),
+        size: source.thumbnail.getSize()
+      })
+    })
+  }
+  // Back into display order: the overlay windows are created from this list, and the
+  // index fallback in matchSource only means anything in that order.
+  return out.sort((a, b) => a.index - b.index).map(({ index: _index, ...grab }) => grab)
 }
 
 /**
@@ -202,8 +272,10 @@ export async function captureRegion(outPath: string): Promise<string | null> {
   // sharp, not nativeImage.crop: nativeImage rounds to DIP and we need exact source
   // pixels. sharp is already a dependency and already asarUnpack'd.
   const sharp = (await import('sharp')).default
-  const meta = { width: Math.round(grab.display.size.width * grab.display.scaleFactor), height: Math.round(grab.display.size.height * grab.display.scaleFactor) }
-  const rect = cropRect(sel, grab.display.scaleFactor, meta)
+  // Both from the grab itself, never from display.size × scaleFactor: desktopCapturer
+  // does not promise the size you asked for, and a rect computed in a space the image
+  // is not in crops the wrong region silently.
+  const rect = cropRect(sel, grabScale(grab.display.size.width, grab.size, grab.display.scaleFactor), grab.size)
   if (!rect) return null
   try {
     await sharp(grab.png).extract(rect).png().toFile(outPath)

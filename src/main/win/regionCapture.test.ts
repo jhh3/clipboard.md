@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cropRect, matchSource } from './regionCapture'
+import { cropRect, displayPixelSize, distinctPixelSizes, grabScale, matchSource } from './regionCapture'
 
 /**
  * The crop maths, which is the part that fails QUIETLY.
@@ -68,6 +68,70 @@ describe('cropRect', () => {
       expect(r.left + r.width, `scale ${scale}`).toBeLessThanOrEqual(source.width)
       expect(r.top + r.height, `scale ${scale}`).toBeLessThanOrEqual(source.height)
     }
+  })
+})
+
+/**
+ * A 4K primary with an ordinary 1080p beside it — the setup that made the crop wrong.
+ */
+const UHD = { size: { width: 3840, height: 2160 }, scaleFactor: 1 }
+const FHD = { size: { width: 1920, height: 1080 }, scaleFactor: 1 }
+const LAPTOP_150 = { size: { width: 1920, height: 1080 }, scaleFactor: 1.5 }
+
+describe('distinctPixelSizes', () => {
+  it('asks once when every display is the same size', () => {
+    // The common case must stay one capture: this is a user-initiated screenshot and
+    // getSources is not cheap.
+    expect(distinctPixelSizes([FHD, FHD, FHD])).toEqual([{ width: 1920, height: 1080 }])
+  })
+
+  it('asks separately for a display that is not the largest', () => {
+    // The defect: one thumbnailSize of the per-axis maxima was used for every source,
+    // and Chromium aspect-fits — scaling UP — so the 1080p panel came back as a
+    // 3840x2160 image while the crop still indexed it as 1920x1080.
+    expect(distinctPixelSizes([UHD, FHD])).toEqual([
+      { width: 3840, height: 2160 },
+      { width: 1920, height: 1080 }
+    ])
+  })
+
+  it('counts scale factor, not just logical size', () => {
+    // A 150% laptop panel and a 100% external report the same size and need
+    // different pixels.
+    expect(distinctPixelSizes([LAPTOP_150, FHD])).toEqual([
+      { width: 2880, height: 1620 },
+      { width: 1920, height: 1080 }
+    ])
+    expect(displayPixelSize(LAPTOP_150)).toEqual({ width: 2880, height: 1620 })
+  })
+})
+
+describe('grabScale', () => {
+  it('measures the factor instead of trusting the request', () => {
+    // Electron: "there is no guarantee that the size of the thumbnail is the same as
+    // the thumbnailSize specified". Believing it is what cropped the wrong region.
+    expect(grabScale(1920, { width: 1920, height: 1080 }, 1)).toBe(1)
+    expect(grabScale(1920, { width: 2880, height: 1620 }, 1.5)).toBe(1.5)
+  })
+
+  it('crops the right region even from an upscaled grab', () => {
+    // The exact reported failure: a 1920x1080 secondary whose grab came back
+    // 3840x2160. The old maths took {960,540,400,300} out of a 3840x2160 buffer —
+    // the top-left quadrant of the intended region, from the wrong place.
+    const grab = { width: 3840, height: 2160 }
+    const scale = grabScale(1920, grab, 1)
+    expect(scale).toBe(2)
+    expect(cropRect({ x: 960, y: 540, width: 400, height: 300 }, scale, grab)).toEqual({
+      left: 1920,
+      top: 1080,
+      width: 800,
+      height: 600
+    })
+  })
+
+  it('falls back to the declared factor for a grab with no width', () => {
+    expect(grabScale(1920, { width: 0, height: 0 }, 1.5)).toBe(1.5)
+    expect(grabScale(0, { width: 1920, height: 1080 }, 1)).toBe(1)
   })
 })
 
