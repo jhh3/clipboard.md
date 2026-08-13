@@ -11,6 +11,7 @@ import type {
 import { invoke, on } from '../lib/ipc'
 import { IS_MAC, IS_WIN, GLOBAL_MOD } from '../lib/keys'
 import { DEFAULT_DICTATE_CHORD, chordWarning, formatChord, parseChord } from '@shared/chord'
+import { capabilityNotices, type CapabilityLike } from '@shared/capabilityNotices'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
@@ -198,8 +199,9 @@ function Row({
  * read, so the hotkey refuses rather than rewriting whatever you last copied" costs
  * one line and ends the search.
  *
- * Renders nothing at all when everything works, so Linux and macOS are unaffected
- * except for the rows they already know about.
+ * Windows only — see capabilityNotices() in @shared for why the platform gate is not
+ * optional. Renders nothing at all on macOS and Linux, whose Settings pane this port
+ * does not change.
  */
 const CAPABILITY_LABELS: Record<string, string> = {
   pasteInjection: 'Automatic paste',
@@ -214,21 +216,24 @@ const CAPABILITY_LABELS: Record<string, string> = {
 }
 
 function CapabilityNotices() {
-  const [caps, setCaps] = useState<Record<string, { state: string; reason: string }>>({})
+  const [caps, setCaps] = useState<Record<string, CapabilityLike>>({})
   useEffect(() => {
+    // Not even fetched off Windows: the IPC round trip has no reader there, and a
+    // capability report sitting in state is one edit away from being rendered again.
+    if (!IS_WIN) return
     void invoke('capabilities:get').then(setCaps)
   }, [])
-  const limited = Object.entries(caps).filter(([, v]) => v.state !== 'supported')
+  const limited = capabilityNotices(caps, IS_WIN ? 'win32' : 'other')
   if (limited.length === 0) return null
   return (
     <div className="set-row">
       <div className="set-row-text">
         <div className="set-label">On this platform</div>
         <div className="set-sub">
-          {limited.map(([key, v]) => (
-            <div key={key}>
-              <strong>{CAPABILITY_LABELS[key] ?? key}</strong>
-              {v.state === 'degraded' ? ' (limited)' : ' (unavailable)'} — {v.reason}
+          {limited.map((cap) => (
+            <div key={cap.key}>
+              <strong>{CAPABILITY_LABELS[cap.key] ?? cap.key}</strong>
+              {cap.state === 'degraded' ? ' (limited)' : ' (unavailable)'} — {cap.reason}
             </div>
           ))}
         </div>
