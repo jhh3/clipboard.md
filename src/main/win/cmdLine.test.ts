@@ -12,10 +12,24 @@ import { claudeInvocationFor } from '../claudeBin'
  */
 
 /** How cmd.exe splits a `/d /s /c "…"` tail: strip the outer pair, then respect quotes. */
+/**
+ * What the PROGRAM finally receives: cmd consumes the carets, then the CRT parses
+ * backslashes and quotes. Two parsers in series, so the test models both.
+ */
+function stripCarets(line: string): string {
+  let out = ''
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '^') { i++; if (i < line.length) out += line[i]; continue }
+    out += line[i]
+  }
+  return out
+}
+
 function cmdWouldSee(invocation: { args: string[] }): string[] {
   const tail = invocation.args[3]
   expect(tail.startsWith('"') && tail.endsWith('"')).toBe(true)
-  const inner = tail.slice(1, -1)
+  // cmd consumes the carets before the program's CRT ever sees the line.
+  const inner = stripCarets(tail.slice(1, -1))
   const out: string[] = []
   let cur = ''
   let inQuotes = false
@@ -49,6 +63,27 @@ function cmdWouldSee(invocation: { args: string[] }): string[] {
   if (started || cur) out.push(cur)
   return out
 }
+
+/**
+ * What CMD ITSELF would act on. Deliberately models cmd's parser, not the CRT's: cmd
+ * has no backslash escape, only the caret, and it decides whether a metacharacter is
+ * live by counting double quotes. The original helper modelled the CRT here, so it
+ * agreed with the very bug it was meant to catch — the injection assertion passed
+ * while cmd would have run a second command.
+ */
+function cmdLiveMetachar(invocation: { args: string[] }): boolean {
+  const inner = invocation.args[3].replace(/^"/, '').replace(/"$/, '')
+  let quoted = false
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]
+    if (ch === '^') { i++; continue }
+    if (ch === '"') { quoted = !quoted; continue }
+    if (!quoted && '&|<>'.includes(ch)) return true
+  }
+  return false
+}
+
+
 
 describe('quoteForCmd', () => {
   it('keeps an argument with spaces whole', () => {
@@ -149,4 +184,27 @@ describe('claudeInvocationFor', () => {
       'C:\\Users\\Ada Lovelace\\AppData\\Roaming\\clipboard.md\\plugin'
     ])
   })
+})
+
+describe('cmd.exe metacharacter injection', () => {
+  // Clipboard text is attacker-influenced: you copy a snippet from a web page and
+  // then ask an agent about it. Each of these left a LIVE metacharacter before the
+  // caret pass, because cmd counts quotes and an odd count put it out-of-quote —
+  // the first one ran `calc.exe` as a second command.
+  const payloads = [
+    `summarise: Ada's 24" monitor & calc.exe`,
+    `run: git commit -m "wip && echo PWNED`,
+    `he said "hi | tee C:\\pwned.txt`,
+    `the "big file > C:\\Users\\Ada\\pwned`,
+    `a "b" c & d`,
+    `plain text with, a comma and (parens)`
+  ]
+  for (const payload of payloads) {
+    it(`leaves nothing live for cmd: ${payload.slice(0, 30)}`, () => {
+      const inv = cmdInvocation('C:\\Users\\Ada\\claude.cmd', ['-p', payload], 'cmd.exe')
+      expect(cmdLiveMetachar(inv)).toBe(false)
+      // and the program still receives the argument intact
+      expect(cmdWouldSee(inv)).toEqual(['C:\\Users\\Ada\\claude.cmd', '-p', payload])
+    })
+  }
 })

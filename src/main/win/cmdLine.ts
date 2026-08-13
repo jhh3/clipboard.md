@@ -36,6 +36,27 @@
  * copied `&&` away from being a second command, and a uniform rule is a rule that
  * can be read.
  */
+/**
+ * Make a fully-quoted argument inert to cmd.exe.
+ *
+ * quoteForCmd() below solves a DIFFERENT problem: it produces the backslash/quote
+ * form the target program's own CRT parser expects. cmd.exe never sees argv — it
+ * parses the raw line first, it has no backslash escape, and it decides whether a
+ * metacharacter is live by COUNTING double quotes. So a clipboard-derived prompt like
+ *   summarise: Ada's 24" monitor & calc.exe
+ * left an odd quote count before the &, cmd read itself as out-of-quote there, and
+ * ` calc.exe` ran as a second command. Verified against the real call site.
+ *
+ * The caret is cmd's only escape, and it works regardless of quote state, so escaping
+ * every metacharacter — the quotes included — makes cmd's parse inert and hands the
+ * program exactly the bytes quoteForCmd produced. This is what cross-spawn does.
+ */
+const CMD_META = /[()%!^<>&|;,"\s]/g
+
+export function caretEscapeForCmd(quoted: string): string {
+  return quoted.replace(CMD_META, (c) => `^${c}`)
+}
+
 export function quoteForCmd(arg: string): string {
   let out = '"'
   let backslashes = 0
@@ -103,7 +124,9 @@ export function cmdInvocation(
       )
     }
   }
-  const line = [program, ...args].map(quoteForCmd).join(' ')
+  // Quote for the program's CRT, then neutralise the line for cmd itself. Doing only
+  // the first leaves every metacharacter after an odd quote count live.
+  const line = [program, ...args].map((a) => caretEscapeForCmd(quoteForCmd(a))).join(' ')
   return {
     file: comspec ?? 'cmd.exe',
     args: ['/d', '/s', '/c', `"${line}"`],
