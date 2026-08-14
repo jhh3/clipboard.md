@@ -1519,7 +1519,7 @@ export default function Settings() {
               </div>
               <Row
                 label="Image editing"
-                sub="Edits image clips from an instruction (palette: e on an image). Nano Banana 2 Lite is ~3s and cheap; GPT Image 2 is slower but stronger."
+                sub="Edits image clips from an instruction (palette: e on an image). Nano Banana 2 takes ~9s and follows localized edits; Lite is ~2x faster but tends to hand back the original unchanged."
               >
                 <div className="set-stack">
                   <select
@@ -1543,9 +1543,12 @@ export default function Settings() {
                   >
                     {(s.imageEdit.provider === 'gemini'
                       ? [
-                          ['', 'Nano Banana 2 Lite (default)'],
-                          ['gemini-3.1-flash-image', 'Nano Banana 2'],
+                          ['', 'Nano Banana 2 (default)'],
                           ['gemini-3-pro-image', 'Nano Banana Pro'],
+                          // Kept even though '' now resolves to it, so a profile
+                          // that pinned it explicitly still matches an option.
+                          ['gemini-3.1-flash-image', 'Nano Banana 2 (pinned)'],
+                          ['gemini-3.1-flash-lite-image', 'Nano Banana 2 Lite (fast, often no-ops)'],
                           ['gemini-2.5-flash-image', 'Nano Banana (v1)']
                         ]
                       : [
