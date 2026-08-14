@@ -143,7 +143,27 @@ describe('cmdInvocation', () => {
   })
 
   it('falls back to cmd.exe when ComSpec is unset', () => {
-    expect(cmdInvocation(shim, [], undefined).file).toBe('cmd.exe')
+    // Actually unset it. Passing undefined only bypasses the ARGUMENT; the fallback
+    // reads process.env.ComSpec, which is set on a real Windows runner — so this
+    // asserted the fallback while never reaching it, and passed only on Linux.
+    const saved = process.env.ComSpec
+    delete process.env.ComSpec
+    try {
+      expect(cmdInvocation(shim, [], undefined).file).toBe('cmd.exe')
+    } finally {
+      if (saved !== undefined) process.env.ComSpec = saved
+    }
+  })
+
+  it('prefers ComSpec when the environment provides one', () => {
+    const saved = process.env.ComSpec
+    process.env.ComSpec = 'C:\\Windows\\system32\\cmd.exe'
+    try {
+      expect(cmdInvocation(shim, [], undefined).file).toBe('C:\\Windows\\system32\\cmd.exe')
+    } finally {
+      if (saved === undefined) delete process.env.ComSpec
+      else process.env.ComSpec = saved
+    }
   })
 })
 

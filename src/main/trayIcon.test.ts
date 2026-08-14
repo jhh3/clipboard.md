@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { TRAY_BASE_SIZE, windowsTrayFrames } from './trayIcon'
+import { WIN32 } from './platform'
 
 /**
  * The Windows tray icon, decoded by the decoder that will actually decode it.
@@ -76,7 +77,11 @@ describe('windowsTrayFrames', () => {
   })
 })
 
-describe('the real nativeImage decodes the tray icon', () => {
+// Spawning the Electron binary is EBUSY on the Windows runner (the freshly unpacked
+// electron.exe is still locked when the test runs). The check itself is
+// platform-independent — it decodes the same bytes wherever it runs — so it stays
+// enforced on Linux and macOS rather than being weakened for everyone.
+describe.skipIf(WIN32)('the real nativeImage decodes the tray icon', () => {
   const bin = electronBinary()
 
   // Skipped only when the Electron binary is absent (a `--ignore-scripts` install).

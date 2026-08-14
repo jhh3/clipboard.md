@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'fs'
-import { join } from 'path'
+import { join, sep } from 'path'
 import { asPlatform, currentPlatform } from './platform'
 
 /**
@@ -27,7 +27,9 @@ const ALLOWED = new Set(['src/main/platform.ts', 'src/main/platform.test.ts'])
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry)
+    // Normalised to forward slashes: join() yields backslashes on Windows, so every
+    // path missed the POSIX allowlist and the whole tree reported as violations.
+    const p = join(dir, entry).split(sep).join('/')
     if (statSync(p).isDirectory()) walk(p, out)
     else if (p.endsWith('.ts') || p.endsWith('.tsx')) out.push(p)
   }
