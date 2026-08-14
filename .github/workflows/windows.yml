@@ -28,9 +28,24 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # A green install here is the proof that no native dependency needs a compiler
-      # on Windows: better-sqlite3 ships prebuilds/win32-{x64,arm64}.node, and
-      # sqlite-vec, sherpa-onnx and sharp all publish win32 packages.
+      # better-sqlite3's install script is `node-gyp rebuild` unconditionally, so a
+      # compiler IS required on Windows — the earlier claim that prebuilds made one
+      # unnecessary was wrong, and the job failed on it every run.
+      #
+      # windows-latest does ship Visual Studio, but node-gyp 11.1.0 (the version pnpm
+      # bundles) finds it by shelling out to PowerShell and blows the child-process
+      # stdio buffer doing so: `RangeError [ERR_CHILD_PROCESS_STDIO_MAXBUFFER]`,
+      # reported as "could not use PowerShell to find Visual Studio 2017 or newer".
+      # A current node-gyp fixed that probe, so point pnpm at one.
+      - name: Use a node-gyp new enough to find Visual Studio
+        shell: pwsh
+        run: |
+          npm i -g node-gyp@latest
+          $gyp = Join-Path (npm root -g) 'node-gyp/bin/node-gyp.js'
+          if (-not (Test-Path $gyp)) { throw "node-gyp not found at $gyp" }
+          "npm_config_node_gyp=$gyp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          npx node-gyp --version
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm typecheck
