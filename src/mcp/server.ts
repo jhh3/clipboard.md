@@ -166,4 +166,12 @@ function systemCopy(text: string): Promise<void> {
   })
 }
 
-void main()
+// Only when this process was actually launched to BE the MCP server.
+//
+// This ran on import, so merely importing dataDir() from a unit test started a real
+// server in the test process — and on a machine with no database it called
+// process.exit(1) and took the whole test run down with it. That is what Windows CI
+// caught: every test passed and the run still failed. The app always passes --mcp
+// when it loads this bundle (src/main/index.ts startStdioServer), so the flag is the
+// honest signal for "I am the server", and a test importing a helper is not.
+if (process.argv.includes('--mcp')) void main()
