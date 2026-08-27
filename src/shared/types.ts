@@ -292,6 +292,14 @@ export interface AppSettings {
    */
   apiKeys?: { openai?: string; gemini?: string; fireworks?: string }
   sessionsEnabled: boolean
+  /**
+   * Register the app with Claude Code as an MCP server (clipboard search tools) and
+   * install the agent bridge plugin. OFF by default on every OS: when on, the app
+   * binary is spawned as `--mcp`/`--bridge` by Claude sessions, and because that is the
+   * same app bundle, macOS then treats the app as "already running" and a Finder launch
+   * of the menu-bar app silently does nothing. Opt in only if you want agent integration.
+   */
+  mcpServer: boolean
   /** Per-provider model overrides (fast models by default). */
   models: Partial<Record<ProviderId, string>>
   /** Saved geometry per aux window (hash route -> bounds). */
@@ -571,6 +579,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   transcription: { provider: 'local' },
   linkEnrichment: true,
   sessionsEnabled: true,
+  // Off by default on every OS — opt in under Settings → Agents. See the field doc.
+  mcpServer: false,
   // Fast-by-default: haiku on the Claude lane, Luna on OpenAI, flash-lite on Gemini.
   models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
   dictation: { autoPaste: true, keepAudio: true },

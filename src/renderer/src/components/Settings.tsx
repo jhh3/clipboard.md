@@ -1807,6 +1807,12 @@ export default function Settings() {
                 @name targets one directly. Identity changes apply on each agent&apos;s next
                 (re)start.
               </p>
+              <Row
+                label="Claude Code integration (MCP)"
+                sub="Expose your clipboard to Claude Code as search tools, and install the bridge so agent sessions can talk back. Off by default: when on, Claude Code runs this app in the background as an MCP server — and on macOS that can stop the menu-bar app from launching when you click it. Turn on only if you use agents."
+              >
+                <Toggle checked={s.mcpServer === true} onChange={(v) => patch({ mcpServer: v })} />
+              </Row>
               {s.agents.map((a, i) => (
                 <AgentCard
                   key={a.name}
