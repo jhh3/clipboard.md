@@ -136,6 +136,24 @@ export function hooksJson(platform: Platform, dir: string): string {
   )
 }
 
+/**
+ * Undo ensureMcpServer + ensurePlugin. Runs whenever the MCP integration setting is
+ * off (the default), so Claude Code sessions stop spawning this app bundle as
+ * `--mcp`/`--bridge` in the background — which is what made macOS treat the app as
+ * "already running" and silently swallow a Finder launch of the menu-bar app. Also
+ * cleans up registrations left by older builds that always registered. Every step is
+ * idempotent; "not found" is a success here, so none of them throw.
+ */
+export async function removeIntegration(): Promise<void> {
+  // Scoped and unscoped: CLI versions differ on whether `mcp remove` takes --scope,
+  // and we want the global `clipboard` server gone either way.
+  await run(['mcp', 'remove', '--scope', 'user', 'clipboard'])
+  await run(['mcp', 'remove', 'clipboard'])
+  await run(['plugin', 'uninstall', `${PLUGIN}@${MARKETPLACE}`])
+  await run(['plugin', 'marketplace', 'remove', MARKETPLACE])
+  console.log('[mcp] Claude Code integration is off; removed any registration')
+}
+
 export function pluginRoot(): string {
   return join(app.getPath('userData'), 'plugin')
 }

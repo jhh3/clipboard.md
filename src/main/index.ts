@@ -44,7 +44,7 @@ import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { unreadCount, prewarmAgents } from './agents'
 import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
 import { sweep } from './agentLifecycle'
-import { ensurePlugin, ensureMcpServer } from './agentPlugin'
+import { ensurePlugin, ensureMcpServer, removeIntegration } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
@@ -761,10 +761,22 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     const chordsOf = (s: AppSettings): string =>
       [s.dictateChord, s.dictateEnhanceChord ?? '', s.dictateAgentChord ?? ''].join('|')
     let lastChords = chordsOf(getSettings())
+    let lastMcp = getSettings().mcpServer
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
       // An API key typed into Settings must be usable immediately.
       resetProviderCache()
+      // Toggling the Claude Code integration registers/unregisters live, so it takes
+      // effect without a restart.
+      if (s.mcpServer !== lastMcp) {
+        lastMcp = s.mcpServer
+        if (s.mcpServer) {
+          void ensurePlugin()
+          void ensureMcpServer()
+        } else {
+          void removeIntegration()
+        }
+      }
       buildTrayMenu() // the Pause-capture checkbox must reflect changes made in Settings
       capture.applySettings()
       if (s.embeddings.enabled) startEmbeddings()
@@ -815,9 +827,16 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // buries dead rows, sleeps idle sessions and tears down what is never coming
     // back — see agentLifecycle.ts. A stale "running" row is worse than none: the
     // user sends a clip into it and nothing happens, silently.
-    void ensurePlugin()
-    // One install should also give the user's agents clipboard search.
-    void ensureMcpServer()
+    // Claude Code integration is OPT-IN (Settings → Agents), off by default on every
+    // OS. When on, register the clipboard MCP server + agent bridge plugin; when off,
+    // actively REMOVE any registration so Claude sessions don't spawn this bundle in the
+    // background (which blocks launching the menu-bar app from Finder). See mcpServer.
+    if (getSettings().mcpServer) {
+      void ensurePlugin()
+      void ensureMcpServer()
+    } else {
+      void removeIntegration()
+    }
     void sweep()
     setInterval(() => void sweep(), 5 * 60_000)
 
