@@ -192,22 +192,28 @@ any running session. Replies land in the inbox (`⌘⇧A`) with markdown renderi
 <details>
 <summary><b>Agents & the MCP server</b></summary>
 
-Installing the app registers a clipboard MCP server with Claude Code on first run, so
-*any* of your local agents can search your clipboard — nothing extra to install.
+**Off by default.** The integration is registered with Claude Code at user scope,
+which means every Claude Code session on the machine spawns this app as an MCP server —
+an Electron process per session, whether or not the session ever touches the clipboard.
+While it is off, the app *unregisters* the `clipboard` MCP server and the `clipmd-bridge`
+plugin on every launch, so a previous build's registrations do not linger.
 
-Tools: `clipboard_search`, `clipboard_recent`, `clipboard_get`, `clipboard_sessions`,
-`clipboard_copy`. Secret-flagged clips are refused at the tool layer. Works whether or
-not the app is running.
+Turn it on under **Settings → Agents → Claude Code integration (MCP)**. The app then
+registers a clipboard MCP server with Claude Code so *any* of your local agents can
+search your clipboard. Tools: `clipboard_search`, `clipboard_recent`, `clipboard_get`,
+`clipboard_sessions`, `clipboard_copy`. Secret-flagged clips are refused at the tool
+layer. Works whether or not the app is running.
 
-Register it by hand elsewhere:
+Or register only the server by hand, without the bridge plugin:
 
 ```bash
 claude mcp add --scope user clipboard -- /path/to/clipboard.md --mcp
 ```
 
-The app is also a two-way console: `⌘J` sends a clip into a running Claude Code session
-(or starts one). Agents report progress, ask questions, and save notes back into the
-inbox (`⌘⇧A`).
+`⌘J` sends a clip into a Claude Code session (or starts one) either way. With the
+integration on, the session is also a two-way console: agents report progress, ask
+questions, and save notes back into the inbox (`⌘⇧A`). With it off, the clip goes in
+as the session's opening prompt and there is no channel back.
 
 </details>
 

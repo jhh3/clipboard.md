@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join, win32 } from 'path'
 import { claudeInvocation } from './claudeBin'
 import { currentPlatform, type Platform } from './platform'
@@ -151,6 +151,14 @@ export async function removeIntegration(): Promise<void> {
   await run(['mcp', 'remove', 'clipboard'])
   await run(['plugin', 'uninstall', `${PLUGIN}@${MARKETPLACE}`])
   await run(['plugin', 'marketplace', 'remove', MARKETPLACE])
+  // The materialised plugin tree is only ever read through the marketplace
+  // registration removed above, so it is dead weight once that is gone — and
+  // ensurePlugin() rewrites it from scratch if the integration is turned back on.
+  try {
+    rmSync(pluginRoot(), { recursive: true, force: true })
+  } catch (err) {
+    console.error('[mcp] could not remove the plugin tree:', err)
+  }
   console.log('[mcp] Claude Code integration is off; removed any registration')
 }
 

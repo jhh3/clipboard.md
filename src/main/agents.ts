@@ -64,7 +64,14 @@ function claudeArgs(p: AgentProfile, key: string, prompt?: string, systemPrompt?
   // silently ignored — verified against a live session, which took no notice of a
   // notifications/claude/channel either idle or mid-turn. The channel only exists
   // when the server arrives as a plugin-provided development channel.
-  const args = ['--dangerously-load-development-channels', CHANNEL_REF]
+  //
+  // Only while the integration is on (Settings → Agents): off means the plugin is
+  // uninstalled, so the flag would name a channel that does not exist. Sessions still
+  // launch and take their opening prompt on the command line; there is just no
+  // bridge to speak into afterwards, and sendToSession() reports that honestly.
+  const args = getSettings().mcpServer
+    ? ['--dangerously-load-development-channels', CHANNEL_REF]
+    : []
   if (p.bypassPermissions !== false) args.push('--dangerously-skip-permissions')
   // No --model: profiles inherit whatever the CLI default is, deliberately, so they
   // don't drift as defaults change.
