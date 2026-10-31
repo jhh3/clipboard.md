@@ -386,17 +386,31 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    * is refused (or there is no portal) the GNOME keybindings come back.
    */
   let portalBinds = 0
+  /**
+   * Shortcuts the portal says are down. GNOME re-sends Activated on every key repeat
+   * (every 30ms while held — signals, not processes, so cheap), and only the first
+   * one is a press: a repeat arriving after evdev already stopped the take must not
+   * start another.
+   */
+  const portalHeld = new Set<string>()
   const portalHandlers = {
     onActivated: (id: string) => {
       const mode = id as DictateMode
-      if (!(mode in MODE_FLAG)) return
+      if (!(mode in MODE_FLAG) || portalHeld.has(id)) return
+      portalHeld.add(id)
+      console.log(`[shortcuts] chord PRESS from portal (${mode})`)
       // evdev usually reports the same press first, and its release can beat this
       // signal on a quick tap; the guard keeps that tap from starting a second take.
       if (!dictating && Date.now() - lastStopAt < RESTART_GUARD_MS) return
       beginDictation(mode)
     },
-    onDeactivated: () => endDictation(),
+    onDeactivated: (id: string) => {
+      if (!portalHeld.delete(id)) return
+      console.log(`[shortcuts] chord RELEASE from portal (${id})`)
+      endDictation()
+    },
     onLost: () => {
+      portalHeld.clear()
       portalOwned = new Set()
       applyGnomeDictation()
     }
