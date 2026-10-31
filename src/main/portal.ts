@@ -55,13 +55,18 @@ async function getBus(): Promise<dbus.MessageBus> {
  * object does not exist until the call is made, so it cannot be proxied up front —
  * instead we register a low-level signal match on the (predictable) path first.
  */
-async function portalCall(
+export async function portalCall(
   iface: dbus.ClientInterface,
   method: string,
   args: unknown[],
-  options: Record<string, dbus.Variant>
+  options: Record<string, dbus.Variant>,
+  // A connection other than the shared one (the GlobalShortcuts client needs its own,
+  // registered with an app id), and how long to wait for the answer: null waits for
+  // as long as a permission dialog stays on screen.
+  via: { bus?: dbus.MessageBus; timeoutMs?: number | null } = {}
 ): Promise<Record<string, dbus.Variant>> {
-  const b = await getBus()
+  const b = via.bus ?? (await getBus())
+  const timeoutMs = via.timeoutMs === undefined ? 120_000 : via.timeoutMs
   const handleToken = token()
   options.handle_token = new dbus.Variant('s', handleToken)
 
@@ -80,17 +85,20 @@ async function portalCall(
   )
 
   const responsePromise = new Promise<Record<string, dbus.Variant>>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      low.removeListener('message', onMessage)
-      reject(new Error(`portal ${method} timed out`))
-    }, 120_000)
+    const timer =
+      timeoutMs === null
+        ? null
+        : setTimeout(() => {
+            low.removeListener('message', onMessage)
+            reject(new Error(`portal ${method} timed out`))
+          }, timeoutMs)
     const onMessage = (msg: dbus.Message): void => {
       if (
         msg.path === requestPath &&
         msg.interface === 'org.freedesktop.portal.Request' &&
         msg.member === 'Response'
       ) {
-        clearTimeout(timer)
+        if (timer) clearTimeout(timer)
         low.removeListener('message', onMessage)
         const [code, results] = msg.body as [number, Record<string, dbus.Variant>]
         if (Number(code) === 0) resolve(results ?? {})

@@ -32,6 +32,10 @@ import {
   teardownHotkeys,
   keyRepeatTiming,
   ACTION_FLAGS,
+  ensureGnomeKeybindings,
+  portalDictationShortcuts,
+  setDictationHandledElsewhere,
+  type DictationFlag,
   type HotkeyActions
 } from './hotkeys'
 import { getSettings, flushSettings, onSettingsChanged } from './settings'
@@ -50,6 +54,7 @@ import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging } from './log'
 import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
+import { bindPortalShortcuts, stopPortalShortcuts } from './globalShortcuts'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
 import { MACOS, LINUX, WIN32 } from './platform'
@@ -328,8 +333,38 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     stopDictation()
   }
 
+  /**
+   * Which dictation keys reach us without a GNOME custom keybinding, so that binding
+   * can be dropped (see hotkeys.setDictationHandledElsewhere — a held binding spawns
+   * a process and a systemd scope per key repeat).
+   *
+   * evdev counts only once it has actually delivered that chord's press: being armed
+   * is not proof, since a device can open and never report the chord.
+   */
+  const MODE_FLAG: Record<DictateMode, DictationFlag> = {
+    paste: '--dictate',
+    enhance: '--dictate-enhance',
+    agent: '--dictate-agent'
+  }
+  let portalOwned = new Set<DictationFlag>()
+  const evdevProven = new Set<DictationFlag>()
+  /** False until setupHotkeys has run once; it applies the current state itself. */
+  let gnomeBindingsReady = false
+  const applyGnomeDictation = (): void => {
+    if (!LINUX) return
+    if (setDictationHandledElsewhere([...portalOwned, ...evdevProven]) && gnomeBindingsReady) {
+      void ensureGnomeKeybindings()
+    }
+  }
+
   const pttHandlers = {
-    onPress: (mode: DictateMode) => beginDictation(mode),
+    onPress: (mode: DictateMode) => {
+      if (LINUX && !evdevProven.has(MODE_FLAG[mode])) {
+        evdevProven.add(MODE_FLAG[mode])
+        applyGnomeDictation()
+      }
+      beginDictation(mode)
+    },
     onRelease: (_mode: DictateMode) => {
       // macOS keeps tap-to-latch: the Fn tap has always behaved that way there and it
       // works well, so it is left exactly as it was.
@@ -342,6 +377,43 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       if (MACOS && Date.now() - dictateStartedAt < MIN_HOLD_MS) return
       endDictation()
     }
+  }
+
+  /**
+   * Linux: the dictation keys through the GlobalShortcuts portal, which reports the
+   * real press and release as signals and spawns nothing. GNOME shows a one-time
+   * dialog before granting them; until it is answered evdev is the trigger, and if it
+   * is refused (or there is no portal) the GNOME keybindings come back.
+   */
+  let portalBinds = 0
+  const portalHandlers = {
+    onActivated: (id: string) => {
+      const mode = id as DictateMode
+      if (!(mode in MODE_FLAG)) return
+      // evdev usually reports the same press first, and its release can beat this
+      // signal on a quick tap; the guard keeps that tap from starting a second take.
+      if (!dictating && Date.now() - lastStopAt < RESTART_GUARD_MS) return
+      beginDictation(mode)
+    },
+    onDeactivated: () => endDictation(),
+    onLost: () => {
+      portalOwned = new Set()
+      applyGnomeDictation()
+    }
+  }
+  const bindPortalDictation = async (): Promise<void> => {
+    if (!LINUX) return
+    const mine = ++portalBinds
+    const wanted = portalDictationShortcuts(getSettings())
+    // Drop the GNOME bindings BEFORE binding: two grabs on one chord compete.
+    portalOwned = new Set(wanted.map((w) => MODE_FLAG[w.id]))
+    applyGnomeDictation()
+    const granted = await bindPortalShortcuts(wanted, portalHandlers)
+    if (mine !== portalBinds) return
+    portalOwned = new Set(
+      [...(granted ?? [])].filter((id) => id in MODE_FLAG).map((id) => MODE_FLAG[id as DictateMode])
+    )
+    applyGnomeDictation()
   }
 
   /**
@@ -738,7 +810,9 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
     startEmbeddings()
+    void bindPortalDictation()
     await setupHotkeys(actions)
+    gnomeBindingsReady = true
 
     // Housekeeping: retention pass on launch and daily.
     const runRetention = (): void => {
@@ -793,6 +867,9 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       if (!MACOS && chordsOf(s) !== lastChords) {
         lastChords = chordsOf(s)
         pttActive = startPushToTalk(pttHandlers)
+        // New chords have to prove themselves to evdev again.
+        evdevProven.clear()
+        void bindPortalDictation()
         void setupHotkeys(actions)
         console.log(`[dictate] chords changed to ${chordsOf(s).replace(/\|/g, ' | ')}`)
       }
@@ -882,6 +959,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     destroyTray()
     teardownHotkeys()
     stopPushToTalk()
+    stopPortalShortcuts()
     flushSettings() // don't lose a debounced write on exit
     closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL
     closeLogging()

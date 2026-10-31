@@ -8,7 +8,8 @@ import {
   effectiveDictateChord,
   toAccelerator,
   toEvdevChord,
-  toGnomeBinding
+  toGnomeBinding,
+  toPortalTrigger
 } from './chord'
 
 describe('chord', () => {
@@ -34,6 +35,11 @@ describe('chord', () => {
     ])
     // Both left and right modifiers are watched, plus the main key.
     expect([...e.watched].sort((a, b) => a - b)).toEqual([29, 56, 57, 97, 100])
+  })
+
+  it('derives the GlobalShortcuts portal trigger from the same keysym', () => {
+    expect(toPortalTrigger(parseChord('Ctrl+Alt+Shift+D')!)).toBe('CTRL+ALT+SHIFT+d')
+    expect(toPortalTrigger(parseChord('Super+Numpad5')!)).toBe('LOGO+KP_5')
   })
 
   it('accepts letters, digits and function keys', () => {

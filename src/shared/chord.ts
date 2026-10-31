@@ -194,6 +194,23 @@ export function toGnomeBinding(c: Chord): string {
   return out + gnomeKeyToken(c.key)
 }
 
+/**
+ * The XDG GlobalShortcuts portal's `preferred_trigger` form, `CTRL+ALT+space`.
+ *
+ * The shortcuts spec names modifiers CTRL, ALT, SHIFT and LOGO, joined by `+` and
+ * followed by an xkb keysym — the same keysym GNOME's own binding string ends with,
+ * so it comes from the same table and cannot name a different key.
+ */
+export function toPortalTrigger(c: Chord): string {
+  const parts: string[] = []
+  if (c.ctrl) parts.push('CTRL')
+  if (c.alt) parts.push('ALT')
+  if (c.shift) parts.push('SHIFT')
+  if (c.meta) parts.push('LOGO')
+  parts.push(gnomeKeyToken(c.key))
+  return parts.join('+')
+}
+
 export interface EvdevChord {
   /** One group per required modifier; any code within a group satisfies it. */
   modifierGroups: number[][]

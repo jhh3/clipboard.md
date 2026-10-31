@@ -8,7 +8,8 @@ import {
   parseChord,
   parseChordOrDefault,
   toAccelerator,
-  toGnomeBinding
+  toGnomeBinding,
+  toPortalTrigger
 } from '@shared/chord'
 import { MACOS, LINUX, WIN32 } from './platform'
 
@@ -132,6 +133,27 @@ export function windowsShortcuts(settings: {
     out.push([accel, action])
   }
   return out
+}
+
+/**
+ * The dictation keys as GlobalShortcuts portal requests, keyed by dictation mode.
+ *
+ * Same settings and same defaults as the GNOME bindings and the evdev observer, so
+ * the three can never be watching different chords. Unbound modes are left out.
+ */
+export function portalDictationShortcuts(settings: {
+  dictateChord?: string
+  dictateEnhanceChord?: string
+  dictateAgentChord?: string
+}): Array<{ id: 'paste' | 'enhance' | 'agent'; description: string; trigger: string }> {
+  const wanted = [
+    { id: 'paste' as const, chord: parseChordOrDefault(settings.dictateChord), description: 'Dictate (hold to talk)' },
+    { id: 'enhance' as const, chord: parseChord(settings.dictateEnhanceChord?.trim() ?? ''), description: 'Dictate and enhance with AI (hold to talk)' },
+    { id: 'agent' as const, chord: parseChord(settings.dictateAgentChord?.trim() ?? ''), description: 'Dictate to the agent (hold to talk)' }
+  ]
+  return wanted
+    .filter((w): w is typeof w & { chord: NonNullable<typeof w.chord> } => w.chord !== null)
+    .map((w) => ({ id: w.id, description: w.description, trigger: toPortalTrigger(w.chord) }))
 }
 
 /**
@@ -275,6 +297,37 @@ const BINDINGS: Binding[] = [
 
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
 
+/** The dictation keys, which hold to talk and so are the ones GNOME auto-repeats. */
+export const DICTATION_FLAGS = ['--dictate', '--dictate-enhance', '--dictate-agent'] as const
+export type DictationFlag = (typeof DICTATION_FLAGS)[number]
+
+/**
+ * Dictation keys something else already delivers, so GNOME must not bind them.
+ *
+ * A held GNOME custom keybinding runs its command on every key repeat, and each run
+ * becomes a transient systemd scope — ~18,000 dead scopes in a few days, systemd
+ * --user pinned at ~100% CPU. Once the GlobalShortcuts portal owns a chord, or evdev
+ * has proven it sees that chord's press and release, the GNOME binding is pure cost,
+ * so it is written empty. Until then it stays: it is the only trigger on machines
+ * with neither.
+ */
+const handledElsewhere = new Set<DictationFlag>()
+
+/** Mark which dictation keys are delivered without GNOME. True when that changed. */
+export function setDictationHandledElsewhere(flags: Iterable<DictationFlag>): boolean {
+  const next = new Set(flags)
+  const changed =
+    next.size !== handledElsewhere.size || [...next].some((f) => !handledElsewhere.has(f))
+  handledElsewhere.clear()
+  for (const f of next) handledElsewhere.add(f)
+  return changed
+}
+
+/** The binding GNOME should hold for this entry: empty when it is handled elsewhere. */
+export function gnomeBindingFor(arg: string, binding: string): string {
+  return (handledElsewhere as Set<string>).has(arg) ? '' : binding
+}
+
 async function gsettings(args: string[]): Promise<string> {
   const { stdout } = await execFileP('gsettings', args)
   return stdout.trim()
@@ -325,7 +378,7 @@ export async function ensureGnomeKeybindings(): Promise<boolean> {
       const staleDefault = (b.previous ?? []).includes(current)
       if (b.authoritative || ours || staleDefault) {
         if (staleDefault) console.log(`[hotkeys] migrating ${b.slug}: ${current} -> ${b.binding}`)
-        await gsettings(['set', ...key, 'binding', b.binding])
+        await gsettings(['set', ...key, 'binding', gnomeBindingFor(b.arg, b.binding)])
       } else {
         console.log(`[hotkeys] keeping user binding for ${b.slug}: ${current}`)
       }
