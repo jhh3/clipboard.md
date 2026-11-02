@@ -12,27 +12,19 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
   [
     'Palette',
     [
-      ['↵', 'ask agent (input) / paste (item selected)'],
-      ['↓ ↑', 'move between agent and history'],
-      ['↑ (ask row)', 'reopen the last conversation'],
-      ['⇧Tab', 'switch which agent you ask'],
-      ['@name', 'target an agent for one ask'],
+      ['↵', 'ask (input) / paste (item selected)'],
+      ['↓ ↑', 'move between the ask row and history'],
+      ['Tab', 'attach the clip to your next ask'],
       [`${MOD}D`, 'voice ask (toggle mic)'],
       [MOD === '⌘' ? '🌐 (hold)' : '⌃⌥Space (hold)', 'dictate into the ask box (review, then ↵)'],
       ['⇧↵', 'paste as plain text'],
       [`${MOD}↵`, 'copy without pasting'],
       [`${MOD}1–9`, 'quick-paste item 1–9'],
-      ['Tab', 'actions on the selected item'],
-      ['Tab a', 'ask an agent ABOUT the clip (attaches it)'],
-      ['Tab e', 'edit an image clip with AI'],
-      [`${MOD}↵`, 'in actions: ask instead of transform'],
-      [`${MOD}J`, 'send clip to an agent session'],
-      [`${MOD}N`, 'new note from the selected clip'],
       [`${MOD}P`, 'pin / unpin'],
       [`${MOD}⌫`, 'delete item'],
       [`${MOD}F`, 'cycle kind filter'],
       [`${MOD}← →`, 'previous / next filter chip'],
-      [`${MOD}E`, 'open in scratchpad'],
+      [`${MOD}⇧S`, 'screenshot to history'],
       ['Esc', 'clear search, then close']
     ]
   ],
@@ -42,19 +34,7 @@ const GROUPS: Array<[title: string, entries: Entry[]]> = [
       [`${GLOBAL_MOD}V`, 'clipboard palette'],
       [`${GLOBAL_MOD}R`, 'rewrite selection'],
       [`${GLOBAL_MOD}S`, 'screenshot to history'],
-      [`${GLOBAL_MOD}E`, 'scratchpad'],
-      [MOD === '⌘' ? '🌐' : `${GLOBAL_MOD}Space`, 'dictate (hold to talk)'],
-      [`${GLOBAL_MOD}N`, 'notes'],
-      [`${GLOBAL_MOD}A`, 'agent inbox']
-    ]
-  ],
-  [
-    'Notes window',
-    [
-      [`${MOD}N`, 'new note'],
-      [`${MOD}D`, "today's note"],
-      [`${MOD}F`, 'filter notes'],
-      [`${MOD}-click`, 'follow a [[wikilink]]']
+      [MOD === '⌘' ? '🌐' : `${GLOBAL_MOD}Space`, 'dictate (hold to talk)']
     ]
   ]
 ]

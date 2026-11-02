@@ -1,9 +1,7 @@
-import { app, BrowserWindow, Menu, screen, shell } from 'electron'
+import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { getSettings, updateSettings } from './settings'
-import { MACOS, LINUX, WIN32 } from './platform'
-import { existsSync } from 'fs'
-import { rememberForeground } from './win/foreground'
+import { MACOS, LINUX } from './platform'
 import { warmEmbeddings } from './embeddings'
 
 /**
@@ -31,11 +29,7 @@ const WAYLAND =
  * beats an occasionally-wrong one. (Under real Wayland we don't place at all.)
  */
 function activeDisplay(): Electron.Display {
-  // Windows joins macOS here: getCursorScreenPoint() is accurate on Windows, so
-  // there is no reason for the palette to open on the primary monitor when the user
-  // is working on the second one. Only X11 keeps the primary-display rule, and only
-  // because cursor coordinates go stale over Wayland-native surfaces there.
-  if (!MACOS && !WIN32) return screen.getPrimaryDisplay()
+  if (!MACOS) return screen.getPrimaryDisplay()
   try {
     return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   } catch {
@@ -47,23 +41,6 @@ let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
 /** An items:changed was held back while the palette was hidden. */
 let paletteStale = false
-
-/**
- * Whether a frameless window may ask for transparency.
- *
- * On Windows, a transparent frameless window under SOFTWARE rendering paints an
- * opaque black rectangle — the full 960x640, over whatever the user is doing, with
- * no error anywhere. index.ts drops to software rendering automatically after the
- * GPU process crash-loops, so this is not a hypothetical configuration: it is the
- * state the app deliberately puts itself into to survive a bad driver. An opaque
- * palette with square corners is ugly; an opaque black slab is a broken app.
- */
-function canBeTransparent(): boolean {
-  if (!WIN32) return true
-  const softwareGpu = existsSync(join(app.getPath('userData'), 'force-software-gpu'))
-  if (softwareGpu) console.log('[win] software rendering: palette will be opaque (transparency paints black)')
-  return !softwareGpu
-}
 
 // Content is 880x560. On Linux the window is 80px larger in each axis: that margin is
 // transparent, so the CSS drop shadow can fade to zero alpha instead of clipping into
@@ -85,7 +62,7 @@ export function createPaletteWindow(): BrowserWindow {
     height: PALETTE_H,
     show: false,
     frame: false,
-    transparent: canBeTransparent(),
+    transparent: true,
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -116,19 +93,10 @@ export function createPaletteWindow(): BrowserWindow {
   // Summon must land on whatever workspace the user is on right now. On macOS this
   // is what makes it follow you across Spaces instead of yanking you back to the one
   // it was first shown on.
-  // Documented no-op on Windows, and there is no route to the behaviour from
-  // Electron at all: pinning across Windows virtual desktops needs the undocumented
-  // IVirtualDesktopManager COM interface, whose GUIDs change with every Windows
-  // build. The palette therefore appears on the desktop it was last shown on. Said
-  // out loud in capabilities.ts rather than left as a call that quietly does nothing.
-  if (!WIN32) palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  palette.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // The default 'floating' level sits below a fullscreen app's window, so the palette
-  // would be invisible over one no matter what visibleOnFullScreen says. Windows has
-  // the same problem with a maximised full-screen app, and the same fix works.
-  if (MACOS || WIN32) palette.setAlwaysOnTop(true, 'screen-saver')
-  // Alt would otherwise reveal Electron's default File/Edit/View menu on a frameless
-  // window that has no business having one.
-  if (WIN32) Menu.setApplicationMenu(null)
+  // would be invisible over one no matter what visibleOnFullScreen says.
+  if (MACOS) palette.setAlwaysOnTop(true, 'screen-saver')
 
   // Hide-on-blur, but never within the first moments of a show: on a cold start
   // (and on some WM focus hand-offs) the window blurs before it is ever really
@@ -158,11 +126,6 @@ export function getPalette(): BrowserWindow | null {
 }
 
 export function showPalette(collection?: string): void {
-  // BEFORE anything is shown. Windows has no non-activating panel: the moment we
-  // show, WE are the foreground window, and the app the user was typing in is only
-  // recoverable if it was recorded first. Everything a paste can follow goes through
-  // here or showDictationHud. A no-op off Windows.
-  if (WIN32) rememberForeground()
   const win = createPaletteWindow()
   // On Wayland the compositor positions us (it centres popups sensibly). Elsewhere we
   // place it ourselves — see activeDisplay() for why the choice of display differs.
@@ -178,7 +141,7 @@ export function showPalette(collection?: string): void {
   // Re-assert stickiness on every show: mutter can otherwise "activate" the hidden
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
-  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   const t0 = Date.now()
   lastPaletteShow = t0
   const cold = win.webContents.isLoading()
@@ -240,9 +203,8 @@ export function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-/** Settings and scratchpad are normal opaque windows sharing the SPA via hash routes. */
+/** Settings is a normal opaque window sharing the SPA via a hash route. */
 let settingsWin: BrowserWindow | null = null
-let scratchWin: BrowserWindow | null = null
 
 function createAuxWindow(hash: string, w: number, h: number): BrowserWindow {
   // On Wayland: size only — the compositor decides where windows go, and any x/y
@@ -376,7 +338,7 @@ export function createDictationHud(): BrowserWindow {
     height: HUD_H,
     show: false,
     frame: false,
-    transparent: canBeTransparent(),
+    transparent: true,
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -436,18 +398,14 @@ function sendToHud(channel: 'dictation:start' | 'dictation:stop', payload: { tak
 let dictationActive = false
 
 export function showDictationHud(take: number): void {
-  // Same reason as showPalette. The HUD is focusable:false, but on Windows that is a
-  // hint rather than a guarantee, and the transcript is pasted into whatever had
-  // focus when dictation STARTED — which is precisely what this records.
-  if (WIN32) rememberForeground()
   dictationActive = true
   const win = createDictationHud()
   // Start recording first; placing and showing the window is cosmetic.
   sendToHud('dictation:start', { take })
-  if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Same reasoning as the palette: the HUD belongs where the user is working, and it
   // must float over a fullscreen app rather than behind it.
-  if (MACOS || WIN32) win.setAlwaysOnTop(true, 'screen-saver')
+  if (MACOS) win.setAlwaysOnTop(true, 'screen-saver')
   const area = activeDisplay().workArea
   win.setBounds({
     width: HUD_W,
@@ -519,53 +477,4 @@ export function openSettingsWindow(): void {
     return
   }
   settingsWin = createAuxWindow('settings', 820, 640)
-}
-
-let notesWin: BrowserWindow | null = null
-
-/**
- * The notes window. Larger than the other aux windows because it is three panes
- * (list, editor, links) and is meant to be worked in rather than dismissed.
- */
-export function openNotesWindow(noteId?: number): void {
-  const send = (): void => notesWin?.webContents.send('notes:open', { id: noteId })
-  if (notesWin && !notesWin.isDestroyed()) {
-    ensureOnScreen(notesWin, 'notes', 1080, 720)
-    notesWin.show()
-    activateApp()
-    notesWin.focus()
-    send()
-    return
-  }
-  notesWin = createAuxWindow('notes', 1080, 720)
-  notesWin.webContents.once('did-finish-load', send)
-}
-
-let agentsWin: BrowserWindow | null = null
-
-/** Agent sessions and their inbox. */
-export function openAgentsWindow(): void {
-  if (agentsWin && !agentsWin.isDestroyed()) {
-    ensureOnScreen(agentsWin, 'agents', 980, 700)
-    agentsWin.show()
-    activateApp()
-    agentsWin.focus()
-    return
-  }
-  agentsWin = createAuxWindow('agents', 980, 700)
-}
-
-export function openScratchpadWindow(itemId?: number): void {
-  if (scratchWin && !scratchWin.isDestroyed()) {
-    ensureOnScreen(scratchWin, 'scratchpad', 720, 560)
-    scratchWin.show()
-    activateApp()
-    scratchWin.focus()
-    scratchWin.webContents.send('scratchpad:shown', { itemId })
-    return
-  }
-  scratchWin = createAuxWindow('scratchpad', 720, 560)
-  scratchWin.webContents.once('did-finish-load', () => {
-    scratchWin?.webContents.send('scratchpad:shown', { itemId })
-  })
 }

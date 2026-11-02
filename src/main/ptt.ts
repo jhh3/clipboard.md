@@ -52,7 +52,7 @@ const EVENT_SIZE = 24
 
 /** Which dictation key was pressed — they record identically and differ only in
  *  what happens to the transcript. */
-export type PttMode = 'paste' | 'enhance' | 'agent'
+export type PttMode = 'paste' | 'enhance'
 
 export interface PttHandlers {
   onPress: (mode: PttMode) => void
@@ -159,12 +159,11 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   }
 
   const s = getSettings()
-  // The primary chord always has a value; the other two are opt-in and empty by
+  // The primary chord always has a value; the enhance one is opt-in and empty by
   // default, so an unconfigured install watches exactly one.
   const wanted: Array<{ mode: PttMode; raw: string | undefined; required: boolean }> = [
     { mode: 'paste', raw: s.dictateChord, required: true },
-    { mode: 'enhance', raw: s.dictateEnhanceChord, required: false },
-    { mode: 'agent', raw: s.dictateAgentChord, required: false }
+    { mode: 'enhance', raw: s.dictateEnhanceChord, required: false }
   ]
   watched = []
   for (const w of wanted) {
@@ -222,7 +221,7 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
   reportedCount = readers.length
   watchInputDir()
   console.log(
-    `[ptt] hold-to-talk armed on ${readers.length} device(s); chords ${watched.map((w) => `${w.mode}=${formatChord(parseChordOrDefault(w.mode === 'paste' ? s.dictateChord : w.mode === 'enhance' ? s.dictateEnhanceChord : s.dictateAgentChord))}`).join(' ')}`
+    `[ptt] hold-to-talk armed on ${readers.length} device(s); chords ${watched.map((w) => `${w.mode}=${formatChord(parseChordOrDefault(w.mode === 'paste' ? s.dictateChord : s.dictateEnhanceChord))}`).join(' ')}`
   )
   return true
 }
@@ -421,9 +420,7 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
         '--watch',
         'paste:2:cmd+shift',
         '--watch',
-        'enhance:2:cmd+alt',
-        '--watch',
-        'agent:0:cmd+alt'
+        'enhance:2:cmd+alt'
       ],
       { stdio: ['pipe', 'pipe', 'ignore'] }
     )
@@ -443,7 +440,7 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
         const [a, b] = line.split(/\s+/)
         const mode = (b ? a : 'paste') as PttMode
         const edge = b ?? a
-        if (mode !== 'paste' && mode !== 'enhance' && mode !== 'agent') continue
+        if (mode !== 'paste' && mode !== 'enhance') continue
         if (edge === 'down') handlers.onPress(mode)
         else if (edge === 'up') handlers.onRelease(mode)
       }

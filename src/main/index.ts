@@ -2,7 +2,6 @@ import { app, powerMonitor, BrowserWindow, Notification } from 'electron'
 import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, autostartIsStale, setAutostart } from './autostart'
 import { join } from 'path'
-import { pathToFileURL } from 'url'
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { openDb, closeDb, maintainDb } from './store/db'
@@ -21,9 +20,6 @@ import {
   hidePalette,
   sendToPalette,
   broadcast,
-  openScratchpadWindow,
-  openNotesWindow,
-  openAgentsWindow,
   showDictationHud,
   createDictationHud,
   stopDictation,
@@ -44,14 +40,9 @@ import {
 import { getSettings, flushSettings, onSettingsChanged } from './settings'
 import { startEnrichment, stopEnrichment, drain as drainEnrichment } from './enrichment'
 import { startEmbeddings, stopEmbeddings } from './embeddings'
-import { setAiTransform } from './transforms'
-import { complete, resetProviderCache, checkModels } from './modelport'
+import { resetProviderCache, checkModels } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
-import { unreadCount, prewarmAgents } from './agents'
-import { ensureMemoryFile, startMemorySchedule } from './assistantMemory'
-import { sweep } from './agentLifecycle'
-import { ensurePlugin, ensureMcpServer, removeIntegration } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
 import { initLogging, closeLogging, flushLogSync } from './log'
@@ -62,8 +53,7 @@ import { bindPortalShortcuts, stopPortalShortcuts } from './globalShortcuts'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
 import { warmAsr, stopAsrWorker, sweepAudio } from './transcribe'
-import { MACOS, LINUX, WIN32 } from './platform'
-import { runDoctor } from './doctor'
+import { MACOS, LINUX } from './platform'
 import { capabilities } from './capabilities'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
@@ -184,7 +174,6 @@ function armQuitWatchdog(): void {
     flushLogSync()
     app.exit(0)
   }, QUIT_WATCHDOG_MS).unref()
-  if (process.platform === 'win32') return
   try {
     spawn('sh', ['-c', `sleep ${QUIT_WATCHDOG_MS / 1000 + 2}; kill -9 ${process.pid} 2>/dev/null`], {
       detached: true,
@@ -233,96 +222,8 @@ app.on('child-process-gone', (_e, details) => {
 
 hardenApp()
 
-/**
- * Serve MCP over stdio from this process.
- *
- * stdout IS the transport, so anything else printed there corrupts the JSON-RPC
- * framing and the agent drops the server with an unhelpful "connection closed".
- * Chromium and our own logger both write to stdout, so console is redirected to
- * stderr for the lifetime of this mode — stderr is free, and the agent shows it.
- *
- * The server is loaded from the sibling bundle by a computed path so it stays a
- * separate entry (electron.vite.config) instead of being pulled into this one.
- */
-async function startStdioServer(bundle: string): Promise<void> {
-  const toStderr = (...args: unknown[]): void => {
-    process.stderr.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n')
-  }
-  console.log = toStderr
-  console.info = toStderr
-  console.warn = toStderr
-  console.error = toStderr
-  // A stdio server's lifetime IS its stdin. Nothing else will ever tell it to stop:
-  // Electron keeps the event loop alive forever, and this process is reparented to
-  // init the moment the AppImage runtime execs it (measured: ppid=1 while the agent
-  // that spawned it was still running), so watching the parent is not an option
-  // either. Every agent session therefore left two Electron processes behind for
-  // good — 88 of them, 6.3GB resident, before this was found.
-  //
-  // Listeners only: do NOT resume() the stream. The MCP transport is about to attach
-  // to the same stdin, and consuming bytes here would eat its first request.
-  const exitWithParent = (why: string): void => {
-    process.stderr.write(`[stdio] ${why}; exiting\n`)
-    app.exit(0)
-  }
-  process.stdin.on('end', () => exitWithParent('stdin closed'))
-  process.stdin.on('close', () => exitWithParent('stdin closed'))
-  process.stdin.on('error', () => exitWithParent('stdin errored'))
-  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) {
-    process.on(sig, () => exitWithParent(sig))
-  }
-
-  try {
-    const entry = pathToFileURL(join(__dirname, bundle)).href
-    await import(/* @vite-ignore */ entry)
-  } catch (err) {
-    process.stderr.write(`[stdio] ${bundle} failed to start: ${String(err)}\n`)
-    app.exit(1)
-  }
-}
-
-/**
- * `--mcp` turns this same binary into the stdio MCP server, so agents can search the
- * clipboard without a separate install.
- *
- * It has to be the app's own binary rather than a script path. Registration is
- * permanent (it lives in the agent's config) but every script path we could register
- * is not: inside an AppImage everything sits in an ephemeral /tmp/.mount_XXXX that is
- * gone the moment the app restarts, and a dev checkout's path changes with the pnpm
- * store. The installed binary is the one stable, always-present address, so the flag
- * lives here.
- *
- * The single-instance lock is skipped: this is a short-lived child of the agent, not
- * a second copy of the app, and taking the lock would make it fight the running one.
- */
-const MCP_MODE = process.argv.includes('--mcp')
-// --bridge is the per-session channel server (see agentPlugin), registered against
-// this binary for the same reason --mcp is: the path outlives the process.
-const BRIDGE_MODE = process.argv.includes('--bridge')
-// --doctor prints the capability registry and resolved paths as JSON and exits. It
-// skips the lock for the same reason --mcp does, and for one more: the question it
-// answers ("what does this build think it can do?") is most often asked while the
-// app IS running, and taking the lock would make it wake the running copy and print
-// nothing at all.
-const DOCTOR_MODE = process.argv.includes('--doctor')
-const gotLock = MCP_MODE || BRIDGE_MODE || DOCTOR_MODE || app.requestSingleInstanceLock()
-if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
-  // The bridge is a CHANNEL into a session clipboard.md launched — it has nothing to
-  // do for anyone else. But it is declared by a plugin, and installing a plugin
-  // enables it globally, so every Claude Code session on the machine was spawning
-  // one: 25 live sessions were holding ~19 bridges that could never be used,
-  // ~3GB of Electron doing nothing.
-  //
-  // Same guard, same variable, as the Stop hook in the plugin's hooks.json — that
-  // hook was noisy in foreign sessions for exactly this reason. agents.ts injects
-  // CLIPMD_SESSION_KEY into our own sessions only, so its absence means "not ours".
-  process.stderr.write('[bridge] no CLIPMD_SESSION_KEY: not a clipboard.md session; exiting\n')
-  app.exit(0)
-} else if (DOCTOR_MODE) {
-  runDoctor()
-} else if (MCP_MODE || BRIDGE_MODE) {
-  void startStdioServer(MCP_MODE ? 'mcp.mjs' : 'bridge.mjs')
-} else if (!gotLock) {
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {} else if (!gotLock) {
   // Second instance exists only to wake the first (GNOME keybindings run `--<action>`).
   app.quit()
 } else {
@@ -347,7 +248,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   /**
    * What the CURRENT recording should do with its transcript. Captured at start,
    * because the transcript arrives long after the key that chose the mode was
-   * released — three keys record identically and differ only in the destination.
+   * released — both keys record identically and differ only in the AI pass.
    */
   /**
    * Every take gets an id at key-down, carried by each HUD event and the transcript.
@@ -392,8 +293,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    */
   const MODE_FLAG: Record<DictateMode, DictationFlag> = {
     paste: '--dictate',
-    enhance: '--dictate-enhance',
-    agent: '--dictate-agent'
+    enhance: '--dictate-enhance'
   }
   let portalOwned = new Set<DictationFlag>()
   const evdevProven = new Set<DictationFlag>()
@@ -404,7 +304,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    */
   const provenFile = (): string => join(app.getPath('userData'), 'evdev-proven.json')
   const chordKey = (s: AppSettings): string =>
-    [s.dictateChord, s.dictateEnhanceChord ?? '', s.dictateAgentChord ?? ''].join('|')
+    [s.dictateChord, s.dictateEnhanceChord ?? ''].join('|')
   const loadEvdevProven = (): void => {
     try {
       const saved = JSON.parse(readFileSync(provenFile(), 'utf8')) as { chords: string; flags: DictationFlag[] }
@@ -790,13 +690,9 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
         }
       })()
     },
-    scratchpad: () => openScratchpadWindow(),
     dictate: () => dictateTrigger('paste'),
     // Same recording flow; only what happens to the transcript differs.
-    dictateEnhance: () => dictateTrigger('enhance'),
-    dictateAgent: () => dictateTrigger('agent'),
-    notes: () => openNotesWindow(),
-    agents: () => openAgentsWindow()
+    dictateEnhance: () => dictateTrigger('enhance')
   }
 
   app.on('second-instance', (_e, argv) => {
@@ -804,12 +700,6 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   })
 
   app.whenReady().then(async () => {
-    // Windows groups taskbar entries and — critically here — routes notifications by
-    // AppUserModelID. Without one, `new Notification()` is a SILENT NO-OP on Windows.
-    // The notification that matters most is the one in paste.ts that exists purely to
-    // say "nothing was injected, press Ctrl+V yourself": a silent fallback for a
-    // silent failure. Must match electron-builder.yml's appId.
-    if (WIN32) app.setAppUserModelId('md.clipboard.app')
     const logFile = initLogging()
     console.log(`[app] clipboard.md ${app.getVersion()} starting; logging to ${logFile}`)
     applyPermissionPolicy()
@@ -857,25 +747,6 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     const paste = new PasteService(capture, () => {
       hidePalette()
       hideDictationHud()
-    })
-
-    // AI transforms: the "my voice" system context rides along when samples exist.
-    setAiTransform(async (prompt, content, imagePath, provider) => {
-      const samples = getSettings().voiceSamples
-      const system =
-        samples.length > 0
-          ? `Samples of the user's writing voice:\n${samples.map((s) => `---\n${s}`).join('\n')}\n---`
-          : undefined
-      return complete(
-        'transforms',
-        {
-          system,
-          prompt: `${prompt}\n\nINPUT:\n${content}`,
-          imagePath,
-          maxTokens: 4000
-        },
-        provider
-      )
     })
 
     registerIpc(paste, capture, {
@@ -955,26 +826,14 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // Settings used to require a restart to take effect anywhere: push changes to
     // every window, and let the services that cached values re-read them.
     // Every chord that maps to a GNOME keybinding. Watching only the first one meant
-    // the enhance and agent chords could be set in Settings and never registered: the
+    // the enhance chord could be set in Settings and never registered: the
     // slugs existed with an empty binding, so the keys did nothing and there was no
     // error anywhere to explain why.
     let lastChords = chordKey(getSettings())
-    let lastMcp = getSettings().mcpServer
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
       // An API key typed into Settings must be usable immediately.
       resetProviderCache()
-      // Toggling the Claude Code integration registers/unregisters live, so it takes
-      // effect without a restart.
-      if (s.mcpServer !== lastMcp) {
-        lastMcp = s.mcpServer
-        if (s.mcpServer) {
-          void ensurePlugin()
-          void ensureMcpServer()
-        } else {
-          void removeIntegration()
-        }
-      }
       buildTrayMenu() // the Pause-capture checkbox must reflect changes made in Settings
       capture.applySettings()
       if (s.embeddings.enabled) startEmbeddings()
@@ -983,11 +842,6 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       // re-armed here, and the GNOME keybinding is rewritten by setupHotkeys (that
       // binding is derived from the same setting — see hotkeys.ts). Linux only;
       // macOS dictation is the Fn key via the helper and ignores this entirely.
-      // `!== 'darwin'`, not `=== 'linux'`. On Windows the chord edit was persisted
-      // and then nothing re-registered it, so Settings accepted a new dictation key
-      // that never fired — and the old one kept working, which makes it look like
-      // the edit was ignored rather than half-applied. macOS is excluded because
-      // dictation there is the Fn key via the helper and ignores the setting.
       if (!MACOS && chordKey(s) !== lastChords) {
         lastChords = chordKey(s)
         pttActive = startPushToTalk(pttHandlers)
@@ -1025,48 +879,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // Rewrite a stale entry too, not just a missing one — see autostartIsStale.
     if (app.isPackaged && (!isAutostartEnabled() || autostartIsStale())) setAutostart(true)
 
-    // Sessions outlive the app and die behind its back. The sweep adopts orphans,
-    // buries dead rows, sleeps idle sessions and tears down what is never coming
-    // back — see agentLifecycle.ts. A stale "running" row is worse than none: the
-    // user sends a clip into it and nothing happens, silently.
-    // Claude Code integration is OPT-IN (Settings → Agents), off by default on every
-    // OS. When on, register the clipboard MCP server + agent bridge plugin; when off,
-    // actively REMOVE any registration so Claude sessions don't spawn this bundle in the
-    // background (which blocks launching the menu-bar app from Finder). See mcpServer.
-    if (getSettings().mcpServer) {
-      void ensurePlugin()
-      void ensureMcpServer()
-    } else {
-      void removeIntegration()
-    }
-    void sweep()
-    setInterval(() => void sweep(), 5 * 60_000)
-
-    // The assistant: memory file + consolidation schedule, and a pre-warmed
-    // session so the palette's first ask answers in seconds, not a cold start.
-    // Delayed so startup (capture, embeddings, plugin install) wins the CPU first.
-    ensureMemoryFile()
-    startMemorySchedule()
-    setTimeout(() => void prewarmAgents(), 8000)
-
     createTray()
-
-    // Agents write to the inbox from OUTSIDE this process (the bridge and the Stop
-    // hook insert into SQLite directly), so no IPC event fires when a reply lands.
-    // Poll the unread count and surface changes: the tray badge is the only signal
-    // a blocked agent has, and without this it stayed stale until a settings change.
-    let lastUnread = -1
-    setInterval(() => {
-      try {
-        const n = unreadCount()
-        if (n === lastUnread) return
-        lastUnread = n
-        buildTrayMenu()
-        broadcast('agents:changed', { unread: n })
-      } catch {
-        /* db closing during quit */
-      }
-    }, 10_000)
 
     routeArgsOnLaunch()
   })

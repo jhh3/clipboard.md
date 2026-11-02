@@ -24,7 +24,7 @@ type Phase =
   /** `fellBack`: the configured mic was gone, so this is the system default. */
   | { kind: 'recording'; fellBack: boolean }
   | { kind: 'transcribing' }
-  | { kind: 'done'; text: string; pasted: boolean; sentTo?: string }
+  | { kind: 'done'; text: string; pasted: boolean }
   | { kind: 'error'; message: string; note?: string }
 
 function formatElapsed(sec: number): string {
@@ -187,7 +187,7 @@ export default function DictationHud() {
         })
         if (take !== takeRef.current) return
         if (res.ok && res.text) {
-          setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true, sentTo: res.sentTo })
+          setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true })
           finishAfter(take, DONE_MS)
         } else {
           setPhase({ kind: 'error', message: res.error ?? 'Transcription failed' })
@@ -386,7 +386,7 @@ export default function DictationHud() {
           <div className="hud-head">
             <span className="hud-status done">Done</span>
             <span className="hud-footnote">
-              {phase.sentTo ? `Sent to @${phase.sentTo}` : phase.pasted ? 'Pasted' : 'Copied to clipboard'}
+              {phase.pasted ? 'Pasted' : 'Copied to clipboard'}
             </span>
           </div>
           <div className="hud-transcript">{phase.text}</div>

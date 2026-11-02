@@ -265,10 +265,7 @@ function filterClauses(q: SearchQuery): { where: string; params: Record<string, 
     params.kind = q.kind
   }
   if (q.collection === 'pinned') clauses.push('pinned = 1')
-  else if (q.collection?.startsWith('session:')) {
-    clauses.push('session_id = @sessionId')
-    params.sessionId = Number(q.collection.slice(8))
-  } else if (q.collection) {
+  else if (q.collection) {
     clauses.push(
       "(content_class = @coll OR EXISTS (SELECT 1 FROM json_each(items.tags) je WHERE je.value = @coll))"
     )
@@ -451,32 +448,6 @@ export function itemsNeedingEmbedding(limit: number): ClipItem[] {
  */
 export function markEmbeddingSkipped(id: number): void {
   getDb().prepare('UPDATE items SET embedded_at = ? WHERE id = ?').run(Date.now(), id)
-}
-
-export function sessionsList(): Array<{
-  id: number
-  title: string | null
-  startedAt: number
-  endedAt: number
-  count: number
-}> {
-  return (
-    getDb()
-      .prepare(
-        `SELECT s.id, s.title, s.started_at startedAt, s.ended_at endedAt,
-                (SELECT COUNT(*) FROM items i WHERE i.session_id = s.id) count
-         FROM sessions s
-         WHERE (SELECT COUNT(*) FROM items i WHERE i.session_id = s.id) > 0
-         ORDER BY s.ended_at DESC LIMIT 50`
-      )
-      .all() as Array<{
-      id: number
-      title: string | null
-      startedAt: number
-      endedAt: number
-      count: number
-    }>
-  )
 }
 
 /** Retention: delete unpinned items older than cutoff, and enforce max count. */

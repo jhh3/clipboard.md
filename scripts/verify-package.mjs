@@ -8,18 +8,11 @@
  *  - a platform `files:` list containing nothing but negations makes electron-builder
  *    fall back to `**\/*`, silently discarding the top-level allowlist — the asar
  *    then held 104 `src/` entries and the whole working tree;
- *  - the bridge plugin scaffold was missing from extraResources, so agent sessions
- *    came up with tools and no channel, and it only LOOKED fine while the allowlist
- *    bug was shipping the entire repo;
  *  - sqlite-vec and sherpa-onnx load native libraries by path, which does not exist
  *    inside app.asar, so semantic search and local transcription were dead in the
  *    installed build while dev worked perfectly.
  *
- * Run it against a Linux build too. It must pass there, which is the proof that the
- * assertions are real rather than tautologies that only happen to hold on Windows.
- *
  *   node scripts/verify-package.mjs dist/linux-unpacked
- *   node scripts/verify-package.mjs dist/win-unpacked
  */
 import { existsSync, readdirSync, openSync, readSync, closeSync, statSync } from 'fs'
 import { join, sep } from 'path'
@@ -78,7 +71,7 @@ function walkDir(dir, out = []) {
   return out
 }
 
-// The resources directory sits beside the executable on Linux/Windows and inside
+// The resources directory sits beside the executable on Linux and inside
 // Contents/ on macOS.
 const resources = [join(root, 'resources'), join(root, 'Contents', 'Resources')].find((p) =>
   existsSync(join(p, 'app.asar'))
@@ -88,8 +81,8 @@ if (!resources) {
   process.exit(2)
 }
 
-const platform = existsSync(join(root, 'Contents')) ? 'mac' : existsSync(join(root, 'clipboard.md.exe')) ? 'win' : 'linux'
-const dyn = { win: '.dll', mac: '.dylib', linux: '.so' }[platform]
+const platform = existsSync(join(root, 'Contents')) ? 'mac' : 'linux'
+const dyn = { mac: '.dylib', linux: '.so' }[platform]
 
 // (a) No source in the shipped asar. This is the negation-only `files:` trap.
 const entries = asarEntries(join(resources, 'app.asar'))
@@ -101,12 +94,13 @@ check(
 )
 check(entries.length > 0, 'app.asar is non-empty', 'it contains no files at all')
 
-// (b) The bridge plugin scaffold. Omitting extraResources is the verbatim repeat of
-// the Linux regression that left agent sessions with no channel.
+// (b) Payloads nothing executes at runtime: the browser onnxruntime build (Node
+// embeddings use onnxruntime-node) and the musl duplicates of glibc native libs.
+const deadWeight = entries.filter((p) => /node_modules\/onnxruntime-web\//.test(p))
 check(
-  existsSync(join(resources, 'plugin', '.claude-plugin', 'marketplace.json')),
-  'the bridge plugin scaffold is in extraResources',
-  'resources/plugin/.claude-plugin/marketplace.json is missing, so agent sessions come up with tools and no channel'
+  deadWeight.length === 0,
+  'app.asar ships no onnxruntime-web',
+  `${deadWeight.length} onnxruntime-web entries (~134MB) shipped although embeddings run on onnxruntime-node`
 )
 
 const unpacked = join(resources, 'app.asar.unpacked')
@@ -139,19 +133,14 @@ check(
   'sqlite cannot load the extension from inside app.asar, and semantic search is disabled with no error'
 )
 
-// (e) DirectML is ~38MB of GPU provider we never execute — the embedding worker pins
-// provider 'cpu'. Shipping it is pure download weight.
-const directml = unpackedFiles.filter((p) => /^(DirectML|dxcompiler|dxil)\.dll$/i.test(base(p)))
-check(
-  directml.length === 0,
-  'no unused GPU DLLs',
-  `${directml.map(base).join(', ')} shipped (~38MB) although the embedding worker pins provider 'cpu'`
-)
+// (e) No musl variants: this build runs on glibc (or macOS), so they never load.
+const musl = unpackedFiles.filter((p) => /musl/.test(p) && /\.(node|so[.\d]*)$/.test(p))
+check(musl.length === 0, 'no musl native libraries', `${musl.length} musl files shipped, e.g. ${musl[0]}`)
 
 // (f) Only this platform's onnxruntime binding. Each foreign one is ~110MB, and the
 // exclusion that prunes them is the same list that once deleted the binding macOS
 // needed — so assert what SHOULD be here as well as what should not.
-const nativeDir = { win: 'win32', mac: 'darwin', linux: 'linux' }[platform]
+const nativeDir = { mac: 'darwin', linux: 'linux' }[platform]
 const bindingRoot = join(unpacked, 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')
 if (existsSync(bindingRoot)) {
   const shipped = readdirSync(bindingRoot)

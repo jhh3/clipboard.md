@@ -1,7 +1,7 @@
 import { app, ipcMain, nativeImage, BrowserWindow, dialog } from 'electron'
 import { existsSync, rmSync, writeFileSync } from 'fs'
 import { isTrustedSender } from './security'
-import type { SearchQuery, TransformRequest, AppSettings, SavedAction } from '@shared/types'
+import type { SearchQuery, AppSettings } from '@shared/types'
 import {
   searchKeyword,
   searchHybrid,
@@ -9,9 +9,7 @@ import {
   setPinned,
   deleteItem,
   enrichQueueStats,
-  sessionsList,
   upsertClip,
-  enqueueEnrichment,
   updateEnrichment,
   exportAll
 } from './store/items'
@@ -19,57 +17,21 @@ import { saveRecording, transcribeFile, transcribePcm, pcmToWav } from './transc
 import { correctTranscript, styleForApp } from './dictionary'
 import {
   notePastedTranscript,
-  considerScratchEdit,
   listSuggestions,
   acceptSuggestion,
   dismissSuggestion
 } from './corrections'
 import { getDictationTarget } from './focusedWindow'
 import { enhanceTranscript } from './enhance'
-import { detectSecret } from './capture/filters'
-import { capabilities } from './capabilities'
-import { hotkeyRegistrationFailures } from './hotkeys'
-import { runTransform, commitTransform } from './transforms'
 import { getSettings, updateSettings } from './settings'
 import {
   hidePalette,
   getPalette,
   sendToPalette,
-  broadcast,
   openSettingsWindow,
-  openScratchpadWindow,
-  openNotesWindow,
-  openAgentsWindow,
   markDictationHudReady
 } from './windows'
-import {
-  profiles,
-  listSessions,
-  launchSession,
-  sendOrQueue,
-  messages,
-  inbox,
-  markRead,
-  unreadCount,
-  endSession,
-  askAgent,
-  sessionFor,
-  sendClip,
-  launchWithClip,
-  restartAgent
-} from './agents'
-import { readMemory, saveMemoryEdit, consolidateMemory, generateIdentity } from './assistantMemory'
-import {
-  listNotes,
-  getNote,
-  createNote,
-  updateNote,
-  backlinks,
-  outgoingLinks,
-  findNoteByTitle,
-  resolveLinksTo,
-  dailyNote
-} from './store/notes'
+import { startAsk, cancelAsk, rewriteText } from './ask'
 import type { PasteService } from './paste'
 import type { CaptureService } from './capture'
 import { providersStatus } from './modelport'
@@ -78,13 +40,11 @@ import { embedQuery } from './embeddings'
 import { takeScreenshot } from './screenshot'
 
 /**
- * What a dictation does with its transcript. All three record identically; only the
- * destination differs, which is why it is one mode rather than a pile of flags.
+ * What a dictation does with its transcript. Both record identically:
  *  - 'paste'   deterministic cleanup, then paste into the focused app
  *  - 'enhance' the same, plus an AI pass, then paste
- *  - 'agent'   the same, then speak it to the primary agent instead of pasting
  */
-export type DictateMode = 'paste' | 'enhance' | 'agent'
+export type DictateMode = 'paste' | 'enhance'
 
 export interface RewriteState {
   getText: () => string | null
@@ -122,94 +82,6 @@ export function registerIpc(
   handle('dictation:done', (_e, take: number, reason?: string) => rewrite.onDictationDone(take, reason))
   handle('dictation:ready', () => markDictationHudReady())
 
-  // ── agent sessions ───────────────────────────────────────────────────────
-  handle('agents:profiles', () => profiles())
-  handle('agents:defs', () => profiles())
-  handle('agents:sessions', (_e, includeEnded?: boolean) => listSessions(!!includeEnded))
-  handle('agents:launch', async (_e, opts: { profile: string; prompt?: string; title?: string }) => {
-    const key = await launchSession(opts)
-    broadcast('agents:changed', { unread: unreadCount() })
-    return key
-  })
-  handle('agents:send', (_e, key: string, text: string, kind?: string) =>
-    sendOrQueue(key, text, kind ?? 'message')
-  )
-  handle('agents:messages', (_e, key: string) => messages(key))
-  handle('agents:inbox', () => inbox())
-  handle('agents:mark-read', (_e, key?: string) => {
-    markRead(key)
-    broadcast('agents:changed', { unread: unreadCount() })
-  })
-  handle('agents:end', async (_e, key: string) => {
-    await endSession(key)
-    broadcast('agents:changed', { unread: unreadCount() })
-  })
-  handle('agents:ask', async (_e, text: string, agent?: string, itemId?: number) => {
-    const res = await askAgent(text, agent, itemId)
-    broadcast('agents:changed', { unread: unreadCount() })
-    return res
-  })
-  handle('agents:session-for', (_e, agent?: string) => sessionFor(agent))
-  handle('agents:send-clip', (_e, key: string, itemId: number) => sendClip(key, itemId))
-  handle('agents:launch-with-clip', async (_e, opts: { profile: string; itemId: number }) => {
-    const key = await launchWithClip(opts.profile, opts.itemId)
-    broadcast('agents:changed', { unread: unreadCount() })
-    return key
-  })
-  handle('agents:restart-assistant', (_e, agent?: string) => restartAgent(agent))
-  handle('assistant:memory-get', (_e, agent?: string) => readMemory(agent))
-  handle('assistant:memory-set', (_e, text: string, agent?: string) => saveMemoryEdit(text, agent))
-  handle('assistant:consolidate', (_e, agent?: string) => consolidateMemory(true, agent))
-  handle('assistant:generate-identity', async (_e, agent?: string) => {
-    try {
-      const def = getSettings().agents.find((a) => a.name === agent) ?? getSettings().agents[0]
-      return { ok: true, text: await generateIdentity(def?.identity ?? '', agent) }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  // ── notes ────────────────────────────────────────────────────────────────
-  handle('notes:list', (_e, opts: { q?: string } = {}) => listNotes(opts))
-  handle('notes:get', (_e, id: number) => getNote(id))
-  handle('notes:create', (_e, input?: { title?: string; content?: string }) => {
-    const id = createNote(input ?? {})
-    const note = getNote(id)
-    // A note created after something already linked to it by title must adopt those
-    // edges, or the backlink never appears and the feature looks broken.
-    if (note?.title) resolveLinksTo(id, note.title)
-    broadcast('notes:changed', { id })
-    return id
-  })
-  handle('notes:update', (_e, id: number, patch: { title?: string; content?: string }) => {
-    updateNote(id, patch)
-    const note = getNote(id)
-    if (note?.title) resolveLinksTo(id, note.title)
-    // Notes are edited constantly; only tell other windows, not the editor that
-    // just typed, and let the list re-read on its own schedule.
-    broadcast('notes:changed', { id })
-  })
-  handle('notes:delete', (_e, id: number) => {
-    deleteItem(id)
-    broadcast('notes:changed', { id })
-  })
-  handle('notes:backlinks', (_e, id: number) => backlinks(id))
-  handle('notes:outgoing', (_e, id: number) => outgoingLinks(id))
-  handle('notes:open-by-title', (_e, title: string) => {
-    const existing = findNoteByTitle(title)
-    if (existing !== null) return existing
-    // Following a link to a note that doesn't exist creates it — the wiki behaviour
-    // users expect, and the reason unresolved edges are stored in the first place.
-    const id = createNote({ title, content: `# ${title}\n\n` })
-    resolveLinksTo(id, title)
-    broadcast('notes:changed', { id })
-    return id
-  })
-  handle('notes:daily', () => {
-    const id = dailyNote()
-    broadcast('notes:changed', { id })
-    return id
-  })
   handle('search', (_e, q: SearchQuery) => {
     const started = performance.now()
     const res = searchKeyword(q)
@@ -249,43 +121,15 @@ export function registerIpc(
     return img.isEmpty() ? null : img.toDataURL()
   })
 
-  handle('transform:run', (_e, req: TransformRequest) => runTransform(req))
-  handle(
-    'transform:commit',
-    (_e, req: TransformRequest & { output: string; outputKind: 'text' | 'image' }) => {
-      const id = commitTransform(req)
-      sendToPalette('items:changed', { reason: 'transformed' })
-      return id
-    }
+  handle('paste:text', (_e, payload: { text: string }) => paste.pasteRaw(payload.text, 'text'))
+  handle('ask:start', (e, payload: { text: string; itemId?: number }) =>
+    startAsk(payload.text, payload.itemId, (channel, data) => {
+      if (!e.sender.isDestroyed()) e.sender.send(channel, data)
+    })
   )
-  handle(
-    'transform:paste-output',
-    (_e, payload: { output: string; outputKind: 'text' | 'image'; plain?: boolean }) =>
-      paste.pasteRaw(payload.output, payload.outputKind)
-  )
-
-  handle('actions:list', (_e, kind: 'text' | 'image') =>
-    getSettings().savedActions.filter((a) => a.appliesTo.includes(kind))
-  )
-  handle('actions:save', (_e, action: SavedAction) => {
-    const actions = getSettings().savedActions.filter((a) => a.id !== action.id)
-    updateSettings({ savedActions: [...actions, action] })
-  })
-  handle('actions:delete', (_e, id: string) => {
-    updateSettings({ savedActions: getSettings().savedActions.filter((a) => a.id !== id) })
-  })
+  handle('ask:cancel', (_e, id: string) => cancelAsk(id))
 
   handle('collections:list', () => getSettings().smartCollections)
-  handle('sessions:list', () =>
-    sessionsList().map((s) => ({
-      id: s.id,
-      title: s.title,
-      startedAt: s.startedAt,
-      endedAt: s.endedAt,
-      count: s.count
-    }))
-  )
-
   handle('settings:get', () => getSettings())
   handle('settings:set', (_e, patch: Partial<AppSettings>) => updateSettings(patch))
 
@@ -294,13 +138,6 @@ export function registerIpc(
   handle('dictation:suggestion:dismiss', (_e, key: string) => dismissSuggestion(key))
 
   handle('providers:status', () => providersStatus())
-  // What this platform can actually do, so Settings can render the reason next to a
-  // control instead of showing a toggle that changes nothing.
-  handle('capabilities:get', () => capabilities())
-  // Which shortcuts this boot lost, which the capability registry structurally
-  // cannot say: capabilitiesFor() is a pure function of platform and arch, and a
-  // hotkey conflict is a fact about what else happened to be running.
-  handle('hotkeys:failures', () => hotkeyRegistrationFailures())
   handle('enrichment:status', () => {
     const stats = enrichQueueStats()
     const run = enrichmentRunStats()
@@ -330,6 +167,15 @@ export function registerIpc(
   handle('rewrite:get', () => {
     const text = rewrite.getText()
     return text ? { text } : null
+  })
+  handle('rewrite:run', async (_e, payload: { prompt?: string }) => {
+    const text = rewrite.getText()
+    if (!text) return { ok: false, error: 'No selection to rewrite' }
+    try {
+      return { ok: true, output: await rewriteText(text, payload.prompt) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
   handle('rewrite:apply', (_e, payload: { output: string }) =>
     paste.pasteRaw(payload.output, 'text')
@@ -450,28 +296,9 @@ export function registerIpc(
       updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
       sendToPalette('items:changed', { reason: 'captured' })
 
-      // Dictated straight at the agent: no paste, no palette — the words go to the
-      // primary session, which is the same long-lived session the ask row uses, so
-      // successive dictations continue one conversation.
-      if (mode === 'agent') {
-        console.log(timing())
-        const agent = getSettings().agents[0]?.name
-        try {
-          await askAgent(text)
-          broadcast('agents:changed', { unread: unreadCount() })
-          return { ok: true, text, id, pasted: false, sentTo: agent ?? 'agent' }
-        } catch (err) {
-          // Never silently swallow the words: they are already saved as a clip, so
-          // say what happened rather than reporting a delivery that did not occur.
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error('[dictate] could not reach the agent:', msg)
-          return { ok: false, error: `Could not reach the agent: ${msg}`, text, id }
-        }
-      }
-
       // Context-aware destination: dictating with the palette OPEN means the
-      // words were for an agent, not the app underneath — route the transcript
-      // into the ask flow instead of injecting a paste keystroke.
+      // words were for the ask box, not the app underneath — route the transcript
+      // there instead of injecting a paste keystroke.
       const pal = getPalette()
       if (pal && !pal.isDestroyed() && pal.isVisible()) {
         console.log(timing())
@@ -505,32 +332,6 @@ export function registerIpc(
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
-  handle('scratch:save', (_e, payload: { text: string; itemId?: number }) => {
-    // Editing a dictation clip in the scratchpad is a clean before/after pair: if the
-    // change looks like a fix of a mis-transcribed word, offer a dictionary rule.
-    if (payload.itemId) {
-      const src = getItem(payload.itemId)
-      if (src?.content && src.content !== payload.text) {
-        considerScratchEdit(src.content, payload.text, payload.itemId)
-      }
-    }
-    // This path receives raw selections (rewrite hotkey) and scratchpad text, so it
-    // must run the same secret scan as capture — otherwise highlighting an API key
-    // and hitting rewrite stored it indexed, embedded and queued for enrichment.
-    const secret = detectSecret(payload.text) !== null
-    const { id, created } = upsertClip({
-      kind: 'text',
-      content: payload.text,
-      preview: payload.text.slice(0, 500),
-      secret,
-      derivedFrom: payload.itemId,
-      derivedVia: payload.itemId ? 'scratchpad edit' : undefined
-    })
-    if (created && !secret && getSettings().enrichment.enabled) enqueueEnrichment(id)
-    sendToPalette('items:changed', { reason: 'captured' })
-    return id
-  })
-
   handle('window:hide', (e) => {
     // Hide whichever window asked (palette hides; aux windows just hide too).
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -559,18 +360,6 @@ export function registerIpc(
   handle('window:open-settings', () => {
     hidePalette() // the palette is always-on-top; don't let it cover what we open
     openSettingsWindow()
-  })
-  handle('window:open-scratchpad', (_e, itemId?: number) => {
-    hidePalette()
-    openScratchpadWindow(itemId)
-  })
-  handle('window:open-notes', (_e, noteId?: number) => {
-    hidePalette()
-    openNotesWindow(noteId)
-  })
-  handle('window:open-agents', () => {
-    hidePalette()
-    openAgentsWindow()
   })
   handle('app:version', () => app.getVersion())
 }

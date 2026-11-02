@@ -718,26 +718,6 @@ code {
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
-.result-divider {
-  margin: 14px 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.result-divider::before,
-.result-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-
 /* Visible primary controls for result views — the keyboard shortcuts still
    work, but the buttons make the flow discoverable with a mouse. */
 .result-actions {
@@ -758,57 +738,25 @@ code {
   border-color: rgba(255, 255, 255, 0.28);
 }
 
-.pane-actions {
-  flex: none;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-raised);
-}
-
 .rewrite-result .result-actions {
   margin-top: 12px;
 }
 
-.replace-hint {
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--text-faint);
-}
+/* ── rewrite prompt row ── */
 
-/* ── action bar ── */
-
-.action-bar {
+.rewrite-prompt {
   flex: none;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-  animation: slide-in 120ms ease-out;
-}
-
-@keyframes slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.action-input-row {
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
 }
 
-.action-spark {
-  color: var(--accent-bright);
-  flex: none;
-}
-
-.action-input {
+.rewrite-input {
   flex: 1;
+  width: 100%;
   min-width: 0;
   background: none;
   border: none;
@@ -819,157 +767,22 @@ code {
   caret-color: var(--accent-bright);
 }
 
-.action-input::placeholder {
+.rewrite-input::placeholder {
   color: var(--text-faint);
 }
 
-.free-hint {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10.5px;
+.action-spark {
   color: var(--accent-bright);
-  white-space: nowrap;
-}
-
-/* "↵ runs the highlighted match" variant — quieter than the free-prompt hint. */
-.free-hint.match {
-  color: var(--text-dim);
-}
-
-.free-hint .hint-title {
-  display: inline-block;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-
-.spinner {
   flex: none;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid var(--accent-dim);
-  border-top-color: var(--accent-bright);
-  animation: spin 700ms linear infinite;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.action-list {
-  max-height: 176px;
-  overflow-y: auto;
-  padding: 0 4px 6px;
-}
-
-.action-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--text);
-  text-align: left;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 9px;
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.action-item.highlighted {
-  background: var(--sel-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.action-title {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.action-ai {
-  flex: none;
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--accent-bright);
-  background: var(--accent-dim);
-  border-radius: 3px;
-  padding: 2px 4px;
-}
-
-.action-key {
-  flex: none;
-  transition: opacity 120ms ease;
-}
-
-.action-key.inactive {
-  opacity: 0.35;
-}
-
-/* in-flight transform: shimmer over the running row, everything else muted */
-.action-item:disabled {
-  cursor: default;
-}
-
-.action-item.running {
-  position: relative;
-  overflow: hidden;
-  color: var(--text-dim);
-}
-
-.action-item.running::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(100deg, transparent 25%, var(--accent-dim) 50%, transparent 75%);
-  animation: shimmer 1.1s ease-in-out infinite;
-}
-
+/* used by .hud-shimmer in the dictation HUD */
 @keyframes shimmer {
   from {
     transform: translateX(-100%);
   }
   to {
     transform: translateX(100%);
-  }
-}
-
-/* progress underline on the prompt row while a free prompt / transform runs */
-.action-input-row.running {
-  position: relative;
-}
-
-.action-input-row.running::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent-bright), transparent);
-  background-size: 200% 100%;
-  animation: progress-slide 1.2s linear infinite;
-}
-
-@keyframes progress-slide {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
   }
 }
 
@@ -1084,17 +897,12 @@ code {
    is what "the agent view is messed up" looked like: a pale frame around the
    content on all four sides.
 
-   EVERY route that opens a real window belongs in this list. It listed only
-   settings and scratchpad, so notes and agents inherited the palette's margin the
-   moment they were added. Adding a route above without adding it here reintroduces
-   the same visual bug, which is why this reads as one list rather than per-route
-   rules scattered around.
+   EVERY route that opens a real window belongs in this list. Adding a route
+   without adding it here reintroduces the same visual bug, which is why this
+   reads as one list rather than per-route rules scattered around.
    ───────────────────────────────────────────────────────────────────────── */
 
-body.route-settings #root,
-body.route-scratchpad #root,
-body.route-notes #root,
-body.route-agents #root {
+body.route-settings #root {
   padding: 0;
 }
 
@@ -1127,8 +935,8 @@ textarea {
 }
 
 /* ── drag strip: 32px draggable titlebar for aux windows ──
-   Fallback for WMs that tile/undecorate the frameless settings/scratchpad
-   windows; interactive children live in explicit no-drag zones. */
+   Fallback for WMs that tile/undecorate the frameless settings
+   window; interactive children live in explicit no-drag zones. */
 
 .drag-strip {
   flex: none;
@@ -1219,52 +1027,6 @@ textarea {
   background: var(--bg-raised);
 }
 
-/* ── sessions row ── */
-
-.sessions-row {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  min-width: 0;
-}
-
-.sessions-label {
-  flex: none;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.sessions-scroll {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  min-width: 0;
-}
-
-.sessions-scroll::-webkit-scrollbar {
-  display: none;
-}
-
-.session-chip {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-  line-height: 1.5;
-}
-
-.session-chip .chip-count {
-  margin-left: 5px;
-}
-
 /* ── rewrite mini-flow ── */
 
 .rewrite-header {
@@ -1307,10 +1069,6 @@ textarea {
 
 .rewrite-fill {
   flex: 1;
-}
-
-.rewrite-mode .action-bar {
-  border-top: none;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -1640,18 +1398,6 @@ select.set-input option {
   font-weight: 500;
 }
 
-.provider-lane {
-  flex: none;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--accent-bright);
-  background: var(--accent-dim);
-  border-radius: 3px;
-  padding: 1px 5px;
-}
-
 .provider-detail {
   flex: 1;
   min-width: 0;
@@ -1706,13 +1452,6 @@ select.set-input option {
   min-width: 0;
 }
 
-.voice-sample {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  width: 100%;
-}
-
 /* buttons */
 
 .btn {
@@ -1755,66 +1494,6 @@ select.set-input option {
 
 /* saved-action editor */
 
-.action-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 10px;
-}
-
-.action-card-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.action-card .title-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.key-input {
-  width: 46px;
-  text-align: center;
-  text-transform: lowercase;
-}
-
-.builtin-badge {
-  flex: none;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  background: var(--kbd-bg);
-  border-radius: 3px;
-  padding: 2px 5px;
-}
-
-.applies-group {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 11.5px;
-  color: var(--text-dim);
-}
-
-.applies-group label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.applies-group label.action-provider {
-  margin-left: auto;
-  gap: 6px;
-}
-
 /* per-provider model overrides */
 
 .model-grid {
@@ -1849,151 +1528,6 @@ select.set-input option {
 
 .model-row .set-input.text-field {
   min-width: 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
-   Scratchpad window
-   ───────────────────────────────────────────────────────────────────────── */
-
-.scratch-item-badge {
-  font-size: 10.5px;
-  font-weight: 400;
-  color: var(--text-faint);
-}
-
-.mono-toggle {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.scratch-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 18px 0;
-}
-
-.scratch-text {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  resize: none;
-  font: inherit;
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: var(--text);
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  outline: none;
-  transition: border-color 120ms ease;
-}
-
-.scratch-text:focus {
-  border-color: var(--accent-glow);
-}
-
-.scratch-text.mono {
-  font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 12.5px;
-}
-
-.scratch-mic-row {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.mic-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 8px 16px;
-  cursor: pointer;
-  transition:
-    border-color 120ms ease,
-    background 150ms ease,
-    color 150ms ease;
-}
-
-.mic-btn:hover:not(:disabled) {
-  border-color: var(--border-strong);
-}
-
-.mic-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.mic-btn.recording {
-  color: #fff;
-  background: var(--danger);
-  border-color: var(--danger);
-}
-
-.rec-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #fff;
-  animation: rec-pulse 1s ease-in-out infinite;
-}
-
-@keyframes rec-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.75);
-  }
-}
-
-.rec-elapsed {
-  font-variant-numeric: tabular-nums;
-}
-
-.rec-hint {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-.scratch-footer {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
-}
-
-.scratch-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.scratch-counts {
-  font-size: 11px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -2253,372 +1787,7 @@ body.route-dictation #root {
   text-overflow: ellipsis;
 }
 
-/* ── notes ─────────────────────────────────────────────────────────────────
-   Three panes: list, editor, links. No folder tree — titles, tags and search
-   do the organising, which is the same bet Obsidian and SilverBullet make and
-   the one that fits an app whose enrichment already auto-titles and auto-tags. */
-
-.notes-win {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.notes-sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg-inset);
-}
-
-.notes-toolbar {
-  display: flex;
-  gap: 6px;
-  padding: 10px 10px 6px;
-}
-
-.notes-toolbar button {
-  flex: 1;
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.notes-toolbar button:hover {
-  border-color: var(--border-strong);
-  background: var(--sel-bg-hover);
-}
-
-.notes-search {
-  padding: 4px 10px 8px;
-}
-
-.notes-search input {
-  width: 100%;
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  outline: none;
-}
-
-.notes-search input:focus {
-  border-color: var(--accent);
-}
-
-.notes-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0 6px 10px;
-  list-style: none;
-}
-
-.notes-row {
-  padding: 7px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.notes-row:hover {
-  background: var(--sel-bg-hover);
-}
-
-.notes-row.selected {
-  background: var(--sel-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.notes-row-title {
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notes-row-meta {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-.notes-tag {
-  padding: 0 5px;
-  color: var(--text-dim);
-  background: var(--bg-raised);
-  border-radius: 999px;
-}
-
-.notes-empty {
-  padding: 14px 10px;
-  font-size: 12px;
-  color: var(--text-faint);
-  text-align: center;
-}
-
-.notes-main {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.notes-head {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 12px 16px 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-.notes-title {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--text);
-  background: none;
-  border: none;
-  outline: none;
-}
-
-.notes-title::placeholder {
-  color: var(--text-faint);
-}
-
-.notes-saved {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-.notes-saved.busy {
-  color: var(--accent-bright);
-}
-
-.notes-delete {
-  padding: 4px 9px;
-  font: inherit;
-  font-size: 11px;
-  color: var(--text-dim);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.notes-delete:hover {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-/* The editor owns the remaining height; CodeMirror scrolls inside it. */
-.note-editor {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.note-editor .cm-editor {
-  height: 100%;
-  font-size: 13.5px;
-}
-
-.note-editor .cm-editor.cm-focused {
-  outline: none;
-}
-
-.note-editor .cm-scroller {
-  padding: 12px 16px;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  line-height: 1.6;
-  overflow-y: auto;
-}
-
-.note-editor .cm-content {
-  caret-color: var(--accent-bright);
-}
-
-.note-editor .cm-cursor {
-  border-left-color: var(--accent-bright);
-}
-
-.note-editor .cm-activeLine {
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.note-editor .cm-selectionBackground,
-.note-editor .cm-content ::selection {
-  background: var(--accent-dim) !important;
-}
-
-.note-editor .cm-placeholder {
-  color: var(--text-faint);
-}
-
-/* Markdown tokens. Sizes stay close to body text: this is an editor, not a
-   preview, and headings that balloon make the source hard to scan. */
-.note-editor .cm-h1 { font-size: 1.35em; font-weight: 700; color: var(--text); }
-.note-editor .cm-h2 { font-size: 1.2em; font-weight: 700; color: var(--text); }
-.note-editor .cm-h3 { font-size: 1.08em; font-weight: 600; color: var(--text); }
-.note-editor .cm-strong { font-weight: 700; color: var(--text); }
-.note-editor .cm-em { font-style: italic; }
-.note-editor .cm-strike { text-decoration: line-through; color: var(--text-faint); }
-.note-editor .cm-link { color: var(--accent-bright); }
-.note-editor .cm-url { color: var(--text-dim); }
-.note-editor .cm-code { color: var(--success); background: var(--bg-inset); border-radius: 3px; }
-.note-editor .cm-quote { color: var(--text-dim); font-style: italic; }
-.note-editor .cm-list { color: var(--accent-bright); }
-
-.notes-links {
-  max-height: 34%;
-  overflow-y: auto;
-  padding: 10px 16px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-inset);
-}
-
-.notes-linkgroup + .notes-linkgroup {
-  margin-top: 10px;
-}
-
-.notes-linkgroup h4 {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.notes-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.notes-chip {
-  display: inline-flex;
-  gap: 5px;
-  align-items: center;
-  padding: 4px 9px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.notes-chip:hover {
-  border-color: var(--accent);
-}
-
-/* A link whose note doesn't exist yet — clicking it creates the note. */
-.notes-chip.unresolved {
-  color: var(--text-dim);
-  border-style: dashed;
-}
-
-.notes-chip-new {
-  font-size: 10px;
-  color: var(--accent-bright);
-}
-
-.notes-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-faint);
-}
-
-.notes-hint code {
-  padding: 1px 4px;
-  background: var(--bg-raised);
-  border-radius: 3px;
-}
-
-.notes-blank {
-  display: grid;
-  place-items: center;
-  height: 100%;
-  font-size: 13px;
-  color: var(--text-faint);
-}
-
-/* ── agent sessions & inbox ────────────────────────────────────────────────
-   Only sessions clipboard.md launched appear here — they're the ones with a
-   bridge MCP attached, and so the only ones that can be spoken to. */
-
-.agents-win { display: grid; grid-template-columns: 260px 1fr; height: 100vh; overflow: hidden; }
-
-.agents-sidebar {
-  display: flex; flex-direction: column; min-height: 0;
-  border-right: 1px solid var(--border); background: var(--bg-inset);
-}
-
-.agents-launch { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; }
-.agents-launch button {
-  flex: 1; padding: 6px 8px; font: inherit; font-size: 12px; color: var(--text);
-  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
-}
-.agents-launch button:hover:not(:disabled) { border-color: var(--accent); }
-.agents-launch button:disabled { opacity: 0.5; cursor: default; }
-
-.agents-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0 6px 10px; list-style: none; }
-.agents-row { padding: 7px 8px; border-radius: 6px; cursor: pointer; }
-.agents-row:hover { background: var(--sel-bg-hover); }
-.agents-row.selected { background: var(--sel-bg); box-shadow: inset 2px 0 0 var(--accent); }
-.agents-row-top { display: flex; gap: 6px; align-items: center; }
-.agents-row-title { flex: 1; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.agents-row-meta { margin-top: 2px; font-size: 11px; color: var(--text-faint); }
-
-/* Dim until the bridge publishes its port — an unreachable session can't be messaged. */
-.agents-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); opacity: 0.5; }
-.agents-dot.running.reachable { background: var(--success); opacity: 1; }
-.agents-dot.exited { background: var(--text-faint); opacity: 0.35; }
-
-.agents-unread {
-  min-width: 17px; padding: 0 5px; font-size: 10px; font-weight: 700; color: #fff;
-  text-align: center; background: var(--accent); border-radius: 999px;
-}
-
-.agents-empty { padding: 14px 10px; font-size: 12px; line-height: 1.5; color: var(--text-faint); }
-
-.agents-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-
-.agents-head {
-  display: flex; gap: 10px; align-items: center; justify-content: space-between;
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
-}
-.agents-head-meta { margin-left: 8px; font-size: 11px; color: var(--text-faint); }
-.agents-head-actions { display: flex; gap: 8px; align-items: center; }
-.agents-attach {
-  padding: 3px 7px; font-size: 11px; color: var(--text-dim);
-  background: var(--bg-inset); border-radius: 4px; user-select: text;
-}
-.agents-head-actions button {
-  padding: 4px 9px; font: inherit; font-size: 11px; color: var(--text-dim);
-  background: none; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
-}
-.agents-head-actions button:hover { color: var(--danger); border-color: var(--danger); }
-
-.agents-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; }
-.agents-hint { font-size: 12px; color: var(--text-faint); }
+/* ── ask-mode message bubbles ────────────────────────────────────────────── */
 
 .agents-msg {
   max-width: 78%; margin-bottom: 10px; padding: 8px 11px;
@@ -2626,31 +1795,8 @@ body.route-dictation #root {
 }
 /* Ours right-aligned, the agent's left — the usual conversation reading order. */
 .agents-inbound { margin-left: auto; background: var(--accent-dim); border-color: transparent; }
-.agents-msg-head {
-  display: flex; gap: 8px; justify-content: space-between;
-  margin-bottom: 3px; font-size: 10px; color: var(--text-faint); text-transform: uppercase;
-}
-.agents-msg-kind { font-weight: 700; letter-spacing: 0.04em; }
+
 .agents-msg-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; user-select: text; }
-
-/* A question is the one kind that blocks the agent — make it impossible to miss. */
-.agents-kind-question { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
-.agents-kind-failure { border-color: var(--danger); }
-.agents-kind-done { border-color: var(--success); }
-
-.agents-reply { padding: 10px 16px 14px; border-top: 1px solid var(--border); background: var(--bg-inset); }
-.agents-reply textarea {
-  width: 100%; padding: 8px 10px; font: inherit; font-size: 13px; color: var(--text);
-  resize: none; background: var(--bg-raised); border: 1px solid var(--border);
-  border-radius: 8px; outline: none;
-}
-.agents-reply textarea:focus { border-color: var(--accent); }
-.agents-reply textarea:disabled { opacity: 0.55; }
-
-.agents-blank { display: grid; place-items: center; height: 100%; font-size: 13px; color: var(--text-faint); }
-
-/* Dormant: asleep to reclaim memory, but resumable — distinct from dead. */
-.agents-dot.dormant { background: var(--accent); opacity: 0.55; }
 
 /* ── ask row: the assistant entry sitting above clipboard history ─────────── */
 /* A button so it's clickable, styled as the list's zeroth row. Selected state
@@ -2672,36 +1818,6 @@ body.route-dictation #root {
 .ask-row kbd { flex: none; }
 
 /* ── agent picker (send clip to a session) ────────────────────────────────── */
-.agent-picker {
-  display: flex; flex-direction: column; min-height: 0; max-height: 55%;
-  border-bottom: 1px solid var(--border);
-}
-.agent-picker-head {
-  display: flex; gap: 7px; align-items: center; padding: 10px 12px 6px;
-  font-size: 12px; font-weight: 600;
-}
-.agent-picker-busy { margin-left: auto; font-size: 11px; color: var(--text-faint); }
-.agent-picker-input {
-  margin: 0 12px 6px; padding: 6px 9px; font: inherit; font-size: 13px; color: var(--text);
-  background: var(--bg-inset); border: 1px solid var(--border); border-radius: 7px; outline: none;
-}
-.agent-picker-input:focus { border-color: var(--accent); }
-.agent-picker-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0 6px 6px; list-style: none; }
-.agent-target {
-  display: flex; gap: 7px; align-items: center; padding: 7px 8px;
-  border-radius: 6px; cursor: pointer;
-}
-.agent-target:hover { background: var(--sel-bg-hover); }
-.agent-target.selected { background: var(--sel-bg); box-shadow: inset 2px 0 0 var(--accent); }
-.agent-target-title { flex: none; font-size: 13px; white-space: nowrap; }
-.agent-target-meta {
-  flex: 1; overflow: hidden; font-size: 11px; color: var(--text-faint);
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.agent-target.new .agent-target-title { color: var(--accent-bright); }
-.agent-target-plus { color: var(--accent-bright); flex: none; }
-.agent-target-empty { padding: 10px; font-size: 12px; color: var(--text-faint); }
-.agent-picker-hint { margin: 0; padding: 6px 12px 10px; font-size: 11px; color: var(--text-faint); }
 
 /* ── shortcut help overlay (⌘/) ───────────────────────────────────────────── */
 .help-overlay {
@@ -2739,6 +1855,7 @@ body.route-dictation #root {
   display: flex; gap: 8px; align-items: center; padding: 4px 2px 10px;
   font-size: 12px; color: var(--text-faint);
 }
+.ask-waiting.error { color: var(--danger); }
 .ask-pulse {
   width: 8px; height: 8px; border-radius: 50%; background: var(--accent-bright);
   animation: askpulse 1.1s ease-in-out infinite;
@@ -2751,10 +1868,7 @@ body.route-dictation #root {
   display: flex; gap: 8px; padding: 8px 16px 10px; border-top: 1px solid var(--border);
 }
 
-/* Palette mic states. NOT `.mic-btn` — that class belongs to the Scratchpad's
-   text-pill record button, and inheriting its 8x16 padding crushed this 26px
-   icon button into an empty capsule (and painted it danger-red while
-   recording). The icon stays fully visible while recording; a pulsing ring
+/* Palette mic states. The icon stays fully visible while recording; a pulsing ring
    around a steady red mic says "live" without hiding what it is. */
 .palette-mic { outline: none; }
 .palette-mic.recording {
@@ -2768,10 +1882,6 @@ body.route-dictation #root {
 }
 .palette-mic.transcribing { opacity: 0.5; }
 
-.set-inline-actions { margin-top: 6px; display: flex; gap: 8px; }
-
-/* Model picker: custom field + "back to list" affordance. */
-.model-custom { display: flex; gap: 6px; align-items: center; }
 .linkish {
   padding: 0; font: inherit; font-size: 11px; color: var(--accent-bright);
   background: none; border: none; cursor: pointer; text-decoration: underline;
@@ -2832,36 +1942,6 @@ body.route-dictation #root {
   color: var(--text-dim);
 }
 
-/* Ask-row agent target chip (shown when more than one agent is defined). */
-.ask-agent {
-  display: inline-flex; gap: 5px; align-items: center; flex: none;
-  padding: 2px 7px; font-size: 11px; color: var(--accent-bright);
-  background: var(--accent-dim); border-radius: 999px;
-}
-.ask-agent kbd { font-size: 9px; opacity: 0.8; }
-
-/* ── agent definition cards (Settings → Agents) ───────────────────────────── */
-.agent-card {
-  margin-bottom: 14px; padding: 12px 14px;
-  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px;
-}
-.agent-card-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.agent-card-name { font-size: 14px; font-weight: 700; color: var(--accent-bright); flex: 1; }
-.agent-primary-badge {
-  padding: 2px 8px; font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.05em; color: var(--accent-bright);
-  background: var(--accent-dim); border-radius: 999px;
-}
-.agent-field { display: block; margin-bottom: 10px; }
-.agent-field > span {
-  display: block; margin-bottom: 4px; font-size: 11px; font-weight: 600;
-  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em;
-}
-.agent-field .text-field { width: 100%; }
-.agent-card-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-.agent-inline { display: inline-flex; gap: 7px; align-items: center; font-size: 12px; color: var(--text-dim); }
-.agent-restart { margin-left: auto; }
-
 /* AI summary line in the preview footer (links, described images). */
 .meta-description {
   display: flex; gap: 7px; align-items: flex-start;
@@ -2884,7 +1964,7 @@ body.route-dictation #root {
   padding: 3px 8px; background: var(--bg-inset); border-radius: 6px; display: inline-block;
 }
 
-/* ── markdown in agent replies ─────────────────────────────────────────────── */
+/* ── markdown in ask replies ───────────────────────────────────────────────── */
 .md { user-select: text; }
 .md .md-p { margin: 0 0 8px; line-height: 1.55; white-space: pre-wrap; }
 .md .md-p:last-child { margin-bottom: 0; }
@@ -2905,38 +1985,6 @@ body.route-dictation #root {
 }
 .md a { color: var(--accent-bright); }
 
-/* Ask-view header: which agent this conversation is with, always visible. */
-.ask-view-head {
-  display: flex; gap: 7px; align-items: center;
-  padding: 8px 16px 6px; border-bottom: 1px solid var(--border);
-  color: var(--accent-bright);
-}
-.ask-view-agent { font-size: 12.5px; font-weight: 700; }
-.ask-view-sub { font-size: 11px; font-weight: 400; color: var(--text-faint); }
-
-/* @agent autocomplete under the search bar. */
-.mention-pop {
-  position: absolute; top: 52px; left: 14px; z-index: 30; min-width: 320px;
-  padding: 4px;
-  /* --bg-raised is a 3.5% tint meant to sit ON a surface — alone it's glass,
-     and the filter chips read straight through the popup. Composite it over
-     the near-opaque --bg. */
-  background: linear-gradient(var(--bg-raised), var(--bg-raised)), var(--bg);
-  border: 1px solid var(--border-strong); border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-}
-.mention-row {
-  display: flex; gap: 8px; align-items: center; width: 100%;
-  padding: 7px 9px; font: inherit; font-size: 13px; color: var(--text);
-  text-align: left; background: none; border: none; border-radius: 7px; cursor: pointer;
-}
-.mention-row.selected { background: var(--sel-bg); }
-.mention-name { flex: none; font-weight: 700; color: var(--accent-bright); }
-.mention-desc {
-  flex: 1; overflow: hidden; font-size: 11.5px; color: var(--text-faint);
-  text-overflow: ellipsis; white-space: nowrap;
-}
-
 /* Read-only key list in Settings (macOS dictation modes): the control column shows
    facts rather than an input, so it stacks and stays visually quieter than a field. */
 .set-static {
@@ -2952,63 +2000,4 @@ body.route-dictation #root {
   align-items: center;
   gap: 6px;
   white-space: nowrap;
-}
-
-
-/* ── Region capture overlay ─────────────────────────────────────────────────
-   Fills a full-screen, OPAQUE window showing the already-captured screen. Opaque
-   rather than transparent because a transparent frameless window under software
-   rendering paints solid black on Windows, and this has to work in exactly the
-   degraded state the app falls back to after a GPU crash-loop. */
-body.route-region {
-  margin: 0;
-  overflow: hidden;
-  background: #000;
-  /* A real crosshair, not the default arrow: it is the only affordance telling the
-     user this window wants a drag rather than a click. */
-  cursor: crosshair;
-  user-select: none;
-}
-
-.region-overlay {
-  position: fixed;
-  inset: 0;
-}
-
-.region-shot {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  /* The image is the screen at 1:1 CSS pixels; letting it scale would make the crop
-     maths in regionCapture.ts wrong by the scale ratio. */
-  object-fit: fill;
-  pointer-events: none;
-}
-
-.region-dim {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-}
-
-/* The selection is a bright cut-out rather than a rectangle outline, so the user is
-   looking at the actual pixels they are about to take. */
-.region-sel {
-  position: absolute;
-  overflow: hidden;
-  outline: 1px solid rgba(255, 255, 255, 0.9);
-  pointer-events: none;
-}
-
-.region-size {
-  position: absolute;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.75);
-  pointer-events: none;
 }

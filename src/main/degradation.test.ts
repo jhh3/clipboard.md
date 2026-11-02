@@ -3,11 +3,10 @@ import { readFileSync } from 'fs'
 import { capabilitiesFor } from './capabilities'
 
 /**
- * Windows must not walk into a Linux mechanism.
+ * macOS must not walk into a Linux mechanism.
  *
  * The functions these tests cover reach for `xprop`, `gsettings`, `/dev/input`,
- * `ffmpeg` and D-Bus — none of which exist on Windows, and all of which used to be
- * reached by an `else` that was written when there were only two platforms. Calling
+ * `ffmpeg` and D-Bus, which exist only on Linux. Calling
  * them here would mean importing Electron, so the guards are asserted structurally
  * instead: the source must contain an explicit platform arm, not an implicit one.
  *
@@ -23,7 +22,7 @@ describe('no implicit fall-through into Linux mechanisms', () => {
     expect(src).toContain('unavailable')
     // The portal is Linux's; reaching it must be gated, not defaulted to.
     expect(src).toMatch(/if \(LINUX\)[\s\S]*portalScreenshot/)
-    // …and imported lazily, so a Windows boot does not load dbus-next.
+    // …and imported lazily, so a macOS boot does not load dbus-next.
     expect(src).toContain("await import('./portal')")
   })
 
@@ -69,17 +68,7 @@ describe('no implicit fall-through into Linux mechanisms', () => {
 
   it('local transcription refuses up front where it cannot work', () => {
     expect(read('src/main/transcribe.ts')).toContain("if (local.state === 'unsupported') throw new Error(local.reason)")
-    // …and the registry is what says so, for exactly one platform today.
     expect(capabilitiesFor('linux').localTranscribe.state).toBe('supported')
     expect(capabilitiesFor('darwin').localTranscribe.state).toBe('supported')
-    expect(capabilitiesFor('win32', 'x64').localTranscribe.state).toBe('unsupported')
-  })
-
-  it('the shell-environment import stays skipped on Windows, and says so', () => {
-    const src = read('src/main/shellEnv.ts')
-    expect(src).toMatch(/if \(WIN32\) \{/)
-    // The guard must stay: process.env.SHELL IS set under Git Bash, so removing it
-    // would spawn MSYS bash with a Unix `env` on a machine that has neither.
-    expect(src).toContain('Git Bash')
   })
 })
