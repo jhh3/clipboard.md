@@ -43,45 +43,12 @@ const TERMINAL_BUNDLES = new Set([
 const CHAT_BUNDLES = new Set(['com.tinyspeck.slackmacgap', 'com.hnc.Discord'])
 
 /**
- * Windows executable basenames.
- *
- * Without this table the Smart-paste setting is visible in Settings on Windows and
- * changes nothing, which is the same "control that silently does nothing" this port
- * keeps deleting.
- *
- * ApplicationFrameHost.exe is here because a UWP window's foreground process is the
- * frame host rather than the app — it is a terminal only sometimes, and treating it
- * as one costs at worst a rich clip pasted as plain text, which is the safe error.
- */
-const TERMINAL_EXES = new Set([
-  'windowsterminal.exe',
-  'conhost.exe',
-  'openconsole.exe',
-  'cmd.exe',
-  'powershell.exe',
-  'pwsh.exe',
-  'mintty.exe',
-  'putty.exe',
-  'wezterm-gui.exe',
-  'alacritty.exe',
-  'kitty.exe'
-])
-const CHAT_EXES = new Set(['slack.exe', 'discord.exe', 'teams.exe', 'ms-teams.exe'])
-
-/**
  * What kind of destination this is, from a platform-appropriate identifier.
  *
- * Pure and platform-parameterised so the macOS table can be asserted to produce
- * exactly the results it produced before Windows existed.
+ * Pure and platform-parameterised so the table can be tested anywhere.
  */
 export function destinationRole(id: string | null, platform: string): DestinationRole {
-  if (!id) return null
-  if (platform === 'win32') {
-    const exe = id.toLowerCase()
-    if (TERMINAL_EXES.has(exe)) return 'terminal'
-    if (CHAT_EXES.has(exe)) return 'chat'
-    return null
-  }
+  if (!id || platform !== 'darwin') return null
   if (TERMINAL_BUNDLES.has(id)) return 'terminal'
   if (CHAT_BUNDLES.has(id)) return 'chat'
   return null

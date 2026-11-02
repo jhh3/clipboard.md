@@ -2,6 +2,12 @@
 
 *Drafted 2026-08-06 from three research streams (competitive landscape, platform capture mechanics, AI stack) plus live verification on the target machine (Ubuntu 26.04, GNOME Shell 50.1, Wayland).*
 
+> **2026-11 status:** this is the original design record. Several features it describes
+> were built and later removed for lack of use: agent sessions and the inbox, the MCP
+> server, notes, the scratchpad, image editing and OCR auto-redact, saved transforms,
+> clip sessions, the subscription (Claude/Codex CLI) lane, and the Windows port. AI now
+> goes through direct OpenAI/Fireworks API calls only. See the README for what ships.
+
 ## 1. Positioning
 
 The open lane, verified against ~30 existing tools: **nothing combines** Maccy's

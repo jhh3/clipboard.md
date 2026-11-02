@@ -1,29 +1,20 @@
 import { useEffect, useState } from 'react'
 import Palette from './components/Palette'
 import Settings from './components/Settings'
-import Scratchpad from './components/Scratchpad'
 import DictationHud from './components/DictationHud'
-import Notes from './components/Notes'
-import Agents from './components/Agents'
-import RegionOverlay from './components/RegionOverlay'
 
-type Route = 'palette' | 'settings' | 'scratchpad' | 'dictation' | 'notes' | 'agents' | 'region'
+type Route = 'palette' | 'settings' | 'dictation'
 
 function routeFromHash(): Route {
   const h = window.location.hash
   if (h === '#settings') return 'settings'
-  if (h === '#scratchpad') return 'scratchpad'
   if (h === '#dictation') return 'dictation'
-  if (h === '#notes') return 'notes'
-  if (h === '#agents') return 'agents'
-  if (h === '#region') return 'region'
   return 'palette'
 }
 
 /**
  * Tiny hash router: '' / '#palette' → palette, '#settings' → settings,
- * '#scratchpad' → scratchpad, '#dictation' → the always-on-top dictation HUD,
- * '#region' → the full-screen crop overlay used by region capture.
+ * '#dictation' → the always-on-top dictation HUD.
  */
 export default function App() {
   const [route, setRoute] = useState<Route>(routeFromHash)
@@ -34,17 +25,13 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  // Body class per route: settings/scratchpad windows are opaque (no palette
-  // shadow margin); the dictation HUD keeps a thin one for its own shadow.
+  // Body class per route: the settings window is opaque (no palette shadow margin);
+  // the dictation HUD keeps a thin one for its own shadow.
   useEffect(() => {
     document.body.className = `route-${route}`
   }, [route])
 
   if (route === 'settings') return <Settings />
-  if (route === 'scratchpad') return <Scratchpad />
   if (route === 'dictation') return <DictationHud />
-  if (route === 'notes') return <Notes />
-  if (route === 'agents') return <Agents />
-  if (route === 'region') return <RegionOverlay />
   return <Palette />
 }

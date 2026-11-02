@@ -1,108 +1,65 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type {
-  AgentDef,
-  AppSettings,
-  DictationSuggestion,
-  ProviderId,
-  ProviderStatus,
-  SavedAction
-} from '@shared/types'
+import type { AppSettings, DictationSuggestion, ProviderId, ProviderStatus } from '@shared/types'
 import { invoke, on } from '../lib/ipc'
-import { IS_MAC, IS_WIN, GLOBAL_MOD } from '../lib/keys'
+import { IS_MAC, GLOBAL_MOD } from '../lib/keys'
 import { DEFAULT_DICTATE_CHORD, chordWarning, formatChord, parseChord } from '@shared/chord'
-import { capabilityNotices, type CapabilityLike } from '@shared/capabilityNotices'
 import { useTheme } from '../hooks/useTheme'
 import { useToasts } from '../hooks/useToasts'
 import DragStrip from './DragStrip'
 import Toasts from './Toasts'
-import { PlusIcon, SparkIcon, TrashIcon } from './icons'
+import { TrashIcon } from './icons'
 
-const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
-  { id: 'fireworks', label: 'Fireworks (DeepSeek)' },
-  { id: 'openai', label: 'OpenAI' }
+/** The two direct-API providers. Every AI call goes to one of these. */
+type ApiProvider = Extract<ProviderId, 'openai' | 'fireworks'>
+
+const PROVIDERS: Array<{ id: ApiProvider; label: string }> = [
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'fireworks', label: 'Fireworks (DeepSeek)' }
 ]
 
-/** Placeholder = the default model used when no override is set. */
-const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
-  openai: 'gpt-6-luna',
-  fireworks: 'accounts/fireworks/models/deepseek-v4p1-flash'
-}
-
-/**
- * Known model choices per provider, so picking one is a dropdown instead of
- * remembering a model id. "Custom…" reveals a text field — the lists will age,
- * and a stale list must never block a new model id.
- */
-const MODEL_CHOICES: Record<ProviderId, string[]> = {
+/** Model choices per provider. The first entry is the default when nothing is saved. */
+const MODEL_CHOICES: Record<ApiProvider, string[]> = {
   openai: ['gpt-6-luna', 'gpt-5.4-nano'],
   fireworks: ['accounts/fireworks/models/deepseek-v4p1-flash']
 }
 
-const CUSTOM = '__custom__'
-
-/** Dropdown of known models with a custom escape hatch. Empty = provider default. */
+/**
+ * Model dropdown for one provider. A saved id that has since left the list stays
+ * visible as its own option rather than the select silently showing the default
+ * while calls still go to the old model.
+ */
 function ModelSelect({
   provider,
   value,
   onCommit
 }: {
-  provider: ProviderId
+  provider: ApiProvider
   value: string
   onCommit: (v: string) => void
 }) {
   const choices = MODEL_CHOICES[provider]
-  const isKnown = value === '' || choices.includes(value)
-  const [custom, setCustom] = useState(!isKnown)
-  if (choices.length === 0 || custom || !isKnown) {
-    return (
-      <div className="model-custom">
-        <TextField
-          value={value}
-          placeholder={MODEL_PLACEHOLDERS[provider]}
-          onCommit={onCommit}
-        />
-        {choices.length > 0 && (
-          <button
-            className="linkish"
-            onClick={() => {
-              setCustom(false)
-              if (!choices.includes(value)) onCommit('')
-            }}
-          >
-            list
-          </button>
-        )}
-      </div>
-    )
-  }
+  const stray = value !== '' && !choices.includes(value)
   return (
     <select
       className="set-input"
-      value={value}
-      onChange={(e) => {
-        if (e.target.value === CUSTOM) setCustom(true)
-        else onCommit(e.target.value)
-      }}
+      value={value || choices[0]}
+      onChange={(e) => onCommit(e.target.value)}
     >
-      <option value="">Default ({MODEL_PLACEHOLDERS[provider]})</option>
-      {choices.map((m) => (
+      {choices.map((m, i) => (
         <option key={m} value={m}>
-          {m}
+          {i === 0 ? `${m} (default)` : m}
         </option>
       ))}
-      <option value={CUSTOM}>Custom…</option>
+      {stray && <option value={value}>{value} (no longer offered)</option>}
     </select>
   )
 }
 
 const SECTIONS = [
   ['general', 'General'],
-  ['providers', 'AI Providers'],
+  ['ai', 'AI'],
   ['intelligence', 'Intelligence'],
-  ['assistant', 'Agents'],
-  ['privacy', 'Privacy'],
-  ['voice', 'Voice'],
-  ['actions', 'Actions']
+  ['privacy', 'Privacy']
 ] as const
 
 type SectionId = (typeof SECTIONS)[number][0]
@@ -170,96 +127,6 @@ function Row({
         {sub && <div className="set-sub">{sub}</div>}
       </div>
       <div className="set-control">{children}</div>
-    </div>
-  )
-}
-
-/**
- * What this platform cannot do, and why — read from the main process's capability
- * registry rather than duplicated here.
- *
- * A control that silently does nothing is the failure mode this whole registry
- * exists to prevent, and a control that is simply hidden is only a little better:
- * the user goes looking for the feature and concludes the app is broken or that
- * they have misremembered it. Saying "Rewrite: Windows has no current selection to
- * read, so the hotkey refuses rather than rewriting whatever you last copied" costs
- * one line and ends the search.
- *
- * Windows only — see capabilityNotices() in @shared for why the platform gate is not
- * optional. Renders nothing at all on macOS and Linux, whose Settings pane this port
- * does not change.
- */
-const CAPABILITY_LABELS: Record<string, string> = {
-  pasteInjection: 'Automatic paste',
-  holdToTalk: 'Hold-to-talk dictation',
-  primarySelection: 'Rewrite selection',
-  screenshotRegion: 'Region screenshot',
-  localTranscribe: 'Offline transcription',
-  sourceApp: 'Source app detection',
-  concealedFormatHints: 'Password-manager markers',
-  autostart: 'Start at login',
-  pinAcrossWorkspaces: 'Follow me across desktops'
-}
-
-function CapabilityNotices() {
-  const [caps, setCaps] = useState<Record<string, CapabilityLike>>({})
-  useEffect(() => {
-    // Not even fetched off Windows: the IPC round trip has no reader there, and a
-    // capability report sitting in state is one edit away from being rendered again.
-    if (!IS_WIN) return
-    void invoke('capabilities:get').then(setCaps)
-  }, [])
-  const limited = capabilityNotices(caps, IS_WIN ? 'win32' : 'other')
-  if (limited.length === 0) return null
-  return (
-    <div className="set-row">
-      <div className="set-row-text">
-        <div className="set-label">On this platform</div>
-        <div className="set-sub">
-          {limited.map((cap) => (
-            <div key={cap.key}>
-              <strong>{CAPABILITY_LABELS[cap.key] ?? cap.key}</strong>
-              {cap.state === 'degraded' ? ' (limited)' : ' (unavailable)'} — {cap.reason}
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="set-control" />
-    </div>
-  )
-}
-
-/**
- * The global shortcuts THIS BOOT could not take.
- *
- * The static Windows blurb above already warns that a conflict can appear on one
- * boot and not the next; this says which keys it actually happened to. Windows grants
- * a hotkey to whoever asks first and tells the loser nothing, so without this the
- * user presses a documented shortcut, nothing happens, and there is no way to tell
- * that from the app being broken.
- *
- * Not part of CapabilityNotices: the capability registry is a pure function of
- * platform and arch by design, and this is a fact about what else was running.
- * Renders nothing when every shortcut registered, which is the normal case, and
- * nothing at all off Windows, where the list is always empty.
- */
-function HotkeyConflicts() {
-  const [taken, setTaken] = useState<string[]>([])
-  useEffect(() => {
-    if (!IS_WIN) return
-    void invoke('hotkeys:failures').then(setTaken)
-  }, [])
-  if (taken.length === 0) return null
-  return (
-    <div className="set-row">
-      <div className="set-row-text">
-        <div className="set-label">Shortcuts another app already owns</div>
-        <div className="set-sub">
-          {taken.join(' · ')} — Windows gives a shortcut to whichever app asked first,
-          so these do nothing until you close that app or restart clipboard.md before it.
-        </div>
-      </div>
-      <div className="set-control" />
     </div>
   )
 }
@@ -546,302 +413,11 @@ function MicSelect({
   )
 }
 
-/** Identity textarea: draft-then-commit like every other text control here. */
-function IdentityEditor({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
-  const ref = useRef<HTMLTextAreaElement | null>(null)
-  const [draft, setDraft] = useSyncedDraft(value, ref)
-  return (
-    <textarea
-      ref={ref}
-      className="set-textarea identity-textarea"
-      value={draft}
-      placeholder={
-        'Who you are and how the assistant should help.\n' +
-        'e.g. "I\'m John, a software engineer. Prefer terse answers. My projects live in ~/Documents/code."'
-      }
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        if (draft !== value) onCommit(draft)
-      }}
-    />
-  )
-}
-
-/**
- * One agent definition. The first card is the PRIMARY — the palette's default
- * ask target and the owner of the main memory file — so it can't be deleted.
- */
-function AgentCard({
-  def,
-  isPrimary,
-  drafting,
-  restarting,
-  onPatch,
-  onDraft,
-  onRestart,
-  onRemove
-}: {
-  def: AgentDef
-  isPrimary: boolean
-  drafting: boolean
-  restarting: boolean
-  onPatch: (changes: Partial<AgentDef>) => void
-  onDraft: () => void
-  onRestart: () => void
-  onRemove: () => void
-}) {
-  const [newFile, setNewFile] = useState('')
-  const addFile = (): void => {
-    const path = newFile.trim()
-    const files = def.identityFiles ?? []
-    if (!path || files.includes(path)) return
-    onPatch({ identityFiles: [...files, path] })
-    setNewFile('')
-  }
-  return (
-    <div className="agent-card">
-      <div className="agent-card-head">
-        <span className="agent-card-name">@{def.name}</span>
-        {isPrimary ? (
-          <span className="agent-primary-badge">primary</span>
-        ) : (
-          <button className="icon-btn" title="Remove agent" onClick={onRemove}>
-            <TrashIcon size={13} />
-          </button>
-        )}
-      </div>
-      <label className="agent-field">
-        <span>Description</span>
-        <TextField
-          value={def.description ?? ''}
-          placeholder="What this agent is for — write it like routing rules"
-          onCommit={(v) => onPatch({ description: v || undefined })}
-        />
-      </label>
-      <label className="agent-field">
-        <span>Working directory</span>
-        <TextField
-          value={def.cwd}
-          placeholder="(home directory)"
-          onCommit={(v) => onPatch({ cwd: v })}
-        />
-      </label>
-      <div className="agent-field">
-        <span>Identity</span>
-        <IdentityEditor
-          value={def.identity ?? ''}
-          onCommit={(v) => onPatch({ identity: v || undefined })}
-        />
-        <div className="set-inline-actions">
-          <button className="btn" disabled={drafting} onClick={onDraft}>
-            <SparkIcon size={12} /> {drafting ? 'Drafting…' : 'Draft with AI'}
-          </button>
-        </div>
-      </div>
-      <div className="agent-field">
-        <span>Identity files</span>
-        <div className="list-editor">
-          {(def.identityFiles ?? []).map((file, i) => (
-            <div key={`${file}:${i}`} className="list-item-row">
-              <span className="list-item-text mono" title={file}>
-                {truncateMiddle(file)}
-              </span>
-              <button
-                className="icon-btn"
-                title="Remove"
-                onClick={() =>
-                  onPatch({ identityFiles: (def.identityFiles ?? []).filter((_, j) => j !== i) })
-                }
-              >
-                <TrashIcon size={13} />
-              </button>
-            </div>
-          ))}
-          <div className="list-add-row">
-            <input
-              className="set-input"
-              value={newFile}
-              placeholder="/absolute/path/to/identity.md"
-              spellCheck={false}
-              onChange={(e) => setNewFile(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') addFile()
-              }}
-            />
-            <button className="btn" onClick={addFile}>
-              Add
-            </button>
-          </div>
-        </div>
-      </div>
-      <div className="agent-card-row">
-        <label className="agent-inline">
-          Memory
-          <select
-            className="set-input"
-            value={def.memory ?? (isPrimary ? 'own' : 'off')}
-            onChange={(e) => onPatch({ memory: e.target.value as AgentDef['memory'] })}
-          >
-            <option value="own">Own file</option>
-            <option value="shared">Shared with primary</option>
-            <option value="off">Off</option>
-          </select>
-        </label>
-        <label className="agent-inline">
-          Ask target
-          <Toggle
-            checked={def.persistent !== false}
-            onChange={(v) => onPatch({ persistent: v })}
-          />
-        </label>
-        <label className="agent-inline">
-          Pre-warm
-          <Toggle checked={def.prewarm === true} onChange={(v) => onPatch({ prewarm: v })} />
-        </label>
-        <button className="btn agent-restart" disabled={restarting} onClick={onRestart}>
-          {restarting ? 'Restarting…' : 'Restart session'}
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function VoiceSample({
-  value,
-  onCommit,
-  onRemove
-}: {
-  value: string
-  onCommit: (v: string) => void
-  onRemove: () => void
-}) {
-  const ref = useRef<HTMLTextAreaElement | null>(null)
-  const [draft, setDraft] = useSyncedDraft(value, ref)
-  return (
-    <div className="voice-sample">
-      <textarea
-        ref={ref}
-        className="set-textarea"
-        value={draft}
-        placeholder="A sample of your writing voice…"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          if (draft !== value) onCommit(draft)
-        }}
-      />
-      <button className="icon-btn" title="Remove sample" onClick={onRemove}>
-        <TrashIcon size={13} />
-      </button>
-    </div>
-  )
-}
-
-function ActionEditor({
-  action,
-  onSave,
-  onDelete
-}: {
-  action: SavedAction
-  onSave: (a: SavedAction) => void
-  onDelete: () => void
-}) {
-  const [draft, setDraft] = useState(action)
-  const commit = () => {
-    if (JSON.stringify(draft) !== JSON.stringify(action)) onSave(draft)
-  }
-  const toggleApplies = (k: 'text' | 'image') => {
-    const has = draft.appliesTo.includes(k)
-    const next: SavedAction = {
-      ...draft,
-      appliesTo: has ? draft.appliesTo.filter((x) => x !== k) : [...draft.appliesTo, k]
-    }
-    setDraft(next)
-    onSave(next)
-  }
-  return (
-    <div className="action-card">
-      <div className="action-card-row">
-        <input
-          className="set-input title-input"
-          value={draft.title}
-          placeholder="Action title"
-          onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          onBlur={commit}
-        />
-        <input
-          className="set-input key-input"
-          value={draft.key ?? ''}
-          maxLength={1}
-          placeholder="key"
-          title="Single-key binding inside Action Mode"
-          onChange={(e) => setDraft({ ...draft, key: e.target.value || undefined })}
-          onBlur={commit}
-        />
-        {draft.type === 'prompt' ? (
-          <span className="action-ai">AI</span>
-        ) : (
-          <span className="builtin-badge">{draft.builtinId ?? 'builtin'}</span>
-        )}
-        <button className="icon-btn" title="Delete action" onClick={onDelete}>
-          <TrashIcon size={13} />
-        </button>
-      </div>
-      {draft.type === 'prompt' && (
-        <textarea
-          className="set-textarea"
-          value={draft.prompt ?? ''}
-          placeholder="Prompt — the clip content is provided as input"
-          onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
-          onBlur={commit}
-        />
-      )}
-      <div className="applies-group">
-        <span>Applies to</span>
-        {(['text', 'image'] as const).map((k) => (
-          <label key={k}>
-            <input
-              type="checkbox"
-              checked={draft.appliesTo.includes(k)}
-              onChange={() => toggleApplies(k)}
-            />{' '}
-            {k}
-          </label>
-        ))}
-        <label className="action-provider">
-          Provider
-          <select
-            className="set-input"
-            value={draft.provider ?? ''}
-            title="Provider override for this action — blank uses the default transforms provider"
-            onChange={(e) => {
-              const v = e.target.value
-              const next: SavedAction = {
-                ...draft,
-                provider: v === '' ? undefined : (v as ProviderId)
-              }
-              setDraft(next)
-              onSave(next)
-            }}
-          >
-            <option value="">Default</option>
-            {PROVIDERS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-    </div>
-  )
-}
-
 // ── settings window ──────────────────────────────────────────────────────────
 
 export default function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [providers, setProviders] = useState<ProviderStatus[]>([])
-  const [savedActions, setSavedActions] = useState<SavedAction[]>([])
   const [section, setSection] = useState<SectionId>('general')
   const [suggestions, setSuggestions] = useState<DictationSuggestion[]>([])
   const [savedFlash, setSavedFlash] = useState(false)
@@ -853,138 +429,12 @@ export default function Settings() {
   const { toasts, addToast } = useToasts()
   const theme = useTheme(settings?.theme)
   const flashTimer = useRef(0)
-  const actionsInit = useRef(false)
-  const [newIdentityFile, setNewIdentityFile] = useState('')
-  const [restarting, setRestarting] = useState<string | null>(null)
-  const [memory, setMemory] = useState<string | null>(null)
-  /** Which agent's memory file the viewer shows; undefined = the primary. */
-  const [memAgent, setMemAgent] = useState<string | undefined>(undefined)
-  const memAgentRef = useRef<string | undefined>(undefined)
-  memAgentRef.current = memAgent
-  const [consolidating, setConsolidating] = useState(false)
-  const memoryRef = useRef<HTMLTextAreaElement | null>(null)
-  /** What the file held when we last loaded it — writes only happen on a real
-   *  edit. An unconditional blur-save clobbered facts the assistant remembered
-   *  after Settings loaded its snapshot. */
-  const memoryLoadedRef = useRef<string | null>(null)
-
-  const loadMemory = useCallback(async () => {
-    try {
-      const text = await invoke('assistant:memory-get', memAgentRef.current)
-      memoryLoadedRef.current = text
-      setMemory(text)
-    } catch {
-      setMemory('')
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadMemory()
-  }, [loadMemory, memAgent])
-
-  useEffect(() => {
-    // The file changes underneath us (remember tool, consolidation) — re-read
-    // whenever the window comes back, unless the user is mid-edit.
-    const onVis = (): void => {
-      if (document.hidden) return
-      if (document.activeElement === memoryRef.current) return
-      void loadMemory()
-    }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [loadMemory])
 
   const flashSaved = useCallback(() => {
     setSavedFlash(true)
     window.clearTimeout(flashTimer.current)
     flashTimer.current = window.setTimeout(() => setSavedFlash(false), 1200)
   }, [])
-
-  const saveMemory = useCallback(
-    (text: string) => {
-      // No edit, no write: the loaded snapshot may be stale against what the
-      // assistant remembered since, and writing it back would erase that.
-      if (text === memoryLoadedRef.current) return
-      setMemory(text)
-      memoryLoadedRef.current = text
-      invoke('assistant:memory-set', text, memAgentRef.current)
-        .then(flashSaved)
-        .catch(() => addToast('Failed to save memory', 'error'))
-    },
-    [addToast, flashSaved]
-  )
-
-  const consolidateNow = useCallback(async () => {
-    setConsolidating(true)
-    try {
-      const res = await invoke('assistant:consolidate', memAgentRef.current)
-      if (!res.ok) addToast(res.error ?? 'Consolidation failed', 'error')
-      else addToast(res.changed ? 'Memory consolidated' : 'Nothing new to fold in', 'success')
-      await loadMemory()
-    } catch {
-      addToast('Consolidation failed', 'error')
-    } finally {
-      setConsolidating(false)
-    }
-  }, [addToast, loadMemory])
-
-  /** Which agent card has a draft in flight (name), if any. */
-  const [drafting, setDrafting] = useState<string | null>(null)
-
-  /** Update one agent definition by name — always against the freshest settings,
-   *  since identity drafts take seconds. */
-  const patchAgent = useCallback(
-    async (name: string, changes: Partial<AgentDef>) => {
-      const cur = await invoke('settings:get')
-      const next = await invoke('settings:set', {
-        agents: cur.agents.map((a) => (a.name === name ? { ...a, ...changes } : a))
-      })
-      setSettings(next)
-      flashSaved()
-    },
-    [flashSaved]
-  )
-
-  /** Draft an identity from what the app already knows; lands in settings
-   *  immediately (still fully editable) so the flow is one click, not two. */
-  const draftIdentity = useCallback(
-    async (agentName: string) => {
-      setDrafting(agentName)
-      try {
-        const res = await invoke('assistant:generate-identity', agentName)
-        if (res.ok && res.text) {
-          await patchAgent(agentName, { identity: res.text })
-          addToast('Draft written from your notes, memory and usage — edit away', 'success')
-        } else {
-          addToast(res.error ?? 'Could not draft an identity', 'error')
-        }
-      } catch {
-        addToast('Could not draft an identity', 'error')
-      } finally {
-        setDrafting(null)
-      }
-    },
-    [addToast, patchAgent]
-  )
-
-  const restartAgent = useCallback(
-    async (agentName: string) => {
-      setRestarting(agentName)
-      try {
-        await invoke('agents:restart-assistant', agentName)
-        addToast(`${agentName} will relaunch with fresh identity on the next ask`, 'success')
-      } catch {
-        addToast('Could not restart the agent', 'error')
-      } finally {
-        setRestarting(null)
-      }
-    },
-    [addToast]
-  )
 
   useEffect(() => {
     invoke('settings:get')
@@ -1028,15 +478,6 @@ export default function Settings() {
     }
   }, [])
 
-  // Saved actions get their own local list (persisted via actions:save/:delete,
-  // not settings:set) — seed it once from the loaded settings.
-  useEffect(() => {
-    if (settings && !actionsInit.current) {
-      actionsInit.current = true
-      setSavedActions(settings.savedActions)
-    }
-  }, [settings])
-
   /** Optimistic patch: apply locally, persist, then adopt the authoritative result. */
   const patch = useCallback(
     (p: Partial<AppSettings>) => {
@@ -1050,30 +491,6 @@ export default function Settings() {
     },
     [addToast, flashSaved]
   )
-
-  const saveAction = useCallback(
-    (a: SavedAction) => {
-      setSavedActions((list) => list.map((x) => (x.id === a.id ? a : x)))
-      invoke('actions:save', a)
-        .then(flashSaved)
-        .catch(() => addToast('Failed to save action', 'error'))
-    },
-    [addToast, flashSaved]
-  )
-
-  const addAction = useCallback(() => {
-    const a: SavedAction = {
-      id: crypto.randomUUID(),
-      title: 'New AI action',
-      type: 'prompt',
-      prompt: '',
-      appliesTo: ['text']
-    }
-    setSavedActions((list) => [...list, a])
-    invoke('actions:save', a)
-      .then(flashSaved)
-      .catch(() => addToast('Failed to save action', 'error'))
-  }, [addToast, flashSaved])
 
   /** Native save dialog lives in main; a user-cancelled dialog reports nothing. */
   const exportHistory = useCallback(async () => {
@@ -1098,16 +515,6 @@ export default function Settings() {
       setExporting(false)
     }
   }, [])
-
-  const deleteAction = useCallback(
-    (id: string) => {
-      setSavedActions((list) => list.filter((x) => x.id !== id))
-      invoke('actions:delete', id)
-        .then(flashSaved)
-        .catch(() => addToast('Failed to delete action', 'error'))
-    },
-    [addToast, flashSaved]
-  )
 
   if (!settings) {
     return (
@@ -1214,27 +621,20 @@ export default function Settings() {
                 label="Global hotkeys"
                 sub={
                   IS_MAC
-                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot · E scratchpad · N notes · A inbox. Dictation, hold to talk: 🌐 (Fn) or ⌘⇧D plain · ⌘⌥D AI cleanup · ⌘⌥A to agent. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
-                    : IS_WIN
-                      ? // Ctrl+Shift and not Ctrl+Alt: on most non-US layouts Ctrl+Alt is
-                        // AltGr, and taking it system-wide would stop you typing @ or €
-                        // in every application on the machine.
-                        'Registered at launch: Ctrl+Shift+V palette · S screenshot · E scratchpad · N notes · A inbox, plus your dictation chord below. Ctrl+Shift rather than Ctrl+Alt, because Ctrl+Alt is AltGr on most layouts. Windows gives a shortcut to whichever app asks first, so a conflict can appear on one boot and not the next.'
-                      : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
+                    ? 'Registered at launch: ⌘⇧V palette · R rewrite · S screenshot. Dictation, hold to talk: 🌐 (Fn) or ⌘⇧D plain · ⌘⌥D AI cleanup. If 🌐 also triggers a system action, set Keyboard → "Press 🌐 key to" → Do Nothing.'
+                    : 'Registered as GNOME custom keybindings — edit them in system Settings → Keyboard → Custom Shortcuts.'
                 }
               >
                 <kbd className="hotkey-kbd">
-                  {IS_MAC ? `${GLOBAL_MOD}V` : IS_WIN ? 'Ctrl+Shift+V' : s.hotkeyHint}
+                  {IS_MAC ? `${GLOBAL_MOD}V` : s.hotkeyHint}
                 </kbd>
               </Row>
-              <HotkeyConflicts />
               {/*
                 Linux only. The chord drives both the GNOME keybinding that starts
                 dictation and the evdev codes that watch the hold, so it has to be one
                 setting — see shared/chord.ts. macOS dictation is the Fn/🌐 key via the
                 helper's event tap and is deliberately not configurable here.
               */}
-              <CapabilityNotices />
               {!IS_MAC && (
                 <Row
                   label="Hold-to-talk chord"
@@ -1249,7 +649,7 @@ export default function Settings() {
               {IS_MAC && (
                 <Row
                   label="Dictation modes"
-                  sub="All three record identically and differ only in what happens to the transcript. Hold to talk, release to finish."
+                  sub="Both record identically and differ only in what happens to the transcript. Hold to talk, release to finish."
                 >
                   <div className="set-static">
                     <div>
@@ -1258,21 +658,7 @@ export default function Settings() {
                     <div>
                       <kbd className="hotkey-kbd">⌘⌥D</kbd> AI cleanup
                     </div>
-                    <div>
-                      <kbd className="hotkey-kbd">⌘⌥A</kbd> to primary agent
-                    </div>
                   </div>
-                </Row>
-              )}
-              {!IS_MAC && (
-                <Row
-                  label="Hold-to-talk chord (to agent)"
-                  sub="Optional third key. Speaks straight to your primary agent instead of pasting — the same long-lived session the ask row uses, so each dictation continues the conversation."
-                >
-                  <ChordField
-                    value={s.dictateAgentChord ?? ''}
-                    onCommit={(v) => patch({ dictateAgentChord: v })}
-                  />
                 </Row>
               )}
               <Row
@@ -1328,9 +714,13 @@ export default function Settings() {
             </>
           )}
 
-          {section === 'providers' && (
+          {section === 'ai' && (
             <>
-              <h2 className="set-section-title">AI Providers</h2>
+              <h2 className="set-section-title">AI</h2>
+              <p className="set-section-sub">
+                Direct API calls with your own keys. Fireworks is preferred automatically when its
+                key is set.
+              </p>
               <Row
                 label="OpenAI API key"
                 sub="Stored in your settings file. If OPENAI_API_KEY is exported in your shell, it is copied in here once at startup — after that this field is the only source, so edits here always win."
@@ -1346,7 +736,7 @@ export default function Settings() {
               </Row>
               <Row
                 label="Fireworks API key"
-                sub="Enables DeepSeek v4 Flash for quick transformations — rewrites and the AI dictation cleanup — which are short prompts where cheap and fast wins. Used automatically for those when set; enrichment and anything with an image stay on your chosen provider, since this model is text-only."
+                sub="Enables DeepSeek Flash, which is cheap and fast for short text prompts. Stored in your settings file."
               >
                 <TextField
                   value={s.apiKeys?.fireworks ?? ''}
@@ -1357,27 +747,12 @@ export default function Settings() {
                   }
                 />
               </Row>
-              <Row
-                label="Gemini API key"
-                sub="Copied once from GEMINI_API_KEY at startup if this is empty. After that, this field is the only source."
-              >
-                <TextField
-                  value={s.apiKeys?.gemini ?? ''}
-                  password
-                  placeholder="AIza…"
-                  onCommit={(v) =>
-                    patch({ apiKeys: { ...(s.apiKeys ?? {}), gemini: v || undefined } })
-                  }
-                />
-              </Row>
               <p className="set-section-sub">
                 AI calls go straight to Fireworks when it has a key, then OpenAI.
               </p>
               <div className="set-block">
                 <div className="set-label">Models</div>
-                <div className="set-sub">
-                  Fast models by default; pick any model your provider supports.
-                </div>
+                <div className="set-sub">Fast models by default.</div>
                 <div className="model-grid">
                   {PROVIDERS.map((p) => (
                     <label key={p.id} className="model-row">
@@ -1385,81 +760,27 @@ export default function Settings() {
                       <ModelSelect
                         provider={p.id}
                         value={s.models[p.id] ?? ''}
-                        onCommit={(v) => {
-                          const models = { ...s.models }
-                          if (v) models[p.id] = v
-                          else delete models[p.id]
-                          patch({ models })
-                        }}
+                        onCommit={(v) => patch({ models: { ...s.models, [p.id]: v } })}
                       />
                     </label>
                   ))}
                 </div>
               </div>
-              <Row
-                label="Image editing"
-                sub="Edits image clips from an instruction (palette: e on an image). Nano Banana 2 takes ~9s and follows localized edits; Lite is ~2x faster but tends to hand back the original unchanged."
-              >
-                <div className="set-stack">
-                  <select
-                    className="set-input"
-                    value={s.imageEdit.provider}
-                    onChange={(e) =>
-                      patch({
-                        imageEdit: { provider: e.target.value as 'gemini' | 'openai', model: '' }
-                      })
-                    }
-                  >
-                    <option value="gemini">Gemini (GEMINI_API_KEY)</option>
-                    <option value="openai">OpenAI (OPENAI_API_KEY)</option>
-                  </select>
-                  <select
-                    className="set-input"
-                    value={s.imageEdit.model ?? ''}
-                    onChange={(e) =>
-                      patch({ imageEdit: { ...s.imageEdit, model: e.target.value || undefined } })
-                    }
-                  >
-                    {(s.imageEdit.provider === 'gemini'
-                      ? [
-                          ['', 'Nano Banana 2 (default)'],
-                          ['gemini-3-pro-image', 'Nano Banana Pro'],
-                          // Kept even though '' now resolves to it, so a profile
-                          // that pinned it explicitly still matches an option.
-                          ['gemini-3.1-flash-image', 'Nano Banana 2 (pinned)'],
-                          ['gemini-3.1-flash-lite-image', 'Nano Banana 2 Lite (fast, often no-ops)'],
-                          ['gemini-2.5-flash-image', 'Nano Banana (v1)']
-                        ]
-                      : [
-                          ['', 'GPT Image 2 (default)'],
-                          ['gpt-image-1.5', 'GPT Image 1.5'],
-                          ['gpt-image-1-mini', 'GPT Image 1 mini']
-                        ]
-                    ).map(([v, label]) => (
-                      <option key={v} value={v}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </Row>
               <div className="set-block">
                 <div className="set-label">Provider status</div>
                 <div className="provider-list">
-                  {providers.length === 0 && (
-                    <div className="set-sub">No provider status reported.</div>
-                  )}
-                  {providers.map((p) => (
-                    <div key={p.id} className="provider-row">
-                      <span className={'dot' + (p.available ? ' ok' : '')} />
-                      <span className="provider-name">
-                        {PROVIDERS.find((x) => x.id === p.id)?.label ?? p.id}
-                      </span>
-                      <span className="provider-detail" title={p.detail}>
-                        {p.detail}
-                      </span>
-                    </div>
-                  ))}
+                  {PROVIDERS.map(({ id, label }) => {
+                    const p = providers.find((x) => x.id === id)
+                    return (
+                      <div key={id} className="provider-row">
+                        <span className={'dot' + (p?.available ? ' ok' : '')} />
+                        <span className="provider-name">{label}</span>
+                        <span className="provider-detail" title={p?.detail}>
+                          {p?.detail ?? 'No status reported'}
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </>
@@ -1471,7 +792,7 @@ export default function Settings() {
               <p className="set-section-sub">
                 What the AI pipeline does with new clips. Secrets are always excluded.
               </p>
-              <Row label="Enrichment" sub="Auto-title, tag, and classify new clips.">
+              <Row label="Enrichment" sub="Auto-title, tag, and classify new clips, using the API keys under AI.">
                 <Toggle
                   checked={s.enrichment.enabled}
                   onChange={(v) => patch({ enrichment: { ...s.enrichment, enabled: v } })}
@@ -1497,12 +818,9 @@ export default function Settings() {
                   onCommit={(v) => patch({ firecrawlApiKey: v || undefined })}
                 />
               </Row>
-              <Row label="Sessions" sub="Group bursts of copying into titled work sessions.">
-                <Toggle checked={s.sessionsEnabled} onChange={(v) => patch({ sessionsEnabled: v })} />
-              </Row>
               <Row
                 label="Transcription"
-                sub="Speech-to-text engine for dictation and the scratchpad mic."
+                sub="Speech-to-text engine for dictation."
               >
                 <div className="set-stack">
                   <select
@@ -1528,7 +846,7 @@ export default function Settings() {
               </Row>
               <Row
                 label="Microphone"
-                sub="Input device for dictation and the scratchpad mic."
+                sub="Input device for dictation."
               >
                 <MicSelect
                   deviceId={s.dictation.deviceId}
@@ -1675,104 +993,6 @@ export default function Settings() {
             </>
           )}
 
-          {section === 'assistant' && (
-            <>
-              <h2 className="set-section-title">Agents</h2>
-              <p className="set-section-sub">
-                Each agent is a persistent Claude session with its own identity, working
-                directory, and (optionally) long-term memory. The first is the primary — the
-                palette&apos;s default ask target; ⇧Tab there cycles between the others, and
-                @name targets one directly. Identity changes apply on each agent&apos;s next
-                (re)start.
-              </p>
-              <Row
-                label="Claude Code integration (MCP)"
-                sub="Expose your clipboard to Claude Code as search tools, and install the bridge so agent sessions can talk back. Off by default: when on, Claude Code runs this app in the background as an MCP server — and on macOS that can stop the menu-bar app from launching when you click it. Turn on only if you use agents."
-              >
-                <Toggle checked={s.mcpServer === true} onChange={(v) => patch({ mcpServer: v })} />
-              </Row>
-              {s.agents.map((a, i) => (
-                <AgentCard
-                  key={a.name}
-                  def={a}
-                  isPrimary={i === 0}
-                  drafting={drafting === a.name}
-                  restarting={restarting === a.name}
-                  onPatch={(changes) => void patchAgent(a.name, changes)}
-                  onDraft={() => void draftIdentity(a.name)}
-                  onRestart={() => void restartAgent(a.name)}
-                  onRemove={() => {
-                    patch({ agents: s.agents.filter((x) => x.name !== a.name) })
-                    if (memAgent === a.name) setMemAgent(undefined)
-                  }}
-                />
-              ))}
-              <div className="list-add-row">
-                <input
-                  className="set-input"
-                  value={newIdentityFile}
-                  placeholder="new agent name (letters/dashes)"
-                  spellCheck={false}
-                  onChange={(e) => setNewIdentityFile(e.target.value)}
-                />
-                <button
-                  className="btn primary"
-                  onClick={() => {
-                    const name = newIdentityFile.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-                    if (!name || s.agents.some((x) => x.name === name)) return
-                    patch({
-                      agents: [
-                        ...s.agents,
-                        { name, cwd: '', persistent: true, memory: 'off' as const, tmux: true }
-                      ]
-                    })
-                    setNewIdentityFile('')
-                  }}
-                >
-                  <PlusIcon size={12} /> Add agent
-                </button>
-              </div>
-              <div className="set-block">
-                <div className="set-label">Long-term memory</div>
-                <div className="set-sub">
-                  What an agent has learned. Facts land as you talk (the `remember` tool); a
-                  background pass folds conversations in — merging, deduping, dropping stale
-                  entries. Yours to edit or erase.
-                </div>
-                <select
-                  className="set-input"
-                  value={memAgent ?? s.agents[0]?.name ?? ''}
-                  onChange={(e) =>
-                    setMemAgent(e.target.value === s.agents[0]?.name ? undefined : e.target.value)
-                  }
-                >
-                  {s.agents
-                    .filter((a, i) => (a.memory ?? (i === 0 ? 'own' : 'off')) !== 'off')
-                    .map((a) => (
-                      <option key={a.name} value={a.name}>
-                        @{a.name}
-                        {(a.memory ?? 'own') === 'shared' ? ' (shared with primary)' : ''}
-                      </option>
-                    ))}
-                </select>
-                <textarea
-                  ref={memoryRef}
-                  className="set-textarea identity-textarea"
-                  value={memory ?? ''}
-                  placeholder={memory === null ? 'Loading…' : 'Nothing learned yet.'}
-                  disabled={memory === null}
-                  onChange={(e) => setMemory(e.target.value)}
-                  onBlur={(e) => saveMemory(e.target.value)}
-                />
-                <div className="set-inline-actions">
-                  <button className="btn" disabled={consolidating} onClick={() => void consolidateNow()}>
-                    {consolidating ? 'Consolidating…' : 'Consolidate now'}
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-
           {section === 'privacy' && (
             <>
               <h2 className="set-section-title">Privacy</h2>
@@ -1846,53 +1066,6 @@ export default function Settings() {
             </>
           )}
 
-          {section === 'voice' && (
-            <>
-              <h2 className="set-section-title">Voice</h2>
-              <p className="set-section-sub">
-                Samples of your writing voice. Rewrite prompts use these so AI rewrites sound like
-                you, not like a press release.
-              </p>
-              <div className="list-editor">
-                {s.voiceSamples.map((sample, i) => (
-                  <VoiceSample
-                    key={i}
-                    value={sample}
-                    onCommit={(v) =>
-                      patch({ voiceSamples: s.voiceSamples.map((x, j) => (j === i ? v : x)) })
-                    }
-                    onRemove={() =>
-                      patch({ voiceSamples: s.voiceSamples.filter((_, j) => j !== i) })
-                    }
-                  />
-                ))}
-                <button className="btn" onClick={() => patch({ voiceSamples: [...s.voiceSamples, ''] })}>
-                  <PlusIcon size={12} /> Add sample
-                </button>
-              </div>
-            </>
-          )}
-
-          {section === 'actions' && (
-            <>
-              <h2 className="set-section-title">Actions</h2>
-              <p className="set-section-sub">
-                Saved actions appear in the palette's Action Mode (Tab). A single-key binding runs
-                the action instantly while the action input is empty.
-              </p>
-              {savedActions.map((a) => (
-                <ActionEditor
-                  key={a.id}
-                  action={a}
-                  onSave={saveAction}
-                  onDelete={() => deleteAction(a.id)}
-                />
-              ))}
-              <button className="btn primary" onClick={addAction}>
-                <PlusIcon size={12} /> Add AI action
-              </button>
-            </>
-          )}
         </main>
       </div>
       <Toasts toasts={toasts} />

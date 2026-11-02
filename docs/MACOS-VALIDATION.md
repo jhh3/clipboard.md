@@ -76,13 +76,13 @@ Wire-up checklist:
 ## 3. Hotkeys & windows
 
 Electron `globalShortcut` works on macOS (unlike GNOME). Registered in `hotkeys.ts`:
-⌘⇧V palette · ⌘⇧R rewrite · ⌘⇧S screenshot · ⌘⇧E scratchpad · ⌘⇧D dictate.
+⌘⇧V palette · ⌘⇧R rewrite · ⌘⇧S screenshot · ⌘⇧D dictate · ⌘⌥D dictate + AI cleanup.
 
 - [ ] All five fire while other apps are focused.
 - [ ] Palette shows at the cursor's display and takes keyboard focus.
 - [ ] `app.dock.hide()` / panel behaviour: the palette shouldn't add a Dock icon or
       steal app activation. Compare against Maccy's feel.
-- [ ] Aux windows (settings/scratchpad) open on a sensible display, are draggable, and
+- [ ] The settings window opens on a sensible display, are draggable, and
       remember position. **Note:** the Wayland guard (`WAYLAND` const in `windows.ts`)
       is false on macOS, so the placement/persistence code path is live here — this is
       the path that was never exercised on Linux. Watch multi-display + Spaces.
@@ -112,8 +112,8 @@ Electron `globalShortcut` works on macOS (unlike GNOME). Registered in `hotkeys.
 ## 6. AI providers
 
 Should be platform-neutral, but confirm:
-- [ ] Claude Agent SDK picks up `~/.claude/.credentials.json`; Codex SDK picks up
-      `~/.codex/auth.json`; both also accept API keys.
+- [ ] `OPENAI_API_KEY` / `FIREWORKS_API_KEY` from the login shell are imported when
+      the app is launched from Finder.
 - [ ] Image enrichment (vision) produces OCR text + tags for a screenshot clip.
 - [ ] Local embeddings: the `utilityProcess` worker loads `bge-small` via
       onnxruntime-node arm64, and semantic search returns hits.
@@ -122,7 +122,7 @@ Should be platform-neutral, but confirm:
 
 - [ ] `pnpm build:mac` produces a dmg.
 - [ ] `asarUnpack` covers all native deps (better-sqlite3, sqlite-vec, sharp, @img,
-      onnxruntime-node, tesseract.js, the Agent SDK) — plus the Swift helper via
+      onnxruntime-node, sherpa-onnx) — plus the Swift helper via
       `extraResources`.
 - [ ] Hardened runtime + entitlements for Accessibility/microphone; signing and
       notarization need a Developer ID.

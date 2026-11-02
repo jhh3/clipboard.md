@@ -102,17 +102,8 @@ function ImageContent({ item, dimmed }: { item: ClipItem; dimmed?: boolean }) {
   )
 }
 
-export interface TransformView {
-  output: string
-  outputKind: 'text' | 'image'
-  /** Human label of what produced this: action title or the free prompt. */
-  label: string
-}
-
 interface Props {
   item: ClipItem | null
-  /** When set, the pane shows the before/after transform view. */
-  result: TransformView | null
 }
 
 function ContentBlock({ item, dimmed }: { item: ClipItem; dimmed?: boolean }) {
@@ -198,37 +189,12 @@ function MetaFooter({ item }: { item: ClipItem }) {
   )
 }
 
-export default function PreviewPane({ item: listItem, result }: Props) {
+export default function PreviewPane({ item: listItem }: Props) {
   const item = useHydratedItem(listItem)
   if (!item) {
     return (
       <div className="preview-pane preview-empty">
         <span>Select an item to preview</span>
-      </div>
-    )
-  }
-
-  if (result) {
-    return (
-      <div className="preview-pane">
-        <div className="preview-scroll">
-          <div className="result-header">
-            <SparkIcon className="result-spark" size={13} />
-            <span className="result-label" title={result.label}>
-              {result.label}
-            </span>
-            <span className="result-badge">transformed</span>
-          </div>
-          {result.outputKind === 'image' ? (
-            <figure className="preview-image result-output">
-              <img src={result.output} alt="Transformed output" draggable={false} />
-            </figure>
-          ) : (
-            <pre className="preview-text result-output">{result.output}</pre>
-          )}
-          <div className="result-divider">original</div>
-          <ContentBlock item={item} dimmed />
-        </div>
       </div>
     )
   }

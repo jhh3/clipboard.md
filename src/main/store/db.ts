@@ -231,6 +231,17 @@ const MIGRATIONS: string[] = [
   END;
 
   INSERT INTO items_fts(items_fts) VALUES('rebuild');
+  `,
+  // Agents, notes and clip sessions were removed. Their tables go, and so do any
+  // note items (kind='note'), which nothing can open any more.
+  `
+  DROP TABLE IF EXISTS agent_messages;
+  DROP TABLE IF EXISTS agent_sessions;
+  DROP TABLE IF EXISTS note_links;
+  DELETE FROM items WHERE kind = 'note';
+  DROP INDEX IF EXISTS idx_items_session;
+  ALTER TABLE items DROP COLUMN session_id;
+  DROP TABLE IF EXISTS sessions;
   `
 ]
 
@@ -345,20 +356,6 @@ export function openDb(dataDir: string): Database.Database {
   return db
 }
 
-/**
- * Open the same database read-only, without running migrations. Used by the MCP
- * server, which may be an older binary than the running app: letting it migrate
- * (or worse, drop and rebuild the vector table) would corrupt the app's schema
- * underneath it.
- */
-export function openReadOnlyDb(dataDir: string): Database.Database {
-  if (db) return db
-  db = new Database(join(dataDir, 'clipboard.db'), { readonly: true })
-  db.pragma('busy_timeout = 5000')
-  loadVecExtension(db)
-  return db
-}
-
 export function getDb(): Database.Database {
   if (!db) throw new Error('DB not opened')
   return db
@@ -375,8 +372,8 @@ export function hasVec(): boolean {
 export function closeDb(): void {
   if (!db) return
   try {
-    // PASSIVE: never waits on another connection (the MCP bridge writes here from
-    // outside), so quit cannot block on a lock. close() checkpoints what is left.
+    // PASSIVE: never waits on another connection, so quit cannot block on a lock.
+    // close() checkpoints what is left.
     db.pragma('wal_checkpoint(PASSIVE)')
     db.pragma('optimize') // SQLite recommends this immediately before closing
   } catch (err) {

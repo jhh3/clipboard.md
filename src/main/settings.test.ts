@@ -21,8 +21,7 @@ describe('provider settings migration', () => {
           openai: 'gpt-5.6-luna',
           fireworks: 'accounts/fireworks/models/deepseek-v4-flash-0731',
           gemini: 'gemini-flash-lite-latest'
-        },
-        savedActions: [{ id: 'mine', title: 'Mine', type: 'prompt', prompt: 'x', appliesTo: ['text'], provider: 'codex' }]
+        }
       })
     )
     _resetSettingsCache()
@@ -30,20 +29,17 @@ describe('provider settings migration', () => {
     expect(s.enrichment).toEqual({ enabled: false })
     expect('transforms' in s).toBe(false)
     expect(s.models).toEqual({})
-    expect(s.savedActions.find((a) => a.id === 'mine')!.provider).toBeUndefined()
   })
 
   it('keeps a valid Fireworks or OpenAI choice', () => {
     writeFileSync(
       join(dir, 'settings.json'),
       JSON.stringify({
-        models: { openai: 'gpt-5.4-nano' },
-        savedActions: [{ id: 'mine', title: 'Mine', type: 'prompt', prompt: 'x', appliesTo: ['text'], provider: 'fireworks' }]
+        models: { openai: 'gpt-5.4-nano' }
       })
     )
     _resetSettingsCache()
     const s = getSettings()
     expect(s.models).toEqual({ openai: 'gpt-5.4-nano' })
-    expect(s.savedActions.find((a) => a.id === 'mine')!.provider).toBe('fireworks')
   })
 })

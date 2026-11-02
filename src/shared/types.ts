@@ -1,94 +1,7 @@
 import { DEFAULT_DICTATE_CHORD } from './chord'
 
 /** Content classification assigned by capture heuristics and refined by AI enrichment. */
-export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html' | 'note'
-
-/**
- * A note is an item with kind='note' — see store/notes.ts. It differs from a clip in
- * three ways: it has a user-authored title, it is edited in place rather than being
- * append-only history, and its body can link to other notes with [[wikilinks]].
- */
-export interface Note {
-  id: number
-  title: string
-  content: string
-  createdAt: number
-  updatedAt: number
-  pinned: boolean
-  tags: string[]
-}
-
-/**
- * An agent definition: spawn recipe + persona. Deliberately carries no model:
- * sessions inherit the CLI default so definitions don't drift as it changes.
- *
- * The first definition in the list is the PRIMARY — the palette's default ask
- * target, and the owner of the main memory file.
- */
-export interface AgentDef {
-  name: string
-  /** Where the session runs. Empty means the home directory. */
-  cwd: string
-  /** Extra directories the agent may touch, passed as --add-dir. */
-  addDirs?: string[]
-  /** Default true — these are sessions launched explicitly to work unattended. */
-  bypassPermissions?: boolean
-  /** Default true when tmux is installed, so the TUI stays attachable. */
-  tmux?: boolean
-  appendSystemPrompt?: string
-  /** What this agent is for. Shown in pickers — and the signal a future
-   *  auto-router will classify ask text against. Write it like routing rules. */
-  description?: string
-  /** Persona injected into the session's system prompt (with identityFiles). */
-  identity?: string
-  identityFiles?: string[]
-  /** 'own' = private memory file · 'shared' = read/write the primary's file ·
-   *  'off' (default for non-primary) = no long-term memory. */
-  memory?: 'own' | 'shared' | 'off'
-  /** Keep a named singleton session the ask row can target (default true). */
-  persistent?: boolean
-  /** Launch the singleton at app start so the first ask is instant. */
-  prewarm?: boolean
-}
-
-/** Back-compat alias — the spawn-recipe subset predates personas. */
-export type AgentProfile = AgentDef
-
-export interface AgentSession {
-  key: string
-  profile: string
-  cwd: string
-  title: string | null
-  /** dormant = slept to reclaim memory, resumable via `claude --resume`. */
-  status: 'starting' | 'running' | 'dormant' | 'exited'
-  createdAt: number
-  lastSeenAt: number
-  unread: number
-  /** The bridge has published its port, so this session can be spoken to. */
-  reachable: boolean
-}
-
-export interface AgentMessage {
-  id: number
-  sessionKey: string
-  direction: 'inbound' | 'outbound'
-  kind: string
-  body: string
-  meta?: Record<string, unknown>
-  createdAt: number
-  readAt: number | null
-}
-
-/** Notes list row — body replaced by its preview, so the sidebar stays cheap. */
-export interface NoteSummary {
-  id: number
-  title: string
-  preview: string
-  createdAt: number
-  updatedAt: number
-  pinned: boolean
-  tags: string[]
-}
+export type ClipKind = 'text' | 'image' | 'link' | 'code' | 'color' | 'files' | 'html'
 
 export type ContentClass =
   | 'transcription'
@@ -164,62 +77,6 @@ export interface SearchResult {
   mode: SearchMode
 }
 
-/** A saved action: deterministic transform or AI prompt, optionally bound to a key in Action Mode. */
-export interface SavedAction {
-  id: string
-  title: string
-  /** Single character binding inside Action Mode, e.g. 'p'. */
-  key?: string
-  /** 'builtin' runs a deterministic transform by builtinId; 'prompt' runs the AI lane. */
-  type: 'builtin' | 'prompt'
-  builtinId?: BuiltinTransformId
-  prompt?: string
-  /** Which clip kinds this action applies to. */
-  appliesTo: Array<'text' | 'image'>
-  /** Optional per-action provider override (falls back to the transforms default). */
-  provider?: ProviderId
-}
-
-export type BuiltinTransformId =
-  | 'plain-text'
-  | 'trim'
-  | 'lowercase'
-  | 'uppercase'
-  | 'title-case'
-  | 'json-pretty'
-  | 'json-minify'
-  | 'url-encode'
-  | 'url-decode'
-  | 'base64-encode'
-  | 'base64-decode'
-  | 'strip-quotes'
-  | 'single-line'
-  | 'markdown-strip'
-  | 'img-png'
-  | 'img-jpeg'
-  | 'img-compress'
-  | 'img-redact'
-
-export interface TransformRequest {
-  itemId: number
-  /** Either a saved action id, or a free-text AI prompt. */
-  actionId?: string
-  freePrompt?: string
-  /** With freePrompt on an image clip: route to the image-EDITING model (the
-   *  prompt is an edit instruction, the output is a new image). */
-  imageEdit?: boolean
-}
-
-export interface TransformResult {
-  ok: boolean
-  /** Preview of transformed content (full text, or data URL for images). */
-  output?: string
-  outputKind?: 'text' | 'image'
-  /** id of the derived clip once committed. */
-  derivedId?: number
-  error?: string
-}
-
 /**
  * How the AI cleanup key rewrites a transcript. 'standard' fixes mechanics only;
  * 'positive' additionally rewrites genuinely harsh text to be constructive, and
@@ -255,14 +112,6 @@ export interface SmartCollection {
   count?: number
 }
 
-export interface SessionInfo {
-  id: number
-  title: string | null
-  startedAt: number
-  endedAt: number
-  count: number
-}
-
 export interface AppSettings {
   captureEnabled: boolean
   pollIntervalMs: number
@@ -285,15 +134,6 @@ export interface AppSettings {
    * a fallback. See modelport/openaiCompat.ts.
    */
   apiKeys?: { openai?: string; gemini?: string; fireworks?: string }
-  sessionsEnabled: boolean
-  /**
-   * Register the app with Claude Code as an MCP server (clipboard search tools) and
-   * install the agent bridge plugin. OFF by default on every OS: when on, the app
-   * binary is spawned as `--mcp`/`--bridge` by Claude sessions, and because that is the
-   * same app bundle, macOS then treats the app as "already running" and a Finder launch
-   * of the menu-bar app silently does nothing. Opt in only if you want agent integration.
-   */
-  mcpServer: boolean
   /** Per-provider model overrides (fast models by default). */
   models: Partial<Record<ProviderId, string>>
   /** Saved geometry per aux window (hash route -> bounds). */
@@ -348,28 +188,9 @@ export interface AppSettings {
     /** Correction suggestions the user dismissed, as `heard=>written` keys — never re-offered. */
     dismissedSuggestions?: string[]
   }
-  voiceSamples: string[]
-  /**
-   * Agent definitions; agents[0] is the primary. Canonical home for identity —
-   * the legacy `assistant` block below migrates into agents[0] on first load.
-   */
-  agents: AgentDef[]
-  /** LEGACY (pre-multi-agent): folded into agents[0] by getSettings(). */
-  assistant: {
-    identity: string
-    /** Absolute paths to markdown/text files appended to the identity. */
-    identityFiles: string[]
-    /** Start the assistant session at app launch so the first ask is instant. */
-    prewarm: boolean
-  }
   /** Adapt pastes to the destination app (plain text into terminals, fenced code into chat). */
   smartPaste: boolean
-  /** AI image editing (palette: `e` on an image clip). Model '' = provider default. */
-  imageEdit: { provider: 'gemini' | 'openai'; model?: string }
-  savedActions: SavedAction[]
   smartCollections: SmartCollection[]
-  /** Spawn recipes for agent sessions. */
-  agentProfiles: AgentProfile[]
   hotkeyHint: string
   /**
    * Push-to-talk chord, Linux only, as "Ctrl+Alt+Space" (see shared/chord.ts).
@@ -381,8 +202,6 @@ export interface AppSettings {
   dictateChord: string
   /** Optional second dictation chord that adds an AI cleanup pass. Empty = unbound. */
   dictateEnhanceChord?: string
-  /** Optional third dictation chord: speak straight to the primary agent. Empty = unbound. */
-  dictateAgentChord?: string
   theme: 'system' | 'dark' | 'light'
   /** Linux auto-paste: 'portal' = XDG RemoteDesktop injection (one-time permission), 'off' = copy + toast. */
   pasteInjection: 'portal' | 'off'
@@ -414,44 +233,6 @@ export interface IpcInvokeMap {
   'dictation:suggestions:list': () => DictationSuggestion[]
   'dictation:suggestion:accept': (key: string) => void
   'dictation:suggestion:dismiss': (key: string) => void
-  'agents:profiles': () => AgentProfile[]
-  'agents:sessions': (includeEnded?: boolean) => AgentSession[]
-  'agents:launch': (opts: { profile: string; prompt?: string; title?: string }) => string
-  'agents:send': (key: string, text: string, kind?: string) => boolean
-  'agents:messages': (key: string) => AgentMessage[]
-  'agents:inbox': () => AgentMessage[]
-  'agents:mark-read': (key?: string) => void
-  'agents:end': (key: string) => void
-  /** Ask a defined agent (default: the primary). Ensures its singleton session
-   *  exists; delivery retries in the background, so this returns immediately.
-   *  itemId attaches a clip: its content + enrichment ride along as context. */
-  'agents:ask': (text: string, agent?: string, itemId?: number) => { key: string }
-  /** The agent's current session key without launching one (null = none yet). */
-  'agents:session-for': (agent?: string) => string | null
-  /** Send a clip's content into a running session (formats text/image consistently). */
-  'agents:send-clip': (key: string, itemId: number) => boolean
-  /** Start a new session whose opening prompt is the clip's content. */
-  'agents:launch-with-clip': (opts: { profile: string; itemId: number }) => string
-  /** End an agent's singleton session so the next ask relaunches it with fresh
-   *  identity/memory (default: the primary). */
-  'agents:restart-assistant': (agent?: string) => void
-  /** An agent's long-term memory file (markdown); default = the primary's. */
-  'assistant:memory-get': (agent?: string) => string
-  'assistant:memory-set': (text: string, agent?: string) => void
-  /** Distill recent conversations/notes into the memory file now. */
-  'assistant:consolidate': (agent?: string) => { ok: boolean; changed: boolean; error?: string }
-  /** Draft an identity from what the app already knows (memory, notes, usage). */
-  'assistant:generate-identity': (agent?: string) => { ok: boolean; text?: string; error?: string }
-  'notes:list': (opts: { q?: string }) => NoteSummary[]
-  'notes:get': (id: number) => Note | null
-  'notes:create': (input?: { title?: string; content?: string }) => number
-  'notes:update': (id: number, patch: { title?: string; content?: string }) => void
-  'notes:delete': (id: number) => void
-  'notes:backlinks': (id: number) => NoteSummary[]
-  'notes:outgoing': (id: number) => Array<{ title: string; toId: number | null }>
-  /** Resolve a [[wikilink]] by title, creating the note when it doesn't exist yet. */
-  'notes:open-by-title': (title: string) => number
-  'notes:daily': () => number
   /** Keyword search: instant. The palette renders this first. */
   'search': (q: SearchQuery) => SearchResult
   /** Hybrid keyword + semantic search; slower (query embedding). Merged in after 'search'. */
@@ -463,38 +244,28 @@ export interface IpcInvokeMap {
   'item:copy': (id: number) => void
   /** Full-resolution image as a data URL (thumb in ClipItem is capped at 320px). */
   'item:image-data': (id: number) => string | null
-  'transform:run': (req: TransformRequest) => TransformResult
-  'transform:commit': (req: TransformRequest & { output: string; outputKind: 'text' | 'image' }) => number
-  'transform:paste-output': (payload: { output: string; outputKind: 'text' | 'image'; plain?: boolean }) => PasteOutcome
-  'actions:list': (kind: 'text' | 'image') => SavedAction[]
-  'actions:save': (action: SavedAction) => void
-  'actions:delete': (id: string) => void
+  /** Put text on the clipboard and paste it into the app underneath (ask answers). */
+  'paste:text': (payload: { text: string }) => PasteOutcome
+  /**
+   * One-shot ask, streamed. Returns at once with a request id; the answer arrives as
+   * 'ask:delta' events and ends with one 'ask:done'. itemId attaches a clip as context.
+   */
+  'ask:start': (payload: { text: string; itemId?: number }) => { id: string }
+  'ask:cancel': (id: string) => void
   'collections:list': () => SmartCollection[]
-  'sessions:list': () => SessionInfo[]
   'settings:get': () => AppSettings
   'settings:set': (patch: Partial<AppSettings>) => AppSettings
   'providers:status': () => ProviderStatus[]
-  /** What this platform can do, so the UI can explain a control instead of hiding it. */
-  'capabilities:get': () => Record<string, { state: 'supported' | 'degraded' | 'unsupported'; reason: string }>
-  /**
-   * Global shortcuts THIS BOOT could not register, as accelerator strings.
-   *
-   * Windows only in practice, and per-boot rather than per-platform, which is why it
-   * is not a capability: RegisterHotKey is first-come-first-served, so a shortcut can
-   * be taken on one boot and free on the next depending on what started first.
-   * Without this the user gets a key that silently does nothing.
-   */
-  'hotkeys:failures': () => string[]
-  /** Region-capture overlay reporting its selection, or null when cancelled. */
-  'region:result': (sel: { x: number; y: number; width: number; height: number } | null) => void
   'enrichment:status': () => EnrichmentStatus
   /** GNOME interactive screenshot portal (area/window/screen picker) -> new image clip id. */
   'capture:screenshot': () => { ok: boolean; id?: number; error?: string }
   /** Selection-rewrite flow: fetch the captured selection text (null if none). */
   'rewrite:get': () => { text: string } | null
+  /** Rewrite the captured selection with a free-text instruction (empty = fix typos). */
+  'rewrite:run': (payload: { prompt?: string }) => { ok: boolean; output?: string; error?: string }
   /** Replace the selection: clipboard + injection. */
   'rewrite:apply': (payload: { output: string }) => PasteOutcome
-  /** Transcribe recorded audio (base64) -> text, for the scratchpad and palette mic. */
+  /** Transcribe recorded audio (base64) -> text, for the palette mic. */
   'scratch:transcribe': (payload: { audioB64: string; mime: string }) => {
     ok: boolean
     text?: string
@@ -514,15 +285,11 @@ export interface IpcInvokeMap {
     error?: string
     pasted?: boolean
     id?: number
-    /** Agent the transcript was delivered to, when dictated with the agent chord. */
-    sentTo?: string
   }
   /** The compressed recording of a take, stored when keepAudio is on. */
   'dictation:audio': (payload: { take: number; audioB64: string; mime: string }) => void
   /** Retry transcription of a stored dictation recording. */
   'dictation:retry': (itemId: number) => { ok: boolean; text?: string; error?: string }
-  /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
-  'scratch:save': (payload: { text: string; itemId?: number }) => number
   /** Write the whole history to a JSON file the user picks. Secrets are excluded. */
   'data:export': () => { ok: boolean; path?: string; count?: number; error?: string }
   'window:hide': () => void
@@ -530,11 +297,7 @@ export interface IpcInvokeMap {
   'dictation:done': (take: number, reason?: string) => void
   /** Dictation HUD has subscribed to its events; queued start/stop can flow. */
   'dictation:ready': () => void
-  'agents:defs': () => AgentDef[]
   'window:open-settings': () => void
-  'window:open-scratchpad': (itemId?: number) => void
-  'window:open-notes': (noteId?: number) => void
-  'window:open-agents': () => void
   'app:version': () => string
 }
 
@@ -544,17 +307,14 @@ export interface IpcEventMap {
   'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
   /** Sent right after hide, so the next show doesn't paint the previous query first. */
   'palette:hidden': Record<string, never>
-  'scratchpad:shown': { itemId?: number }
-  /** A note was created, edited or deleted — lists elsewhere should re-read. */
-  'notes:changed': { id: number }
-  /** An agent said something, or a session's state changed. */
-  'agents:changed': { unread: number }
-  /** Ask the notes window to open a specific note (menu bar, daily note, links). */
-  'notes:open': { id?: number }
   /** `take` ties every event of one dictation together, so a late event from the
    *  previous take can never stop or hide the current one. */
   'dictation:start': { take: number }
   'dictation:stop': { take: number }
+  /** A chunk of a streamed ask answer. */
+  'ask:delta': { id: string; text: string }
+  /** The ask finished: the full answer, or why it failed. */
+  'ask:done': { id: string; text?: string; error?: string }
   /** A dictation finished while the palette was open — its transcript becomes an
    *  ask instead of a paste. */
   'palette:dictation': { text: string }
@@ -563,8 +323,6 @@ export interface IpcEventMap {
   'dictation:suggestions:changed': { suggestions: DictationSuggestion[] }
   /** Broadcast after any settings change so every window/service picks it up live. */
   'settings:changed': { settings: AppSettings }
-  /** Hands the region overlay the frozen screen grab for its display. */
-  'region:begin': { image: string; scaleFactor: number }
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -586,40 +344,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // skip the download at the cost of sending audio to their API.
   transcription: { provider: 'local' },
   linkEnrichment: true,
-  sessionsEnabled: true,
-  // Off by default on every OS — opt in under Settings → Agents. See the field doc.
-  mcpServer: false,
   // Empty: modelport/openaiCompat.ts holds the defaults; an entry here overrides one.
   models: {},
   dictation: { autoPaste: true, keepAudio: true },
-  voiceSamples: [],
-  agents: [
-    {
-      name: 'personal',
-      cwd: '',
-      description: 'General personal assistant: questions, quick tasks, anything not code-specific.',
-      memory: 'own',
-      persistent: true,
-      prewarm: true,
-      tmux: true
-    }
-    // Add project agents in Settings → Agents, each pointed at its own working
-    // directory. (Shipping no personal paths here keeps the default portable.)
-  ],
-  assistant: { identity: '', identityFiles: [], prewarm: true },
   smartPaste: true,
-  // Nano Banana 2 Lite: ~3s round-trip on a real edit, cheapest of the family.
-  imageEdit: { provider: 'gemini' },
-  savedActions: [],
   smartCollections: [],
-  agentProfiles: [
-    // cwd '' means the home directory. (Legacy field; `agents` above is canonical.)
-    { name: 'personal', cwd: '', tmux: true }
-  ],
   hotkeyHint: 'Ctrl+Alt+V',
   dictateChord: DEFAULT_DICTATE_CHORD,
   dictateEnhanceChord: '',
-  dictateAgentChord: '',
   theme: 'system',
   pasteInjection: 'portal'
 }

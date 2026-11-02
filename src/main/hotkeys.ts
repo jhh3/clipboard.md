@@ -3,15 +3,8 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { DBUS_NAME, DBUS_PATH, DBUS_IFACE } from './dbusService'
 import { getSettings } from './settings'
-import {
-  effectiveDictateChord,
-  parseChord,
-  parseChordOrDefault,
-  toAccelerator,
-  toGnomeBinding,
-  toPortalTrigger
-} from '@shared/chord'
-import { MACOS, LINUX, WIN32 } from './platform'
+import { parseChord, parseChordOrDefault, toGnomeBinding, toPortalTrigger } from '@shared/chord'
+import { MACOS, LINUX } from './platform'
 
 const execFileP = promisify(execFile)
 
@@ -19,15 +12,10 @@ export interface HotkeyActions {
   toggle: () => void
   rewrite: () => void
   screenshot: () => void
-  scratchpad: () => void
   /** Push-to-talk dictation: toggles recording (GNOME keybindings can't report key-up). */
   dictate: () => void
   /** Same, but the transcript also goes through an AI cleanup pass. */
   dictateEnhance: () => void
-  /** Same recording, but the transcript is spoken to the primary agent. */
-  dictateAgent: () => void
-  notes: () => void
-  agents: () => void
 }
 
 /**
@@ -42,17 +30,13 @@ const MAC_SHORTCUTS: Array<[string, keyof HotkeyActions]> = [
   ['Command+Shift+V', 'toggle'],
   ['Command+Shift+R', 'rewrite'],
   ['Command+Shift+S', 'screenshot'],
-  ['Command+Shift+E', 'scratchpad'],
   ['Command+Shift+D', 'dictate'],
-  // The other two dictation modes. Option rather than Shift: a global shortcut is
+  // The AI-cleanup dictation mode. Option rather than Shift: a global shortcut is
   // taken from every app on the machine, and Cmd+Shift+G/T/P are Find-Again,
   // reopen-tab and command-palette in common apps. Cmd+Option+<letter> is far less
   // contested. These are toggles — press to start, press again to stop — because
   // globalShortcut only ever reports key-down; hold-to-talk on macOS is the Fn key.
-  ['Command+Alt+D', 'dictateEnhance'],
-  ['Command+Alt+A', 'dictateAgent'],
-  ['Command+Shift+N', 'notes'],
-  ['Command+Shift+A', 'agents']
+  ['Command+Alt+D', 'dictateEnhance']
 ]
 
 export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
@@ -75,10 +59,6 @@ export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
     }
     return
   }
-  if (WIN32) {
-    setupWindowsHotkeys(actions)
-    return
-  }
   if (!LINUX) {
     // Explicit, because the alternative is what used to happen: an unknown platform
     // fell through to ensureGnomeKeybindings(), which shells out to `gsettings`,
@@ -91,51 +71,6 @@ export async function setupHotkeys(actions: HotkeyActions): Promise<void> {
 }
 
 /**
- * The accelerators Windows registers, and why they are not the Linux ones.
- *
- * Ctrl+Shift, never Ctrl+Alt. On most non-US layouts Ctrl+Alt IS AltGr, so
- * registering Ctrl+Alt+V system-wide silently destroys the user's ability to type
- * `@`, `€` or `ł` EVERYWHERE on the machine for as long as this app runs. That is
- * the only change in this port capable of breaking something outside the app, and it
- * would present as "my keyboard is broken", with nothing pointing here.
- *
- * `rewrite` is absent deliberately. Windows cannot read the current selection (see
- * capabilities.ts), so registering a global Ctrl+Shift+R would take a shortcut away
- * from every other app in exchange for a key that can only ever apologise.
- */
-export function windowsShortcuts(settings: {
-  dictateChord?: string
-  dictateEnhanceChord?: string
-  dictateAgentChord?: string
-}): Array<[string, keyof HotkeyActions]> {
-  const out: Array<[string, keyof HotkeyActions]> = [
-    ['Control+Shift+V', 'toggle'],
-    ['Control+Shift+S', 'screenshot'],
-    ['Control+Shift+E', 'scratchpad'],
-    ['Control+Shift+N', 'notes'],
-    ['Control+Shift+A', 'agents']
-  ]
-  // The dictation keys come from settings, exactly as they do on Linux, so the one
-  // chord the user can edit stays the one that fires.
-  const dictation: Array<[string | undefined, keyof HotkeyActions]> = [
-    [effectiveDictateChord(settings.dictateChord, 'win32'), 'dictate'],
-    [settings.dictateEnhanceChord, 'dictateEnhance'],
-    [settings.dictateAgentChord, 'dictateAgent']
-  ]
-  for (const [raw, action] of dictation) {
-    const chord = parseChord(raw?.trim() ?? '')
-    if (!chord) continue // unbound by default; an empty chord registers nothing
-    const accel = toAccelerator(chord)
-    if (!accel) {
-      console.error(`[hotkeys] "${raw}" cannot be expressed as an Electron accelerator; ${action} not bound`)
-      continue
-    }
-    out.push([accel, action])
-  }
-  return out
-}
-
-/**
  * The dictation keys as GlobalShortcuts portal requests, keyed by dictation mode.
  *
  * Same settings and same defaults as the GNOME bindings and the evdev observer, so
@@ -144,79 +79,14 @@ export function windowsShortcuts(settings: {
 export function portalDictationShortcuts(settings: {
   dictateChord?: string
   dictateEnhanceChord?: string
-  dictateAgentChord?: string
-}): Array<{ id: 'paste' | 'enhance' | 'agent'; description: string; trigger: string }> {
+}): Array<{ id: 'paste' | 'enhance'; description: string; trigger: string }> {
   const wanted = [
     { id: 'paste' as const, chord: parseChordOrDefault(settings.dictateChord), description: 'Dictate (hold to talk)' },
-    { id: 'enhance' as const, chord: parseChord(settings.dictateEnhanceChord?.trim() ?? ''), description: 'Dictate and enhance with AI (hold to talk)' },
-    { id: 'agent' as const, chord: parseChord(settings.dictateAgentChord?.trim() ?? ''), description: 'Dictate to the agent (hold to talk)' }
+    { id: 'enhance' as const, chord: parseChord(settings.dictateEnhanceChord?.trim() ?? ''), description: 'Dictate and enhance with AI (hold to talk)' }
   ]
   return wanted
     .filter((w): w is typeof w & { chord: NonNullable<typeof w.chord> } => w.chord !== null)
     .map((w) => ({ id: w.id, description: w.description, trigger: toPortalTrigger(w.chord) }))
-}
-
-/**
- * Shortcuts this boot could not take.
- *
- * Read over IPC by Settings (`hotkeys:failures`, wired in ipc.ts and rendered under
- * the Global hotkeys row). It is NOT a capability: capabilitiesFor() is a pure
- * function of platform and arch, and a hotkey conflict is a fact about what else
- * happened to be running when we started — RegisterHotKey is first-come-first-served,
- * so the same shortcut can be taken on one boot and free on the next.
- */
-let hotkeyFailures: string[] = []
-
-export function hotkeyRegistrationFailures(): string[] {
-  return hotkeyFailures
-}
-
-/**
- * Register a list of accelerators and return the ones that did not take.
- *
- * The registrar is injected so this can be tested without Electron — the two failure
- * modes are easy to get wrong and impossible to see: register() THROWS on an
- * accelerator it cannot parse and RETURNS FALSE on one that is already taken. Only
- * the second is the user's to fix, and both leave a key that does nothing at all.
- */
-export function registerShortcuts(
-  wanted: Array<[string, keyof HotkeyActions]>,
-  register: (accelerator: string, action: keyof HotkeyActions) => boolean
-): string[] {
-  const failed: string[] = []
-  for (const [accelerator, action] of wanted) {
-    let ok = false
-    try {
-      ok = register(accelerator, action)
-    } catch (err) {
-      console.error(`[hotkeys] ${accelerator} is not a valid accelerator:`, err)
-    }
-    if (!ok) failed.push(accelerator)
-  }
-  return failed
-}
-
-function setupWindowsHotkeys(actions: HotkeyActions): void {
-  // Re-registering without this leaves the old accelerators bound to the old
-  // closures, so editing a chord in Settings adds a second live hotkey.
-  globalShortcut.unregisterAll()
-  const wanted = windowsShortcuts(getSettings())
-  hotkeyFailures = registerShortcuts(wanted, (accelerator, action) =>
-    globalShortcut.register(accelerator, actions[action])
-  )
-  if (hotkeyFailures.length > 0) {
-    // RegisterHotKey is first-come-first-served on Windows, so a conflict can appear
-    // on one boot and not the next depending on what started first. Read back by
-    // Settings through hotkeyRegistrationFailures as well as logged, because a
-    // packaged app here has no console at all and "the shortcut just stopped
-    // working" is otherwise unexplainable.
-    console.error(
-      `[hotkeys] could not register ${hotkeyFailures.join(', ')} — another running app already ` +
-        'owns them. Windows grants a hotkey to whoever asks first; close the other app or ' +
-        'change the shortcut.'
-    )
-  }
-  console.log(`[hotkeys] registered ${wanted.length - hotkeyFailures.length}/${wanted.length} global shortcuts`)
 }
 
 interface Binding {
@@ -244,7 +114,6 @@ const BINDINGS: Binding[] = [
   { slug: 'clipboard-md', name: 'clipboard.md — palette', binding: '<Control><Alt>v', arg: '--toggle' },
   { slug: 'clipboard-md-rewrite', name: 'clipboard.md — rewrite selection', binding: '<Control><Alt>r', arg: '--rewrite' },
   { slug: 'clipboard-md-shot', name: 'clipboard.md — screenshot', binding: '<Control><Alt>s', arg: '--capture' },
-  { slug: 'clipboard-md-scratch', name: 'clipboard.md — scratchpad', binding: '<Control><Alt>e', arg: '--scratchpad' },
   {
     slug: 'clipboard-md-dictate',
     name: 'clipboard.md — dictate (hold to talk)',
@@ -278,27 +147,24 @@ const BINDINGS: Binding[] = [
     },
     arg: '--dictate-enhance',
     authoritative: true
-  },
-  {
-    slug: 'clipboard-md-dictate-agent',
-    name: 'clipboard.md — dictate to agent',
-    // Third dictation key: record exactly as normal, then hand the transcript to the
-    // primary agent instead of pasting it. Unbound by default, same as the AI key.
-    get binding() {
-      const chord = parseChord(getSettings().dictateAgentChord ?? '')
-      return chord ? toGnomeBinding(chord) : ''
-    },
-    arg: '--dictate-agent',
-    authoritative: true
-  },
-  { slug: 'clipboard-md-notes', name: 'clipboard.md — notes', binding: '<Control><Alt>n', arg: '--notes' },
-  { slug: 'clipboard-md-agents', name: 'clipboard.md — agent inbox', binding: '<Control><Alt>a', arg: '--agents' }
+  }
 ]
 
 const LIST_KEY = 'org.gnome.settings-daemon.plugins.media-keys custom-keybindings'
 
+/**
+ * Bindings for features that no longer exist. Left registered they keep grabbing
+ * their chords (Ctrl+Alt+E/N/A) from every other app, so they are taken off the list.
+ */
+const RETIRED_SLUGS = [
+  'clipboard-md-scratch',
+  'clipboard-md-dictate-agent',
+  'clipboard-md-notes',
+  'clipboard-md-agents'
+]
+
 /** The dictation keys, which hold to talk and so are the ones GNOME auto-repeats. */
-export const DICTATION_FLAGS = ['--dictate', '--dictate-enhance', '--dictate-agent'] as const
+export const DICTATION_FLAGS = ['--dictate', '--dictate-enhance'] as const
 export type DictationFlag = (typeof DICTATION_FLAGS)[number]
 
 /**
@@ -363,8 +229,10 @@ export function ensureGnomeKeybindings(): Promise<boolean> {
 async function writeGnomeKeybindings(): Promise<boolean> {
   try {
     const current = await gsettings(['get', ...LIST_KEY.split(' ')])
-    const list: string[] = current === '@as []' ? [] : JSON.parse(current.replace(/'/g, '"'))
-    let changed = false
+    const parsed: string[] = current === '@as []' ? [] : JSON.parse(current.replace(/'/g, '"'))
+    const retired = (p: string): boolean => RETIRED_SLUGS.some((slug) => p.endsWith(`/${slug}/`))
+    const list = parsed.filter((p) => !retired(p))
+    let changed = list.length !== parsed.length
     for (const b of BINDINGS) {
       const path = `/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/${b.slug}/`
       if (!list.includes(path)) {
@@ -475,12 +343,8 @@ export function routeArgs(argv: string[], actions: HotkeyActions): void {
   if (argv.includes('--background')) return
   if (argv.includes('--rewrite')) actions.rewrite()
   else if (argv.includes('--capture')) actions.screenshot()
-  else if (argv.includes('--scratchpad')) actions.scratchpad()
   else if (argv.includes('--dictate-enhance')) actions.dictateEnhance()
-  else if (argv.includes('--dictate-agent')) actions.dictateAgent()
   else if (argv.includes('--dictate')) actions.dictate()
-  else if (argv.includes('--notes')) actions.notes()
-  else if (argv.includes('--agents')) actions.agents()
   else actions.toggle()
 }
 

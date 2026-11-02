@@ -10,12 +10,9 @@ onlyBuiltDependencies:
   - electron
   - better-sqlite3
   - esbuild
-  - electron-winstaller
   - sharp
   - onnxruntime-node
   - protobufjs
-  - '@anthropic-ai/claude-agent-sdk'
-  - tesseract.js
 
 overrides:
   # usocket (dbus-next's optional native socket lib) calls util.isError, removed in
