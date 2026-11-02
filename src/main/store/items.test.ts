@@ -177,6 +177,14 @@ describe('store', () => {
     dequeueEnrichment(poisoned)
   })
 
+  it('re-embeds an item once enrichment adds a title or tags', () => {
+    const { id } = textClip('needs a vector refresh after tagging')
+    storeEmbedding(id, new Float32Array(EMBEDDING_DIM).fill(0.01))
+    expect(getItem(id)!.embeddedAt).toBeDefined()
+    updateEnrichment(id, { tags: ['refresh'] })
+    expect(getItem(id)!.embeddedAt).toBeUndefined()
+  })
+
   it('matches a one-letter query as a word, not a prefix of everything', () => {
     const { id } = textClip('plan b for the offsite')
     textClip('banana bread recipe')

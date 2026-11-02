@@ -221,7 +221,9 @@ export function updateEnrichment(
         ocr_text = COALESCE(@ocrText, ocr_text),
         description = COALESCE(@description, description),
         language = COALESCE(@language, language),
-        enriched_at = @now
+        enriched_at = @now,
+        -- New title, tags or OCR text change what the vector should say: re-embed.
+        embedded_at = CASE WHEN COALESCE(@autoTitle, @tags, @ocrText) IS NULL THEN embedded_at END
        WHERE id = @id`
     )
     .run({
