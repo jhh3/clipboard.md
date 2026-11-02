@@ -1,34 +1,49 @@
 import { z } from 'zod'
-import { completeJson, complete } from './modelport'
+import type { ClipItem } from '@shared/types'
+import { completeJson, ProviderError, describeProviderError } from './modelport'
 import {
   nextEnrichQueueBatch,
   dequeueEnrichment,
   updateEnrichment,
-  getItem
+  reviveEnrichmentQueue
 } from './store/items'
-import { getDb } from './store/db'
-import { getSettings } from './settings'
+import { getSettings, onSettingsChanged } from './settings'
+import { ocrImage } from './ocr'
+
+/**
+ * Background AI tagging: a direct API call per batch of clips (title, tags, class).
+ * Screenshots are read locally (ocr/) and only the extracted text is sent for tags.
+ *
+ * Provider outages (no key, bad key, quota, network) never count against an item:
+ * they trip a breaker that pauses the queue and shows why in the tray. Only an item
+ * the model cannot handle (bad JSON twice) uses up one of its three attempts.
+ */
 
 const CLASSES = [
   'code', 'link', 'error', 'address', 'contact', 'meeting',
   'prose', 'command', 'data', 'screenshot', 'photo', 'other'
 ] as const
 
-const TextEnrichment = z.object({
+const Tagging = z.object({
   title: z.string().max(120),
   tags: z.array(z.string().max(32)).max(6),
   content_class: z.enum(CLASSES),
   language: z.string().max(24).nullish()
 })
 
-const ImageEnrichment = z.object({
-  ocr_text: z.string().max(8000),
-  description: z.string().max(600),
-  tags: z.array(z.string().max(32)).max(6),
-  content_class: z.enum(['screenshot', 'photo', 'other'])
+const TextBatch = z.object({
+  items: z.array(Tagging.extend({ id: z.number() }))
 })
 
-const SESSION_GAP_MS = 20 * 60 * 1000
+const LinkTagging = z.object({
+  title: z.string().max(120),
+  tags: z.array(z.string().max(32)).max(6),
+  summary: z.string().max(600)
+})
+
+const TEXT_BATCH = 8
+const MAX_PER_DRAIN = 48
+const CONCURRENCY = 4
 
 let running = false
 let processed = 0
@@ -36,10 +51,34 @@ let lastError: string | undefined
 let timer: ReturnType<typeof setInterval> | null = null
 let notify: () => void = () => {}
 
+/** Breaker: an outage pauses the queue with exponential backoff (1m … 30m). */
+let outage: string | undefined
+let outageCount = 0
+let pausedUntil = 0
+const statusListeners = new Set<() => void>()
+
 export function startEnrichment(onChanged: () => void): void {
   notify = onChanged
+  // Rows that died to the expired-login era (or any outage) get one more chance.
+  const revived = reviveEnrichmentQueue()
+  if (revived > 0) console.log(`[enrich] re-queued ${revived} items that had given up`)
+  // A key typed into Settings should resume tagging now, not after the backoff.
+  let lastKeys = JSON.stringify(getSettings().apiKeys ?? {})
+  onSettingsChanged((s) => {
+    const keys = JSON.stringify(s.apiKeys ?? {})
+    if (keys === lastKeys) return
+    lastKeys = keys
+    void resumeEnrichment()
+  })
   if (!timer) timer = setInterval(() => void drain(), 15_000)
   void drain()
+}
+
+/** Lift a breaker pause and drain now (a new key was entered). */
+export function resumeEnrichment(): Promise<void> {
+  pausedUntil = 0
+  outageCount = 0
+  return drain()
 }
 
 export function stopEnrichment(): void {
@@ -47,107 +86,169 @@ export function stopEnrichment(): void {
   timer = null
 }
 
-export function enrichmentRunStats(): { processed: number; lastError?: string } {
-  return { processed, lastError }
+export function enrichmentRunStats(): { processed: number; lastError?: string; outage?: string } {
+  return { processed, lastError: outage ?? lastError, outage }
 }
 
-/** Circuit breaker: consecutive failures pause the queue instead of hammering. */
-let consecutiveFailures = 0
-let pausedUntil = 0
-const MAX_PER_DRAIN = 20
+/** Why AI tagging is paused, for the tray; undefined when it is working. */
+export function enrichmentOutage(): string | undefined {
+  return outage
+}
+
+export function onEnrichmentStatus(fn: () => void): () => void {
+  statusListeners.add(fn)
+  return () => statusListeners.delete(fn)
+}
+
+function setOutage(next: string | undefined): void {
+  if (next === outage) return
+  outage = next
+  for (const fn of statusListeners) fn()
+}
+
+function tripBreaker(err: ProviderError): void {
+  setOutage(describeProviderError(err))
+  // Parallel units hitting the same outage count once.
+  if (Date.now() < pausedUntil) return
+  outageCount++
+  const backoff = Math.min(60_000 * 2 ** (outageCount - 1), 30 * 60_000)
+  pausedUntil = Date.now() + backoff
+  console.error(`[enrich] provider outage (${err.kind}); pausing ${Math.round(backoff / 1000)}s`)
+}
+
+function isOutage(err: unknown): err is ProviderError {
+  return err instanceof ProviderError && err.isOutage
+}
 
 export async function drain(): Promise<void> {
   if (running) return
-  const settings = getSettings()
-  if (!settings.enrichment.enabled) return
+  if (!getSettings().enrichment.enabled) return
   if (Date.now() < pausedUntil) return
   running = true
+  const started = Date.now()
+  let handled = 0
   try {
-    // Bounded per drain: an outage previously meant every queued item burned
-    // 4 providers x 3 attempts x a 90s timeout, back to back, forever.
-    let handled = 0
-    while (handled < MAX_PER_DRAIN) {
-      const batch = nextEnrichQueueBatch(2)
-      if (batch.length === 0) break
-      for (const item of batch) {
-        handled++
-        try {
-          await enrichOne(item.id)
-          dequeueEnrichment(item.id)
-          consecutiveFailures = 0
-          processed++
-          notify()
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          lastError = msg
-          console.error(`[enrich] item ${item.id} failed:`, msg)
-          dequeueEnrichment(item.id, msg)
-          consecutiveFailures++
-          if (consecutiveFailures >= 5) {
-            // Exponential, capped: 1m, 2m, 4m … 30m.
-            const backoff = Math.min(60_000 * 2 ** (consecutiveFailures - 5), 30 * 60_000)
-            pausedUntil = Date.now() + backoff
-            console.error(
-              `[enrich] ${consecutiveFailures} consecutive failures; pausing ${Math.round(backoff / 1000)}s`
-            )
-            return
-          }
-        }
-      }
+    while (handled < MAX_PER_DRAIN && Date.now() >= pausedUntil) {
+      const items = nextEnrichQueueBatch(TEXT_BATCH * CONCURRENCY)
+      if (items.length === 0) break
+      handled += items.length
+      const units = planUnits(items)
+      // A small pool: a backlog drains in parallel, and one outage stops the rest.
+      let next = 0
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, units.length) }, async () => {
+          while (next < units.length && Date.now() >= pausedUntil) await runUnit(units[next++])
+        })
+      )
     }
-    if (getSettings().sessionsEnabled) await titleSessions()
   } finally {
     running = false
+    if (handled > 0) console.log(`[enrich] drained ${handled} items in ${Date.now() - started}ms`)
   }
 }
 
-async function enrichOne(id: number): Promise<void> {
-  const item = getItem(id)
-  if (!item || item.secret) return
+type Unit = { kind: 'text'; items: ClipItem[] } | { kind: 'link' | 'image' | 'skip'; items: [ClipItem] }
 
-  if (item.kind === 'image') {
-    const out = await completeJson(
-      'enrichment',
-      {
-        system: 'You index clipboard images for search.',
-        prompt:
-          'Analyze this image. Return JSON: {"ocr_text": string (ALL readable text, verbatim, empty string if none), "description": string (1-2 sentences), "tags": string[] (lowercase, ≤6), "content_class": "screenshot"|"photo"|"other"}',
-        imagePath: item.content,
-        maxTokens: 4000
-      },
-      ImageEnrichment
-    )
-    updateEnrichment(id, {
-      autoTitle: out.description.slice(0, 120),
-      tags: out.tags,
-      contentClass: out.content_class,
-      ocrText: out.ocr_text,
-      description: out.description
-    })
-    return
+function planUnits(items: ClipItem[]): Unit[] {
+  const units: Unit[] = []
+  const text: ClipItem[] = []
+  const linkEnrichment = getSettings().linkEnrichment
+  for (const item of items) {
+    if (item.secret) units.push({ kind: 'skip', items: [item] })
+    else if (item.kind === 'image') units.push({ kind: 'image', items: [item] })
+    else if (item.kind === 'link' && linkEnrichment) units.push({ kind: 'link', items: [item] })
+    else text.push(item)
   }
+  for (let i = 0; i < text.length; i += TEXT_BATCH) units.push({ kind: 'text', items: text.slice(i, i + TEXT_BATCH) })
+  return units
+}
 
-  if (item.kind === 'link' && getSettings().linkEnrichment) {
-    await enrichLink(id, item.content)
-    return
+async function runUnit(unit: Unit): Promise<void> {
+  try {
+    if (unit.kind === 'skip') dequeueEnrichment(unit.items[0].id)
+    else if (unit.kind === 'image') await enrichImage(unit.items[0])
+    else if (unit.kind === 'link') await enrichLink(unit.items[0])
+    else await enrichTextBatch(unit.items)
+    succeeded(unit.items.length)
+  } catch (err) {
+    if (isOutage(err)) return tripBreaker(err)
+    // A batch the model fumbled: retry its clips one at a time before charging them.
+    if (unit.kind === 'text' && unit.items.length > 1) {
+      for (const item of unit.items) await runUnit({ kind: 'text', items: [item] })
+      return
+    }
+    const msg = err instanceof Error ? err.message : String(err)
+    lastError = msg
+    console.error(`[enrich] item ${unit.items[0].id} (${unit.kind}) failed: ${msg.slice(0, 200)}`)
+    dequeueEnrichment(unit.items[0].id, msg)
   }
+}
 
+function succeeded(n: number): void {
+  processed += n
+  outageCount = 0
+  setOutage(undefined)
+  notify()
+}
+
+async function enrichTextBatch(items: ClipItem[]): Promise<void> {
+  const snippets = items
+    .map((i) => `<snippet id="${i.id}">\n${i.content.slice(0, 2000)}\n</snippet>`)
+    .join('\n')
   const out = await completeJson(
     'enrichment',
     {
       system: 'You index clipboard snippets for search.',
       prompt:
-        `Classify this clipboard snippet. Return JSON: {"title": string (≤80 chars, specific — "PG connection string for staging", not "text snippet"), "tags": string[] (lowercase, ≤6), "content_class": one of ${JSON.stringify(CLASSES)}, "language": string|null (programming language if code)}\n\nSNIPPET:\n${item.content.slice(0, 4000)}`,
-      maxTokens: 400
+        `Classify each clipboard snippet below. Return JSON: {"items": [{"id": number (the snippet id), "title": string (≤80 chars, specific — "PG connection string for staging", not "text snippet"), "tags": string[] (lowercase, ≤6), "content_class": one of ${JSON.stringify(CLASSES)}, "language": string|null (programming language if code)}]}, one entry per snippet.\n\n${snippets}`,
+      maxTokens: 120 * items.length + 100,
+      timeoutMs: 8_000 + 2_000 * items.length
     },
-    TextEnrichment
+    TextBatch
   )
-  updateEnrichment(id, {
-    autoTitle: out.title,
-    tags: out.tags,
-    contentClass: out.content_class,
-    language: out.language ?? undefined
-  })
+  const byId = new Map(out.items.map((r) => [r.id, r]))
+  for (const item of items) {
+    const r = byId.get(item.id)
+    if (!r) {
+      // Counted: the model answered but skipped it. Three of these and it is dropped.
+      dequeueEnrichment(item.id, 'missing from batch result')
+      continue
+    }
+    updateEnrichment(item.id, {
+      autoTitle: r.title,
+      tags: r.tags,
+      contentClass: r.content_class,
+      language: r.language ?? undefined
+    })
+    dequeueEnrichment(item.id)
+  }
+}
+
+/**
+ * Screenshots: read the text locally, store it (so it is searchable even if tagging
+ * fails), then tag from that text alone. Image bytes never leave the machine, and an
+ * image with no text gets no tags.
+ */
+async function enrichImage(item: ClipItem): Promise<void> {
+  const text = item.ocrText ?? (await ocrImage(item.content)).trim()
+  if (item.ocrText === undefined) updateEnrichment(item.id, { ocrText: text })
+  if (text) {
+    const out = await completeJson(
+      'enrichment',
+      {
+        system: 'You index clipboard screenshots for search, from the text read out of them.',
+        prompt: `This text was read from a screenshot. Return JSON: {"title": string (≤80 chars: what the screenshot shows, e.g. "GitHub Actions deploy failure"), "tags": string[] (lowercase, ≤6), "content_class": one of ${JSON.stringify(CLASSES)}, "language": null}\n\nTEXT:\n${text.slice(0, 4000)}`,
+        maxTokens: 200
+      },
+      Tagging
+    )
+    updateEnrichment(item.id, {
+      autoTitle: out.title,
+      tags: out.tags,
+      contentClass: out.content_class === 'screenshot' || out.content_class === 'photo' ? out.content_class : 'screenshot'
+    })
+  }
+  dequeueEnrichment(item.id)
 }
 
 /**
@@ -198,7 +299,8 @@ async function firecrawlScrape(url: string): Promise<{ text: string; title: stri
     const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true })
+      body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true }),
+      signal: AbortSignal.timeout(20_000)
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = (await res.json()) as {
@@ -213,47 +315,36 @@ async function firecrawlScrape(url: string): Promise<{ text: string; title: stri
     if (!text) return null
     return { text, title: data.data?.metadata?.title ?? '' }
   } catch (err) {
-    console.log('[enrich] firecrawl failed, falling back to local fetch:', err)
+    console.log('[enrich] firecrawl failed, falling back to local fetch:', err instanceof Error ? err.message : err)
     return null
   }
 }
 
 /** Fetch a copied URL, extract readable text, summarize + tag it into the index. */
-async function enrichLink(id: number, url: string): Promise<void> {
+async function enrichLink(item: ClipItem): Promise<void> {
+  const { id, content: url } = item
+  const finish = (patch: Parameters<typeof updateEnrichment>[1]): void => {
+    updateEnrichment(id, patch)
+    dequeueEnrichment(id)
+  }
   let pageText = ''
   let pageTitle = ''
   const safe = isFetchableUrl(url)
-  if (!safe) {
-    updateEnrichment(id, { autoTitle: url.slice(0, 80), contentClass: 'link' })
-    return
-  }
+  if (!safe) return finish({ autoTitle: url.slice(0, 80), contentClass: 'link' })
   const fc = await firecrawlScrape(safe.toString())
   if (fc) {
     pageText = fc.text
     pageTitle = fc.title
   } else try {
-    const controller = new AbortController()
-    const t = setTimeout(() => controller.abort(), 15_000)
-    let res: Response
-    try {
-      res = await fetch(safe.toString(), {
-        signal: controller.signal,
-        headers: { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' },
-        // 'manual' so a public URL can't redirect us onto a private address.
-        redirect: 'manual'
-      })
-      if (res.status >= 300 && res.status < 400) {
-        const next = res.headers.get('location')
-        const safeNext = next ? isFetchableUrl(new URL(next, safe).toString()) : null
-        if (!safeNext) throw new Error(`refusing redirect to ${next ?? 'unknown'}`)
-        res = await fetch(safeNext.toString(), {
-          signal: controller.signal,
-          headers: { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' },
-          redirect: 'manual'
-        })
-      }
-    } finally {
-      clearTimeout(t) // was leaked whenever fetch threw
+    const signal = AbortSignal.timeout(15_000)
+    const headers = { 'user-agent': 'Mozilla/5.0 (clipboard.md link preview)' }
+    // 'manual' so a public URL can't redirect us onto a private address.
+    let res = await fetch(safe.toString(), { signal, headers, redirect: 'manual' })
+    if (res.status >= 300 && res.status < 400) {
+      const next = res.headers.get('location')
+      const safeNext = next ? isFetchableUrl(new URL(next, safe).toString()) : null
+      if (!safeNext) throw new Error('refusing redirect to a private or unparseable address')
+      res = await fetch(safeNext.toString(), { signal, headers, redirect: 'manual' })
     }
     const type = res.headers.get('content-type') ?? ''
     if (res.ok && type.includes('html')) {
@@ -269,7 +360,8 @@ async function enrichLink(id: number, url: string): Promise<void> {
         .slice(0, 6000)
     }
   } catch (err) {
-    console.log(`[enrich] link fetch failed for ${url}:`, err instanceof Error ? err.message : err)
+    // No URL here: the log is metadata only.
+    console.log(`[enrich] link fetch failed for item ${id}:`, err instanceof Error ? err.message : err)
   }
 
   // Auth walls and error pages that come back with HTTP 200: what we fetched is
@@ -282,84 +374,27 @@ async function enrichLink(id: number, url: string): Promise<void> {
     AUTH_WALL_RE.test(pageTitle.trim()) ||
     /\b(sign|log) in to (continue|access|view)\b/i.test(pageText.slice(0, 500))
   ) {
-    console.log(`[enrich] ${url} looks auth-walled ("${pageTitle.slice(0, 40)}"); keeping the bare link`)
-    updateEnrichment(id, { autoTitle: url.slice(0, 80), contentClass: 'link' })
-    return
+    return finish({ autoTitle: url.slice(0, 80), contentClass: 'link' })
   }
 
-  if (!pageText) {
-    updateEnrichment(id, { autoTitle: pageTitle || url.slice(0, 80), contentClass: 'link' })
-    return
-  }
+  if (!pageText) return finish({ autoTitle: pageTitle || url.slice(0, 80), contentClass: 'link' })
 
   const out = await completeJson(
     'enrichment',
     {
       system: 'You index web pages that the user copied links to.',
-      prompt: `Summarize this page for clipboard search. Return JSON: {"title": string (≤80 chars, prefer the real title), "tags": string[] (≤6 lowercase), "content_class": "link", "language": null}\n\nURL: ${url}\nPAGE TITLE: ${pageTitle}\nPAGE TEXT:\n${pageText}`,
-      maxTokens: 300
+      prompt: `Summarize this page for clipboard search. Return JSON: {"title": string (≤80 chars, prefer the real title), "tags": string[] (≤6 lowercase), "summary": string (2 sentences: what the page is about)}\n\nURL: ${url}\nPAGE TITLE: ${pageTitle}\nPAGE TEXT:\n${pageText.slice(0, 5000)}`,
+      maxTokens: 300,
+      timeoutMs: 15_000
     },
-    TextEnrichment
+    LinkTagging
   )
   // Page text goes into ocr_text so FTS finds links by what the page said.
-  const summary = await complete('enrichment', {
-    prompt: `Summarize in 2 sentences what this page is about:\n${pageText.slice(0, 4000)}`,
-    maxTokens: 150
-  })
-  updateEnrichment(id, {
+  finish({
     autoTitle: out.title,
     tags: out.tags,
     contentClass: 'link',
     ocrText: pageText.slice(0, 4000),
-    description: summary.trim()
+    description: out.summary.trim()
   })
-}
-
-/** Assign a session id at capture time: reuse the last session if within the gap. */
-export function assignSession(itemId: number, ts: number): void {
-  if (!getSettings().sessionsEnabled) return
-  const db = getDb()
-  const last = db
-    .prepare('SELECT id, ended_at FROM sessions ORDER BY ended_at DESC LIMIT 1')
-    .get() as { id: number; ended_at: number } | undefined
-  let sessionId: number
-  if (last && ts - last.ended_at < SESSION_GAP_MS) {
-    sessionId = last.id
-    db.prepare('UPDATE sessions SET ended_at = ? WHERE id = ?').run(ts, sessionId)
-  } else {
-    const r = db.prepare('INSERT INTO sessions (started_at, ended_at) VALUES (?, ?)').run(ts, ts)
-    sessionId = Number(r.lastInsertRowid)
-  }
-  db.prepare('UPDATE items SET session_id = ? WHERE id = ?').run(sessionId, itemId)
-}
-
-/** Give untitled sessions with enough content an AI title. */
-async function titleSessions(): Promise<void> {
-  const db = getDb()
-  const untitled = db
-    .prepare(
-      `SELECT s.id FROM sessions s
-       WHERE s.title IS NULL
-         AND (SELECT COUNT(*) FROM items i WHERE i.session_id = s.id AND i.secret = 0) >= 3
-         AND s.ended_at < ?`
-    )
-    .all(Date.now() - SESSION_GAP_MS) as Array<{ id: number }>
-  for (const { id } of untitled.slice(0, 3)) {
-    const previews = db
-      .prepare(
-        `SELECT COALESCE(auto_title, preview) p FROM items
-         WHERE session_id = ? AND secret = 0 ORDER BY id LIMIT 12`
-      )
-      .all(id) as Array<{ p: string }>
-    try {
-      const title = await complete('enrichment', {
-        prompt: `These clipboard items were copied in one work session. Name the session in ≤6 words (what was the user working on?). Output only the name.\n\n${previews.map((r) => '- ' + r.p.slice(0, 120)).join('\n')}`,
-        maxTokens: 40
-      })
-      db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(title.trim().slice(0, 80), id)
-      notify()
-    } catch (err) {
-      console.error(`[enrich] session ${id} titling failed:`, err)
-    }
-  }
 }
