@@ -1,5 +1,5 @@
 import { app, ipcMain, nativeImage, BrowserWindow, dialog } from 'electron'
-import { rmSync, writeFileSync } from 'fs'
+import { existsSync, rmSync, writeFileSync } from 'fs'
 import { isTrustedSender } from './security'
 import type { SearchQuery, TransformRequest, AppSettings, SavedAction } from '@shared/types'
 import {
@@ -484,7 +484,9 @@ export function registerIpc(
   handle('dictation:retry', async (_e, itemId: number) => {
     const item = getItem(itemId)
     const path = item?.derivedVia?.startsWith('dictation:') ? item.derivedVia.slice(10) : null
-    if (!path) return { ok: false, error: 'No stored recording for this item' }
+    if (!path || !existsSync(path)) {
+      return { ok: false, error: 'Recordings are deleted after 2 days' }
+    }
     try {
       const text = await transcribeFile(path)
       return { ok: true, text }

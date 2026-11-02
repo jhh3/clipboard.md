@@ -6,7 +6,7 @@ import { pathToFileURL } from 'url'
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { openDb, closeDb, maintainDb } from './store/db'
-import { applyRetention, dictationAudioPaths } from './store/items'
+import { applyRetention } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
 import { registerIpc } from './ipc'
@@ -939,11 +939,13 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     const runRetention = (): void => {
       const s = getSettings()
       applyRetention(s.retentionDays, s.maxItems)
-      // Off the startup path: the first run clears a few thousand old files.
-      setTimeout(() => sweepAudio(dictationAudioPaths()), 30_000)
     }
     runRetention()
     housekeeping.push(setInterval(runRetention, 24 * 60 * 60 * 1000))
+    // Recordings live two days. Off the startup path: the first run clears a few
+    // thousand old files.
+    setTimeout(sweepAudio, 30_000)
+    housekeeping.push(setInterval(sweepAudio, 60 * 60 * 1000))
 
     // Keep the WAL from growing without bound in a long-lived process, and reclaim
     // space after retention deletes. Both are cheap and off the interactive path.
