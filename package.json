@@ -6,6 +6,7 @@
   "main": "./out/main/index.mjs",
   "type": "commonjs",
   "license": "MIT",
+  "homepage": "https://github.com/jhh3/clipboard.md",
   "author": "John <john@nullframe.ai>",
   "packageManager": "pnpm@10.18.0",
   "scripts": {

@@ -30,6 +30,11 @@ files:
   - '!**/node_modules/onnxruntime-web/**'
   - '!**/node_modules/@img/sharp-*musl*/**'
   - '!**/node_modules/@img/sharp-libvips-*/lib/*.a'
+  # better-sqlite3 loads a prebuilt N-API binary from prebuilds/; the SQLite sources
+  # it would compile from (~10MB) are never used. Foreign prebuilds are pruned per
+  # platform below.
+  - '!**/node_modules/better-sqlite3/{deps,src}/**'
+  - '!**/node_modules/better-sqlite3/prebuilds/{linuxmusl,win32}-*'
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
   - '**/node_modules/sqlite-vec*/**'
@@ -55,6 +60,7 @@ linux:
     - out/**
     - package.json
     - '!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**'
+    - '!**/node_modules/better-sqlite3/prebuilds/darwin-*'
   syncDesktopName: true
   target:
     - AppImage
@@ -77,6 +83,7 @@ mac:
     - out/**
     - package.json
     - '!**/node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**'
+    - '!**/node_modules/better-sqlite3/prebuilds/linux-*'
   target:
     - dmg
   category: public.app-category.productivity

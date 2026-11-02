@@ -134,7 +134,7 @@ check(
 )
 
 // (e) No musl variants: this build runs on glibc (or macOS), so they never load.
-const musl = unpackedFiles.filter((p) => /musl/.test(p))
+const musl = unpackedFiles.filter((p) => /musl/.test(p) && /\.(node|so[.\d]*)$/.test(p))
 check(musl.length === 0, 'no musl native libraries', `${musl.length} musl files shipped, e.g. ${musl[0]}`)
 
 // (f) Only this platform's onnxruntime binding. Each foreign one is ~110MB, and the
