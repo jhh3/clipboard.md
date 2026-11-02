@@ -341,18 +341,15 @@ export async function transcribeFile(path: string, audio?: Buffer, mime?: string
 
 // ── audio housekeeping ───────────────────────────────────────────────────────
 
-/** Recordings older than this with no clip pointing at them are leftovers. */
-const ORPHAN_MS = 7 * 86_400_000
+/** Recordings are only kept briefly, for a manual retry; the transcript is the record. */
+export const AUDIO_MAX_AGE_MS = 2 * 86_400_000
 
 /**
- * Prune the audio folder. Runs shortly after startup and with the daily retention pass.
- *  - every `.16k.wav`: decoded duplicates older builds wrote next to each recording
- *  - recordings no clip references, after a week: clips deleted before their audio
- *    was purged with them, and failed takes kept for a manual retry
- * Recordings that a clip does reference go with that clip (purgeItems), so they
- * follow retentionDays and pinning exactly as the clip does.
+ * Prune the audio folder. Runs shortly after startup and then hourly.
+ * Deletes every recording older than AUDIO_MAX_AGE_MS, whether or not a clip still
+ * points at it, plus any `.16k.wav` duplicates older builds wrote.
  */
-export function sweepAudio(referenced: Set<string>): void {
+export function sweepAudio(): void {
   let dir: string
   try {
     dir = audioDir()
@@ -367,9 +364,7 @@ export function sweepAudio(referenced: Set<string>): void {
     try {
       const st = statSync(file)
       if (!st.isFile()) continue
-      const dup = name.endsWith('.16k.wav')
-      const orphan = !referenced.has(file) && now - st.mtimeMs > ORPHAN_MS
-      if (dup || orphan) {
+      if (name.endsWith('.16k.wav') || now - st.mtimeMs > AUDIO_MAX_AGE_MS) {
         rmSync(file, { force: true })
         removed++
         bytes += st.size

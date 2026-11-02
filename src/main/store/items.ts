@@ -190,17 +190,6 @@ export function purgeItems(ids: number[]): number {
   return res.changes
 }
 
-/** Every dictation recording a clip still points at, for the audio sweep. */
-export function dictationAudioPaths(): Set<string> {
-  return new Set(
-    (
-      getDb()
-        .prepare("SELECT derived_via v FROM items WHERE derived_via LIKE 'dictation:%'")
-        .all() as Array<{ v: string }>
-    ).map((r) => r.v.slice('dictation:'.length))
-  )
-}
-
 /** Explicit user delete: overwrite the bytes, not just unlink the row. */
 export function deleteItem(id: number): void {
   secureDeleteNow(() => purgeItems([id]))
