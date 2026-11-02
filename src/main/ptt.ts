@@ -60,7 +60,12 @@ export interface PttHandlers {
 }
 
 /**
- * One `cat` child per open keyboard, streaming raw input_events to a pipe.
+ * One `dd` child per open keyboard, streaming raw input_events to a pipe.
+ *
+ * Not `cat`: uutils cat (Ubuntu's default coreutils since 25.10) buffers its output
+ * when reading a character device, so key events reached us in bursts, up to 15 s
+ * late. Dictation stopped late or started from stale presses. `dd bs=24` reads one
+ * event per read() and writes it straight through.
  *
  * Why a process and not fs.read on an fd: an evdev read blocks until a key is
  * pressed, and fs.read runs on libuv's threadpool, so every device parked a pool
@@ -251,7 +256,7 @@ function unreadable(path: string): string | null {
 }
 
 function spawnReader(path: string, handlers: PttHandlers): void {
-  const child = spawn('cat', [path], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn('dd', [`if=${path}`, `bs=${EVENT_SIZE}`, 'status=none'], { stdio: ['ignore', 'pipe', 'pipe'] })
   const reader: DeviceReader = { path, child }
   readers.push(reader)
 
@@ -264,7 +269,7 @@ function spawnReader(path: string, handlers: PttHandlers): void {
     if (whole > 0) onChunk(buf.subarray(0, whole), handlers)
     rest = Buffer.from(buf.subarray(whole))
   })
-  // cat only writes its own errors here ("Permission denied", "No such device"),
+  // dd only writes its own errors here ("Permission denied", "No such device"),
   // never key data, so it is safe to keep for the exit log.
   let stderr = ''
   child.stderr.setEncoding('utf8')

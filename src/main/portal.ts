@@ -223,41 +223,51 @@ async function attemptPaste(shift: boolean): Promise<Attempt> {
   const s = sessionHandle!
   const key = (code: number, down: boolean): Promise<unknown> =>
     rd.NotifyKeyboardKeycode(s, {}, code, down ? 1 : 0)
-  // Every keystroke is sent without waiting for the previous one's reply: one D-Bus
-  // connection delivers in order, so the compositor sees exactly this sequence, and
-  // the whole chord costs one round trip instead of twenty.
+  // Each keystroke waits for the previous one's reply. Sending them all at once saved
+  // a few milliseconds but left V held down in the target app, which then pasted on
+  // key repeat until another key was pressed.
   //
   // First clear every modifier the compositor may still believe is held. The dictate
   // trigger is ITSELF a modifier combo (Ctrl+Alt+Shift+D on a macro pad), and a single
   // missed key-up leaves the compositor reading our injection as Ctrl+Alt+Shift+V —
   // not paste — while every step in the log says it worked. Releasing a key that is
   // already up is a no-op, so these are always safe to repeat on a retry.
-  const releases = STRAY_MODIFIERS.map((code) => key(code, false))
+  //
   // Which chord keys actually reached the compositor decides whether a retry is
   // safe, so they are counted rather than inferred from the error.
-  const chord = [
-    key(KEY_LEFTCTRL, true),
-    ...(shift ? [key(KEY_LEFTSHIFT, true)] : []),
-    key(KEY_V, true),
-    key(KEY_V, false),
-    ...(shift ? [key(KEY_LEFTSHIFT, false)] : []),
-    key(KEY_LEFTCTRL, false)
-  ]
-  const [rel, sent] = await Promise.all([Promise.allSettled(releases), Promise.allSettled(chord)])
-  const failed = [...rel, ...sent].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
-  if (!failed) return 'ok'
-  console.error('[portal] paste injection failed:', failed.reason)
-  // Session may have died (compositor restart, revoked permission) — rebuild next time.
-  sessionHandle = null
-  if (sent.some((r) => r.status === 'fulfilled')) {
-    // Ctrl may have gone down and never come back up. On a session that still works
-    // that leaves the modifier latched, and the user's next keystroke is a shortcut.
-    await key(KEY_LEFTCTRL, false).catch(() => {
-      /* the session is gone; the compositor drops its keys with it */
-    })
-    return 'partial'
+  let sent = 0
+  try {
+    for (const code of STRAY_MODIFIERS) await key(code, false)
+    const chord: Array<[number, boolean]> = [
+      [KEY_LEFTCTRL, true],
+      ...(shift ? ([[KEY_LEFTSHIFT, true]] as Array<[number, boolean]>) : []),
+      [KEY_V, true],
+      [KEY_V, false],
+      ...(shift ? ([[KEY_LEFTSHIFT, false]] as Array<[number, boolean]>) : []),
+      [KEY_LEFTCTRL, false]
+    ]
+    for (const [code, down] of chord) {
+      await key(code, down)
+      sent++
+    }
+    return 'ok'
+  } catch (err) {
+    console.error('[portal] paste injection failed:', err)
+    // Session may have died (compositor restart, revoked permission) — rebuild next time.
+    sessionHandle = null
+    if (sent > 0) {
+      // V or a modifier may have gone down and never come back up. On a session that
+      // still works that leaves it latched (V repeats, or the next keystroke is a
+      // shortcut), so release all of them.
+      for (const code of [KEY_V, KEY_LEFTSHIFT, KEY_LEFTCTRL]) {
+        await key(code, false).catch(() => {
+          /* the session is gone; the compositor drops its keys with it */
+        })
+      }
+      return 'partial'
+    }
+    return 'stale'
   }
-  return 'stale'
 }
 
 /** Close a session we are done with, best effort — it may already be gone. */
