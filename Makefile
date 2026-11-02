@@ -30,6 +30,24 @@ SESSION_ENV = $$(systemctl --user show-environment 2>/dev/null \
 	| grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|GNOME_SETUP_DISPLAY)=' \
 	| sed 's/^/--setenv=/')
 
+# How the unit is stopped. The default KillMode=control-group SIGTERMs every process
+# at once, including the AppImage runtime, which unmounts the app's FUSE mount while
+# the app is still exiting: that is the SIGBUS seen on stop. mixed signals only the
+# main process and leaves the rest until it has gone. The app caps its own quit at
+# 5s, so 10s before systemd's SIGKILL is plenty (the default was 90s).
+STOP_PROPS = -p KillMode=mixed -p TimeoutStopSec=10
+
+# p50/p90 of today's `[timing] <name> <ms>ms` lines, one row per name.
+define timing_summary
+	@grep -ohE '\[timing\] [a-z-]+ [0-9]+ms' $(1) 2>/dev/null \
+	| awk '{ gsub(/ms/, "", $$3); print $$2, $$3 }' | sort -k1,1 -k2,2n \
+	| awk 'function rank(c, p,  i) { i = int(c * p); if (i < c * p) i++; return i < 1 ? 1 : i } \
+		{ n[$$1]++; v[$$1, n[$$1]] = $$2 } \
+		END { for (k in n) { c = n[k]; \
+			p50 = v[k, rank(c, 0.5)]; p90 = v[k, rank(c, 0.9)]; \
+			printf "  %-15s p50 %5dms  p90 %5dms  (n=%d)\n", k, p50, p90, c } }' | sort
+endef
+
 # Refuse to start blind rather than start something subtly broken.
 define require_display
 	@systemctl --user show-environment 2>/dev/null | grep -q '^DISPLAY=' || { \
@@ -38,7 +56,7 @@ define require_display
 endef
 
 .PHONY: help build run stop restart status logs appimage install-appimage clean-instances doctor \
-        app-run app-stop app-restart deploy mac mac-install
+        app-run app-stop app-restart deploy mac mac-install timings
 
 help:
 	@echo "clipboard.md"
@@ -52,6 +70,7 @@ help:
 	@echo "  make stop         Stop it, including any strays"
 	@echo "  make restart      stop + run"
 	@echo "  make status       Is it running, on which backend, with what config"
+	@echo "  make timings      p50/p90 of palette, paste and capture latency today"
 	@echo "  make logs         Follow today's log"
 	@echo "  make appimage     Build a double-clickable AppImage into dist/"
 	@echo "  make doctor       Check the things that actually break on Linux"
@@ -145,7 +164,7 @@ build:
 # paste are X11-based and go silent without it.
 run: build clean-instances
 	$(require_display)
-	@systemd-run --user --collect --unit=$(UNIT) $(SESSION_ENV) "$(APPDIR)/$(ELECTRON)" "$(APPDIR)" --background >/dev/null
+	@systemd-run --user --collect --unit=$(UNIT) $(STOP_PROPS) $(SESSION_ENV) "$(APPDIR)/$(ELECTRON)" "$(APPDIR)" --background >/dev/null
 	@sleep 3
 	@$(MAKE) --no-print-directory status
 
@@ -171,6 +190,12 @@ status:
 	echo "gpu            $$([ -f $(HOME)/.config/clipboard.md/force-software-gpu ] && echo 'software (flag set)' || echo 'hardware')"; \
 	echo "dictation      $$(grep -E '\[dictate\] evdev' $(LOG) 2>/dev/null | tail -1 | sed 's/.*INFO //')"; \
 	echo "capture        $$(grep -E '\[capture\]' $(LOG) 2>/dev/null | tail -1 | sed 's/.*\(INFO\|ERROR\) //')"
+	@$(MAKE) --no-print-directory timings
+
+# Hot-path latencies from today's log (the app writes `[timing] <name> <ms>ms`).
+timings:
+	@echo "timings today (p50 / p90)"
+	$(call timing_summary,$(LOG))
 
 logs:
 	@tail -f $(LOG)
@@ -223,7 +248,7 @@ APP_PIDS = $$(ps -eo pid,args --no-headers \
 # environment, and never an overridden DISPLAY.
 app-run:
 	$(require_display)
-	@systemd-run --user --collect --unit=$(APP_UNIT) $(SESSION_ENV) "$(APP)" --background >/dev/null
+	@systemd-run --user --collect --unit=$(APP_UNIT) $(STOP_PROPS) $(SESSION_ENV) "$(APP)" --background >/dev/null
 	@sleep 4
 	@pid=$$(echo "$(APP_PIDS)" | head -1); \
 	if [ -z "$$pid" ]; then echo "FAILED to start — make logs"; exit 1; fi; \

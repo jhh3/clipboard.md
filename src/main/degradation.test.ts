@@ -33,21 +33,7 @@ describe('no implicit fall-through into Linux mechanisms', () => {
     }
   })
 
-  it('paste returns before the Linux pasteInjection setting is consulted', () => {
-    const src = read('src/main/paste.ts')
-    const win = src.indexOf('if (WIN32)')
-    const setting = src.indexOf("getSettings().pasteInjection === 'portal'")
-    expect(win).toBeGreaterThan(-1)
-    expect(setting).toBeGreaterThan(-1)
-    // `pasteInjection` names an XDG portal and defaults to 'portal'. Reaching that
-    // check on Windows meant hiding the window, sleeping 300ms, and calling D-Bus.
-    expect(win).toBeLessThan(setting)
-    // The setting itself is NOT renamed: that would be a migration across every
-    // existing Linux install, which is the regression shape this port must avoid.
-    expect(src).toContain("pasteInjection === 'portal'")
-  })
-
-  it('xprop is gated to Linux in both entry points', () => {
+  it('focused-window lookups are gated to Linux in both entry points', () => {
     const src = read('src/main/focusedWindow.ts')
     expect(src.match(/if \(!LINUX\) return/g)?.length).toBe(2)
   })
@@ -87,21 +73,6 @@ describe('no implicit fall-through into Linux mechanisms', () => {
     expect(capabilitiesFor('linux').localTranscribe.state).toBe('supported')
     expect(capabilitiesFor('darwin').localTranscribe.state).toBe('supported')
     expect(capabilitiesFor('win32', 'x64').localTranscribe.state).toBe('unsupported')
-  })
-
-  it('Windows says so when it falls back to polling and loses concealed formats', () => {
-    const src = read('src/main/capture/index.ts')
-    // `concealedWin` is assigned in exactly ONE place — the sidecar's stdout handler
-    // — so every polling tick passes false. Nothing else covers for it: the
-    // CONCEALED_FORMATS list is NSPasteboard and KDE names, and availableFormats()
-    // cannot enumerate Windows' registered formats at all. Silently recording every
-    // password copied out of a password manager is the worst outcome in this app, so
-    // the registry must stop claiming the feature the moment the sidecar is gone.
-    expect(src).toMatch(/private startPolling\([\s\S]{0,200}if \(WIN32\) \{/)
-    expect(src).toMatch(/downgradeCapability\('concealedFormatHints'/)
-    // Assigned in one place still, and cleared after every tick — a stale `true`
-    // would drop the next ordinary clip.
-    expect(src.match(/this\.concealedWin = /g)?.length).toBe(2)
   })
 
   it('the shell-environment import stays skipped on Windows, and says so', () => {

@@ -176,7 +176,9 @@ export function showPalette(collection?: string): void {
   // window on the workspace it last lived on, yanking the user to that desktop
   // instead of appearing on the current one.
   if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  lastPaletteShow = Date.now()
+  const t0 = Date.now()
+  lastPaletteShow = t0
+  const cold = win.webContents.isLoading()
 
   const reveal = (): void => {
     lastPaletteShow = Date.now()
@@ -184,6 +186,11 @@ export function showPalette(collection?: string): void {
     win.focus()
     win.moveTop()
     win.webContents.send('palette:shown', { collection })
+    // Summon to first frame painted after the show.
+    win.webContents
+      .executeJavaScript('new Promise((r) => requestAnimationFrame(() => r(0)))')
+      .then(() => console.log(`[timing] palette ${Date.now() - t0}ms${cold ? ' (cold)' : ''}`))
+      .catch(() => {})
   }
   // Cold start: the renderer may still be loading, and showing an empty window
   // that then blurs is how the hotkey ends up looking like it did nothing.
@@ -193,7 +200,10 @@ export function showPalette(collection?: string): void {
 
 export function hidePalette(): void {
   const win = getPalette()
-  if (win && win.isVisible()) win.hide()
+  if (win && win.isVisible()) {
+    win.hide()
+    win.webContents.send('palette:hidden', {})
+  }
 }
 
 export function togglePalette(): void {
