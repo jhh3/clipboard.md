@@ -15,7 +15,7 @@ import {
   updateEnrichment,
   exportAll
 } from './store/items'
-import { saveRecording, transcribeFile } from './transcribe'
+import { saveRecording, transcribeFile, transcribePcm, pcmToWav } from './transcribe'
 import { correctTranscript, styleForApp } from './dictionary'
 import {
   notePastedTranscript,
@@ -39,7 +39,8 @@ import {
   openSettingsWindow,
   openScratchpadWindow,
   openNotesWindow,
-  openAgentsWindow
+  openAgentsWindow,
+  markDictationHudReady
 } from './windows'
 import {
   profiles,
@@ -87,9 +88,10 @@ export type DictateMode = 'paste' | 'enhance' | 'agent'
 
 export interface RewriteState {
   getText: () => string | null
-  /** Which key started the dictation whose transcript is arriving now. */
-  dictateMode: () => DictateMode
-  onDictationDone: () => void
+  /** Mode and timestamps of a dictation take, by the id main gave it at key-down. */
+  takeInfo: (take: number) => { mode: DictateMode; startedAt: number; stoppedAt?: number } | undefined
+  /** The HUD finished a take (delivered, dropped or failed). */
+  onDictationDone: (take: number, reason?: string) => void
 }
 
 /**
@@ -117,7 +119,8 @@ export function registerIpc(
   capture: CaptureService,
   rewrite: RewriteState
 ): void {
-  handle('dictation:done', () => rewrite.onDictationDone())
+  handle('dictation:done', (_e, take: number, reason?: string) => rewrite.onDictationDone(take, reason))
+  handle('dictation:ready', () => markDictationHudReady())
 
   // ── agent sessions ───────────────────────────────────────────────────────
   handle('agents:profiles', () => profiles())
@@ -321,108 +324,160 @@ export function registerIpc(
     paste.pasteRaw(payload.output, 'text')
   )
 
+  /** Deterministic cleanup shared by every transcript: dictionary, numbers, style. */
+  const correct = (raw: string): string => {
+    const d = getSettings().dictation
+    // Per-app override beats the global style. The destination was captured when
+    // recording STARTED — by now the focused window may be our own HUD.
+    const perApp = styleForApp(d.profiles, getDictationTarget())
+    return correctTranscript(raw, {
+      dictionary: d.dictionary,
+      builtinVocabulary: d.builtinVocabulary,
+      cleanup: d.cleanup,
+      numbers: d.numbers !== false,
+      style: perApp ?? d.style
+    })
+  }
+
+  // Scratchpad and palette mic: a compressed recording, transcribed and returned.
+  handle('scratch:transcribe', async (_e, payload: { audioB64: string; mime: string }) => {
+    const audio = Buffer.from(payload.audioB64, 'base64')
+    const path = saveRecording(audio, payload.mime)
+    try {
+      return { ok: true, text: correct(await transcribeFile(path, audio, payload.mime)) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[dictation] transcription failed:', msg)
+      return { ok: false, error: msg }
+    } finally {
+      rmSync(path, { force: true })
+    }
+  })
+
+  /**
+   * The compressed copy of a dictation take, kept only when keepAudio is on. It is
+   * sent separately from the PCM so transcription never waits on MediaRecorder's
+   * flush; the transcript handler picks the saved path up by take id.
+   */
+  const takeAudio = new Map<number, { promise: Promise<string | null>; resolve: (p: string | null) => void }>()
+  const audioSlot = (take: number): { promise: Promise<string | null>; resolve: (p: string | null) => void } => {
+    let slot = takeAudio.get(take)
+    if (!slot) {
+      let resolve!: (p: string | null) => void
+      const promise = new Promise<string | null>((r) => (resolve = r))
+      slot = { promise, resolve }
+      takeAudio.set(take, slot)
+      // Never leak a slot whose audio or transcript never arrives.
+      setTimeout(() => takeAudio.delete(take), 60_000)
+    }
+    return slot
+  }
+  handle('dictation:audio', (_e, payload: { take: number; audioB64: string; mime: string }) => {
+    const audio = Buffer.from(payload.audioB64, 'base64')
+    audioSlot(payload.take).resolve(audio.length > 0 ? saveRecording(audio, payload.mime) : null)
+  })
+
   handle(
-    'scratch:transcribe',
-    async (_e, payload: { audioB64: string; mime: string; dictation?: boolean }) => {
-      const audio = Buffer.from(payload.audioB64, 'base64')
-      // Persist first when retries are wanted: a failed transcript shouldn't cost the
-      // user their words. With keepAudio off we still need a temp file to decode from,
-      // but it's removed once transcription finishes.
-      const keep = getSettings().dictation.keepAudio
-      const path = saveRecording(audio, payload.mime)
-      const cleanup = (): void => {
-        if (keep) return
-        for (const p of [path, path.replace(/\.[^.]+$/, '.16k.wav')]) {
-          try {
-            rmSync(p, { force: true })
-          } catch {
-            /* best effort */
-          }
-        }
-      }
+    'dictation:transcribe',
+    async (
+      _e,
+      payload: { take: number; pcm: Float32Array; micMs?: number; withAudio?: boolean }
+    ) => {
+      const take = rewrite.takeInfo(payload.take)
+      const mode = take?.mode ?? 'paste'
+      const seconds = payload.pcm.length / 16000
+      const t0 = Date.now()
+      // keepAudio: the compressed file arrives on its own channel moments after the
+      // PCM. Waiting for it is bounded — losing the stored copy is acceptable,
+      // stalling the paste on it is not.
+      const audioPath = (): Promise<string | null> =>
+        payload.withAudio
+          ? Promise.race([
+              audioSlot(payload.take).promise,
+              new Promise<null>((r) => setTimeout(() => r(null), 2000))
+            ]).finally(() => takeAudio.delete(payload.take))
+          : Promise.resolve(null)
+      let asr: { text: string; asrMs: number; warm: boolean }
       try {
-        const raw = await transcribeFile(path, audio, payload.mime)
-        cleanup()
-        // Applied to both lanes: the scratchpad mic and the dictation HUD produce the
-        // same transcripts and want the same jargon spelled the same way.
-        const d = getSettings().dictation
-        // Per-app override beats the global style. The destination was captured when
-        // recording STARTED — by now the focused window may be our own HUD.
-        const perApp = styleForApp(d.profiles, getDictationTarget())
-        let text = correctTranscript(raw, {
-          dictionary: d.dictionary,
-          builtinVocabulary: d.builtinVocabulary,
-          cleanup: d.cleanup,
-          numbers: d.numbers !== false,
-          style: perApp ?? d.style
-        })
-        const mode = payload.dictation ? rewrite.dictateMode() : 'paste'
-        // The AI pass is opt-in per utterance: it only runs for a dictation started by
-        // the second hotkey, so the default path never leaves the machine. A failure
-        // here must never lose the words — fall through with the deterministic text.
-        if (mode === 'enhance') {
-          try {
-            text = await enhanceTranscript(text)
-          } catch (err) {
-            console.error('[dictate] AI cleanup failed; using the local transcript:', err)
-          }
-        }
-        if (!payload.dictation) return { ok: true, text }
-        if (!text) return { ok: false, error: 'Nothing was transcribed' }
-
-        const { id } = upsertClip({
-          kind: 'text',
-          content: text,
-          preview: text.slice(0, 500),
-          secret: false,
-          derivedVia: keep ? `dictation:${path}` : 'dictation'
-        })
-        updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
-        sendToPalette('items:changed', { reason: 'captured' })
-
-        // Dictated straight at the agent: no paste, no palette — the words go to the
-        // primary session, which is the same long-lived session the ask row uses, so
-        // successive dictations continue one conversation.
-        if (mode === 'agent') {
-          const agent = getSettings().agents[0]?.name
-          try {
-            await askAgent(text)
-            broadcast('agents:changed', { unread: unreadCount() })
-            return { ok: true, text, id, pasted: false, sentTo: agent ?? 'agent' }
-          } catch (err) {
-            // Never silently swallow the words: they are already saved as a clip, so
-            // say what happened rather than reporting a delivery that did not occur.
-            const msg = err instanceof Error ? err.message : String(err)
-            console.error('[dictate] could not reach the agent:', msg)
-            return { ok: false, error: `Could not reach the agent: ${msg}`, text, id }
-          }
-        }
-
-        // Context-aware destination: dictating with the palette OPEN means the
-        // words were for an agent, not the app underneath — route the transcript
-        // into the ask flow instead of injecting a paste keystroke.
-        const pal = getPalette()
-        if (pal && !pal.isDestroyed() && pal.isVisible()) {
-          pal.webContents.send('palette:dictation', { text })
-          return { ok: true, text, id, pasted: false }
-        }
-
-        // Remember what we pasted so a quick correction of it can become a
-        // dictionary rule. Destination is the app captured when recording started.
-        notePastedTranscript({ text, itemId: id, destKey: getDictationTarget() })
-        if (getSettings().dictation.autoPaste) {
-          const outcome = await paste.pasteRaw(text, 'text')
-          return { ok: true, text, id, pasted: outcome.method === 'injected' }
-        }
-        paste.setClipboardRaw(text, 'text')
-        return { ok: true, text, id, pasted: false }
+        asr = await transcribePcm(payload.pcm)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        // Log it: returning the error to the renderer only put it in a toast that
-        // vanished, so transcription failures left no trace to debug from.
         console.error('[dictation] transcription failed:', msg)
-        return { ok: false, error: keep ? `${msg} (recording kept at ${path})` : msg }
+        // Never lose the words: keep the take as a WAV the user can retry by hand.
+        const kept = (await audioPath()) ?? saveRecording(pcmToWav(payload.pcm), 'audio/wav')
+        return { ok: false, error: `${msg} (recording kept at ${kept})` }
       }
+      let text = correct(asr.text)
+      // The AI pass is opt-in per utterance: it only runs for a dictation started by
+      // the second hotkey, so the default path never leaves the machine. A failure
+      // or timeout here must never lose the words — fall through with the local text.
+      if (mode === 'enhance') {
+        try {
+          text = await enhanceTranscript(text)
+        } catch (err) {
+          console.error('[dictate] AI cleanup failed; using the local transcript:', err)
+        }
+      }
+      const timing = (): string =>
+        `[dictate] timing take=${payload.take} ${asr.warm ? 'warm' : 'cold'} audio=${seconds.toFixed(1)}s ` +
+        `mic=${payload.micMs ?? '?'}ms asr=${asr.asrMs}ms ` +
+        `release→text=${take?.stoppedAt ? Date.now() - take.stoppedAt : '?'}ms handler=${Date.now() - t0}ms`
+      const path = await audioPath()
+      if (!text) {
+        console.log(`${timing()} (empty)`)
+        if (path) rmSync(path, { force: true })
+        return { ok: false, error: 'Nothing was transcribed' }
+      }
+
+      const { id } = upsertClip({
+        kind: 'text',
+        content: text,
+        preview: text.slice(0, 500),
+        secret: false,
+        derivedVia: path ? `dictation:${path}` : 'dictation'
+      })
+      updateEnrichment(id, { contentClass: 'transcription', tags: ['dictation'] })
+      sendToPalette('items:changed', { reason: 'captured' })
+
+      // Dictated straight at the agent: no paste, no palette — the words go to the
+      // primary session, which is the same long-lived session the ask row uses, so
+      // successive dictations continue one conversation.
+      if (mode === 'agent') {
+        console.log(timing())
+        const agent = getSettings().agents[0]?.name
+        try {
+          await askAgent(text)
+          broadcast('agents:changed', { unread: unreadCount() })
+          return { ok: true, text, id, pasted: false, sentTo: agent ?? 'agent' }
+        } catch (err) {
+          // Never silently swallow the words: they are already saved as a clip, so
+          // say what happened rather than reporting a delivery that did not occur.
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error('[dictate] could not reach the agent:', msg)
+          return { ok: false, error: `Could not reach the agent: ${msg}`, text, id }
+        }
+      }
+
+      // Context-aware destination: dictating with the palette OPEN means the
+      // words were for an agent, not the app underneath — route the transcript
+      // into the ask flow instead of injecting a paste keystroke.
+      const pal = getPalette()
+      if (pal && !pal.isDestroyed() && pal.isVisible()) {
+        console.log(timing())
+        pal.webContents.send('palette:dictation', { text })
+        return { ok: true, text, id, pasted: false }
+      }
+
+      // Remember what we pasted so a quick correction of it can become a
+      // dictionary rule. Destination is the app captured when recording started.
+      notePastedTranscript({ text, itemId: id, destKey: getDictationTarget() })
+      console.log(timing())
+      if (getSettings().dictation.autoPaste) {
+        const outcome = await paste.pasteRaw(text, 'text')
+        return { ok: true, text, id, pasted: outcome.method === 'injected' }
+      }
+      paste.setClipboardRaw(text, 'text')
+      return { ok: true, text, id, pasted: false }
     }
   )
 

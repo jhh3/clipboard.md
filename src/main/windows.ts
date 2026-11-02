@@ -312,14 +312,94 @@ function isInside(
 }
 
 /**
- * Dictation HUD: a small always-on-top overlay that starts recording the moment it
- * appears and stops when the hotkey is released (or Esc / a second press).
- * Kept alive hidden between uses so mic permission and warm-up cost are paid once.
+ * Dictation HUD: a small always-on-top overlay that records from the moment it is
+ * told to start until the hotkey is released (or Esc).
+ *
+ * Created hidden at startup (createDictationHud) and kept alive, so the first
+ * dictation after boot doesn't wait on a window load, and recreated right away if
+ * its renderer crashes rather than on the next press.
  */
 let dictationWin: BrowserWindow | null = null
+/** True once the HUD's renderer has subscribed to dictation events. */
+let hudReady = false
+/** Events sent before the renderer could hear them, flushed in order on ready. */
+let hudQueue: Array<['dictation:start' | 'dictation:stop', { take: number }]> = []
+let quitting = false
+app.on('before-quit', () => {
+  quitting = true
+})
+
+const HUD_W = 300
+const HUD_H = 96
 
 export function getDictationWindow(): BrowserWindow | null {
   return dictationWin && !dictationWin.isDestroyed() ? dictationWin : null
+}
+
+export function createDictationHud(): BrowserWindow {
+  const existing = getDictationWindow()
+  if (existing) return existing
+  hudReady = false
+  // Deliberately small: on Wayland the compositor decides where this lands (our
+  // setBounds x/y is a no-op), so it will be centred no matter what we ask for.
+  // A compact pill is far less obtrusive there than a panel, and the bottom
+  // placement below still applies on X11 and macOS.
+  const win = new BrowserWindow({
+    width: HUD_W,
+    height: HUD_H,
+    show: false,
+    frame: false,
+    transparent: canBeTransparent(),
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // Never take focus. Key-up comes from evdev (see ptt.ts), so the HUD has no
+    // reason to hold the keyboard — and when it did, the Ctrl+V we injected after
+    // transcribing landed in the HUD instead of the app being dictated into.
+    focusable: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // A hidden window is throttled by default, which would slow the recorder's
+      // audio callbacks and the first paint of a take.
+      backgroundThrottling: false
+    }
+  })
+  dictationWin = win
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit') return
+    console.error(`[dictate] HUD renderer gone (${details.reason}, exit ${details.exitCode}); recreating`)
+    if (!win.isDestroyed()) win.destroy()
+  })
+  win.on('closed', () => {
+    if (dictationWin === win) dictationWin = null
+    hudReady = false
+    dictationActive = false
+    if (!quitting) setTimeout(() => void createDictationHud(), 250)
+  })
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}#dictation`)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'dictation' })
+  }
+  return win
+}
+
+/** The HUD renderer is listening: deliver anything that was sent before it was. */
+export function markDictationHudReady(): void {
+  hudReady = true
+  const win = getDictationWindow()
+  const queued = hudQueue
+  hudQueue = []
+  for (const [channel, payload] of queued) win?.webContents.send(channel, payload)
+}
+
+function sendToHud(channel: 'dictation:start' | 'dictation:stop', payload: { take: number }): void {
+  const win = createDictationHud()
+  if (hudReady) win.webContents.send(channel, payload)
+  else hudQueue.push([channel, payload])
 }
 
 /**
@@ -328,71 +408,34 @@ export function getDictationWindow(): BrowserWindow | null {
  */
 let dictationActive = false
 
-export function showDictationHud(): void {
+export function showDictationHud(take: number): void {
   // Same reason as showPalette. The HUD is focusable:false, but on Windows that is a
   // hint rather than a guarantee, and the transcript is pasted into whatever had
   // focus when dictation STARTED — which is precisely what this records.
   if (WIN32) rememberForeground()
   dictationActive = true
-  // Deliberately small: on Wayland the compositor decides where this lands (our
-  // setBounds x/y is a no-op), so it will be centred no matter what we ask for.
-  // A compact pill is far less obtrusive there than a panel, and the bottom
-  // placement below still applies on X11 and macOS.
-  const W = 300
-  const H = 96
-  if (!getDictationWindow()) {
-    dictationWin = new BrowserWindow({
-      width: W,
-      height: H,
-      show: false,
-      frame: false,
-      transparent: canBeTransparent(),
-      resizable: false,
-      skipTaskbar: true,
-      alwaysOnTop: true,
-      // Never take focus. Key-up now comes from evdev (see ptt.ts), so the HUD has
-      // no reason to hold the keyboard — and when it did, the Ctrl+V we injected
-      // after transcribing landed in the HUD instead of the app being dictated
-      // into, which is why it reported "Pasted" while nothing was pasted.
-      focusable: false,
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true
-      }
-    })
-    if (process.env.ELECTRON_RENDERER_URL) {
-      dictationWin.loadURL(`${process.env.ELECTRON_RENDERER_URL}#dictation`)
-    } else {
-      dictationWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'dictation' })
-    }
-  }
-  const win = dictationWin!
+  const win = createDictationHud()
+  // Start recording first; placing and showing the window is cosmetic.
+  sendToHud('dictation:start', { take })
   if (!WIN32) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Same reasoning as the palette: the HUD belongs where the user is working, and it
   // must float over a fullscreen app rather than behind it.
   if (MACOS || WIN32) win.setAlwaysOnTop(true, 'screen-saver')
   const area = activeDisplay().workArea
   win.setBounds({
-    width: W,
-    height: H,
-    x: Math.round(area.x + (area.width - W) / 2),
+    width: HUD_W,
+    height: HUD_H,
+    x: Math.round(area.x + (area.width - HUD_W) / 2),
     // Bottom-centre, above where a dock/dash usually sits (honoured off Wayland).
-    y: Math.round(area.y + area.height - H - 120)
+    y: Math.round(area.y + area.height - HUD_H - 120)
   })
   win.showInactive() // must not steal focus from the app being dictated into
-  // On the first invocation the renderer hasn't subscribed yet — a send here would
-  // be dropped and the first hotkey press would silently do nothing.
-  if (win.webContents.isLoading()) {
-    win.webContents.once('did-finish-load', () => win.webContents.send('dictation:start', {}))
-  } else {
-    win.webContents.send('dictation:start', {})
-  }
 }
 
-export function stopDictation(): void {
-  getDictationWindow()?.webContents.send('dictation:stop', {})
+export function stopDictation(take: number): void {
+  // Queued like start: a stop sent while the HUD is still loading used to be lost,
+  // which left that take recording until the next press.
+  sendToHud('dictation:stop', { take })
 }
 
 export function hideDictationHud(): void {

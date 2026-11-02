@@ -497,12 +497,20 @@ export interface IpcInvokeMap {
   'rewrite:get': () => { text: string } | null
   /** Replace the selection: clipboard + injection. */
   'rewrite:apply': (payload: { output: string }) => PasteOutcome
-  /** Transcribe recorded audio (base64) -> text. Also used by the dictation overlay. */
-  'scratch:transcribe': (payload: {
-    audioB64: string
-    mime: string
-    /** Dictation flow: save as a transcription clip and auto-paste per settings. */
-    dictation?: boolean
+  /** Transcribe recorded audio (base64) -> text, for the scratchpad and palette mic. */
+  'scratch:transcribe': (payload: { audioB64: string; mime: string }) => {
+    ok: boolean
+    text?: string
+    error?: string
+  }
+  /** Dictation HUD: 16 kHz mono PCM of one take -> clip, then paste per settings. */
+  'dictation:transcribe': (payload: {
+    take: number
+    pcm: Float32Array
+    /** Start event to first captured audio, for the timing log. */
+    micMs?: number
+    /** A compressed copy follows on dictation:audio (keepAudio). */
+    withAudio?: boolean
   }) => {
     ok: boolean
     text?: string
@@ -512,6 +520,8 @@ export interface IpcInvokeMap {
     /** Agent the transcript was delivered to, when dictated with the agent chord. */
     sentTo?: string
   }
+  /** The compressed recording of a take, stored when keepAudio is on. */
+  'dictation:audio': (payload: { take: number; audioB64: string; mime: string }) => void
   /** Retry transcription of a stored dictation recording. */
   'dictation:retry': (itemId: number) => { ok: boolean; text?: string; error?: string }
   /** Save scratchpad text as a clip (new, or as a derived edit of itemId). */
@@ -519,8 +529,10 @@ export interface IpcInvokeMap {
   /** Write the whole history to a JSON file the user picks. Secrets are excluded. */
   'data:export': () => { ok: boolean; path?: string; count?: number; error?: string }
   'window:hide': () => void
-  /** Dictation HUD tells main it finished (transcript delivered or aborted). */
-  'dictation:done': () => void
+  /** Dictation HUD tells main a take finished (delivered, dropped or aborted). */
+  'dictation:done': (take: number, reason?: string) => void
+  /** Dictation HUD has subscribed to its events; queued start/stop can flow. */
+  'dictation:ready': () => void
   'agents:defs': () => AgentDef[]
   'window:open-settings': () => void
   'window:open-scratchpad': (itemId?: number) => void
@@ -540,8 +552,10 @@ export interface IpcEventMap {
   'agents:changed': { unread: number }
   /** Ask the notes window to open a specific note (menu bar, daily note, links). */
   'notes:open': { id?: number }
-  'dictation:start': Record<string, never>
-  'dictation:stop': Record<string, never>
+  /** `take` ties every event of one dictation together, so a late event from the
+   *  previous take can never stop or hide the current one. */
+  'dictation:start': { take: number }
+  'dictation:stop': { take: number }
   /** A dictation finished while the palette was open — its transcript becomes an
    *  ask instead of a paste. */
   'palette:dictation': { text: string }

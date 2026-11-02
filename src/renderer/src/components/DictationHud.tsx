@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, on } from '../lib/ipc'
 import { IS_MAC } from '../lib/keys'
-import { blobToB64, configuredMicDeviceId, openMicStream, preferredAudioMime } from '../lib/audio'
+import { blobToB64, preferredAudioMime } from '../lib/audio'
+import { MicCapture } from '../lib/pcmCapture'
 import { useKeymap } from '../hooks/useKeymap'
 import { useTheme } from '../hooks/useTheme'
 
@@ -11,8 +12,12 @@ const BAR_COUNT = 24
 const DONE_MS = 1200
 /** Errors linger longer — they name the file the recording was kept in. */
 const ERROR_MS = 4000
-/** Frequency bins fed to the meter: ~0–4.5 kHz at fftSize 256, i.e. the voice band. */
+/** Frequency bins fed to the meter: roughly the voice band (see MicCapture). */
 const METER_BINS = 24
+/** Takes shorter than this are a mis-press, not speech: dropped, never transcribed. */
+const MIN_TAKE_SAMPLES = 16000 * 0.3
+/** The mic stays open this long after a take, so back-to-back takes start instantly. */
+const MIC_IDLE_MS = 5 * 60_000
 
 type Phase =
   | { kind: 'idle' }
@@ -37,240 +42,243 @@ function prefersReducedMotion(): boolean {
  *
  * The window is frameless, transparent and `focusable: false`, so this surface
  * never receives keyboard input — every transition is driven by main via the
- * `dictation:start` / `dictation:stop` events. Idle renders nothing at all so
- * the window (which is kept alive hidden between uses) can never flash chrome.
+ * `dictation:start` / `dictation:stop` events, each tagged with a take id. Idle
+ * renders nothing at all so the window (created hidden at startup and kept alive)
+ * can never flash chrome.
+ *
+ * Audio leaves as 16 kHz PCM (see lib/pcmCapture.ts); a compressed MediaRecorder
+ * copy runs alongside only when keepAudio is on, and never delays the transcript.
  */
 export default function DictationHud() {
   const theme = useTheme()
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [elapsed, setElapsed] = useState(0)
 
-  // Audio graph for the CURRENT dictation only. It was originally cached across
-  // sessions to save warm-up, but an open stream keeps macOS's orange mic
-  // indicator lit — the app looked like it was listening forever after the
-  // first dictation. Trust beats ~200ms of warm-up: released in finish().
-  const streamRef = useRef<MediaStream | null>(null)
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  /** The configured deviceId the cached stream was opened for ('' = default). */
-  const streamDeviceRef = useRef('')
-  /** The cached stream is a fallback: retry the real device next session. */
-  const streamFellBackRef = useRef(false)
+  const micRef = useRef<MicCapture | null>(null)
+  const micIdleRef = useRef(0)
+  /** Settings this window needs, kept current by settings:changed — reading them
+   *  over IPC used to be one of three slow steps before recording began. */
+  const settingsRef = useRef<{ deviceId: string; keepAudio: boolean } | null>(null)
 
+  /** The take main most recently started; events for any other take are stale. */
+  const takeRef = useRef(0)
+  /** The current take has begun capturing audio. */
+  const capturingRef = useRef(false)
+  /** A stop arrived while the take was still starting: honour it once it has. */
+  const pendingStopRef = useRef(false)
+  /** Esc: drop the take instead of transcribing it. */
+  const cancelRef = useRef(false)
   const recRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
+  /** Start event to first captured audio, for main's timing line. */
+  const micMsRef = useRef(0)
 
   const barsRef = useRef<Array<HTMLSpanElement | null>>([])
   const levelsRef = useRef<Float32Array>(new Float32Array(BAR_COUNT))
   const rafRef = useRef(0)
   const timerRef = useRef(0)
-  /** When this recording began — distinguishes a tap (latch) from a hold (PTT). */
-  const startedAtRef = useRef(0)
-  /** Guards against stopping/delivering the same recording more than once. */
-  const stoppingRef = useRef(false)
-  const deliveringRef = useRef(false)
+
+  // ── microphone ────────────────────────────────────────────────────────────
+
+  const releaseMic = useCallback(() => {
+    window.clearTimeout(micIdleRef.current)
+    micRef.current?.close()
+    micRef.current = null
+  }, [])
+
+  /** Keep the mic warm between takes, and let it go once dictation goes quiet. */
+  const scheduleMicIdle = useCallback(() => {
+    window.clearTimeout(micIdleRef.current)
+    micIdleRef.current = window.setTimeout(() => {
+      if (!capturingRef.current) releaseMic()
+    }, MIC_IDLE_MS)
+  }, [releaseMic])
+
+  const loadSettings = useCallback(async () => {
+    if (settingsRef.current) return settingsRef.current
+    try {
+      const s = await invoke('settings:get')
+      settingsRef.current = { deviceId: s.dictation.deviceId?.trim() ?? '', keepAudio: s.dictation.keepAudio }
+    } catch {
+      settingsRef.current = { deviceId: '', keepAudio: false }
+    }
+    return settingsRef.current
+  }, [])
+
+  /** The open mic for the configured device, reopening only when that changed. */
+  const acquireMic = useCallback(async (): Promise<MicCapture> => {
+    const { deviceId } = await loadSettings()
+    const mic = micRef.current
+    if (mic && mic.live && mic.deviceId === deviceId && !mic.fellBack) return mic
+    releaseMic()
+    const opened = await MicCapture.open(deviceId)
+    micRef.current = opened
+    return opened
+  }, [loadSettings, releaseMic])
 
   // ── finishing ─────────────────────────────────────────────────────────────
 
-  /** Release the microphone and its analyser graph — the OS mic-in-use
-   *  indicator must go dark the moment the flow ends. */
-  const releaseMic = useCallback(() => {
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-    streamDeviceRef.current = ''
-    streamFellBackRef.current = false
-    void audioCtxRef.current?.close().catch(() => {})
-    audioCtxRef.current = null
-    analyserRef.current = null
-  }, [])
-
-  /** Tell main the flow is over; it hides the window and resets its own state. */
-  const finish = useCallback(() => {
-    window.clearTimeout(timerRef.current)
-    releaseMic()
-    setPhase({ kind: 'idle' })
-    setElapsed(0)
-    void invoke('dictation:done').catch(() => {})
-  }, [releaseMic])
+  /** Tell main this take is over; it hides the window unless a newer take began. */
+  const finish = useCallback(
+    (take: number, reason?: string) => {
+      if (take !== takeRef.current) return
+      window.clearTimeout(timerRef.current)
+      setPhase({ kind: 'idle' })
+      setElapsed(0)
+      scheduleMicIdle()
+      void invoke('dictation:done', take, reason).catch(() => {})
+    },
+    [scheduleMicIdle]
+  )
 
   const finishAfter = useCallback(
-    (ms: number) => {
+    (take: number, ms: number) => {
+      if (take !== takeRef.current) return
       window.clearTimeout(timerRef.current)
-      timerRef.current = window.setTimeout(finish, ms)
+      timerRef.current = window.setTimeout(() => finish(take), ms)
     },
     [finish]
   )
 
-  // ── microphone ────────────────────────────────────────────────────────────
-
-  /**
-   * The stream for this dictation, re-wiring the analyser when needed. Within a
-   * session the cache is keyed on the configured deviceId (a Settings change
-   * takes effect immediately); across sessions there is no cache — finish()
-   * releases the mic so the OS indicator goes dark.
-   */
-  const acquireStream = useCallback(async (): Promise<{
-    stream: MediaStream
-    fellBack: boolean
-  }> => {
-    const wanted = await configuredMicDeviceId()
-    const existing = streamRef.current
-    const live = existing?.getAudioTracks().some((t) => t.readyState === 'live') ?? false
-    if (existing && live && streamDeviceRef.current === wanted && !streamFellBackRef.current) {
-      return { stream: existing, fellBack: false }
-    }
-
-    // Release the previous mic first — otherwise the old device stays hot
-    // (recording indicator on) after a device switch.
-    existing?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-
-    const opened = await openMicStream(wanted)
-    streamRef.current = opened.stream
-    streamDeviceRef.current = wanted
-    streamFellBackRef.current = opened.fellBack
-
-    void audioCtxRef.current?.close().catch(() => {})
-    const ctx = new AudioContext()
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 256
-    analyser.smoothingTimeConstant = 0.7
-    ctx.createMediaStreamSource(opened.stream).connect(analyser)
-    audioCtxRef.current = ctx
-    analyserRef.current = analyser
-    return { stream: opened.stream, fellBack: opened.fellBack }
-  }, [])
-
-  // ── transcription (runs from MediaRecorder.onstop) ────────────────────────
-
-  const deliver = useCallback(async () => {
-    if (deliveringRef.current) return // a second onstop must not split the audio
-    deliveringRef.current = true
-    const rec = recRef.current
-    recRef.current = null
-    const mime = rec?.mimeType || preferredAudioMime()
-    const blob = new Blob(chunksRef.current, { type: mime })
-    chunksRef.current = []
-    // Let go of the mic HERE, not in finish(). MediaRecorder has already flushed
-    // every chunk by the time onstop fires, so the stream has no job left — but
-    // finish() only runs after transcription returns, which held the mic open for
-    // the whole round-trip. The OS recording indicator therefore stayed lit for as
-    // long as the transcript took (so: longer for longer dictations), and stayed lit
-    // forever if the request never settled. Nothing is listening; say so immediately.
-    releaseMic()
-    if (blob.size === 0) {
-      finish()
-      return
-    }
-    setPhase({ kind: 'transcribing' })
-    try {
-      const audioB64 = await blobToB64(blob)
-      const res = await invoke('scratch:transcribe', { audioB64, mime, dictation: true })
-      if (res.ok && res.text) {
-        setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true, sentTo: res.sentTo })
-        finishAfter(DONE_MS)
-      } else {
-        setPhase({
-          kind: 'error',
-          message: res.error ?? 'Transcription failed',
-          note: 'Recording saved — retry from history'
-        })
-        finishAfter(ERROR_MS)
-      }
-    } catch {
-      setPhase({
-        kind: 'error',
-        message: 'Transcription failed',
-        note: 'Recording saved — retry from history'
-      })
-      finishAfter(ERROR_MS)
-    }
-  }, [finish, finishAfter, releaseMic])
-
-  // MediaRecorder.onstop fires long after it was assigned — always call the latest closure.
-  const deliverRef = useRef(deliver)
-  deliverRef.current = deliver
-
   // ── start / stop ──────────────────────────────────────────────────────────
 
-  const start = useCallback(async () => {
-    if (recRef.current) return
-    window.clearTimeout(timerRef.current)
-    try {
-      const { stream, fellBack } = await acquireStream()
-      const mime = preferredAudioMime()
-      const rec = new MediaRecorder(stream, { mimeType: mime })
-      chunksRef.current = []
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data)
+  const stop = useCallback(
+    async (take: number) => {
+      if (take !== takeRef.current) return
+      if (!capturingRef.current) {
+        // Still starting (mic opening): remembered, and acted on the moment it has.
+        pendingStopRef.current = true
+        return
       }
-      rec.onstop = () => void deliverRef.current()
-      // No timeslice: one complete, self-contained file at stop. Chunked output is
-      // only valid when every chunk is concatenated, which made partial delivery
-      // silently produce headerless, unplayable audio.
-      rec.start()
-      recRef.current = rec
-      stoppingRef.current = false
-      deliveringRef.current = false
-      setElapsed(0)
-      setPhase({ kind: 'recording', fellBack })
-    } catch {
-      setPhase({
-        kind: 'error',
-        message: 'Microphone unavailable',
-        note: 'Grant microphone access, then try again'
-      })
-      finishAfter(ERROR_MS)
-    }
-  }, [acquireStream, finishAfter])
+      capturingRef.current = false
+      const mic = micRef.current
+      const rec = recRef.current
+      recRef.current = null
+      const pcm = mic ? await mic.stop() : new Float32Array(0)
+      const cancelled = cancelRef.current
+      if (cancelled || pcm.length < MIN_TAKE_SAMPLES) {
+        if (rec && rec.state !== 'inactive') {
+          rec.ondataavailable = null
+          rec.stop()
+        }
+        finish(take, cancelled ? 'cancelled' : `dropped: only ${Math.round(pcm.length / 16)}ms of audio`)
+        return
+      }
+      // The compressed copy goes on its own channel; transcription doesn't wait for it.
+      if (rec && rec.state !== 'inactive') {
+        const parts: Blob[] = []
+        rec.ondataavailable = (e) => {
+          if (e.data.size > 0) parts.push(e.data)
+        }
+        rec.onstop = () => {
+          const blob = new Blob(parts, { type: rec.mimeType })
+          void blobToB64(blob)
+            .then((audioB64) => invoke('dictation:audio', { take, audioB64, mime: rec.mimeType }))
+            .catch(() => {})
+        }
+        rec.stop()
+      }
+      if (take === takeRef.current) setPhase({ kind: 'transcribing' })
+      try {
+        const res = await invoke('dictation:transcribe', {
+          take,
+          pcm,
+          micMs: micMsRef.current,
+          withAudio: rec !== null
+        })
+        if (take !== takeRef.current) return
+        if (res.ok && res.text) {
+          setPhase({ kind: 'done', text: res.text, pasted: res.pasted === true, sentTo: res.sentTo })
+          finishAfter(take, DONE_MS)
+        } else {
+          setPhase({ kind: 'error', message: res.error ?? 'Transcription failed' })
+          finishAfter(take, ERROR_MS)
+        }
+      } catch {
+        if (take !== takeRef.current) return
+        setPhase({ kind: 'error', message: 'Transcription failed' })
+        finishAfter(take, ERROR_MS)
+      }
+    },
+    [finish, finishAfter]
+  )
 
-  /**
-   * Stop only ever ends an in-flight recording. A stray stop (double hotkey
-   * while the transcript is already in flight) is ignored — reporting done
-   * early would hide the HUD mid-transcription.
-   */
-  const stop = useCallback(() => {
-    // Strictly once per recording. Releasing a chord fires a key-up per key, and
-    // each one used to stop the recorder: the audio was then delivered twice, so
-    // each half was an incomplete WebM (the second with no EBML header at all)
-    // and the transcription API rejected both as corrupt.
-    if (stoppingRef.current) return
-    stoppingRef.current = true
-    const rec = recRef.current
-    // The stream is released by deliver(), on the onstop this triggers — not here,
-    // because the recorder still has to flush its final chunk into chunksRef.
-    if (rec && rec.state !== 'inactive') rec.stop()
-  }, [])
+  const start = useCallback(
+    async (take: number) => {
+      const t0 = performance.now()
+      takeRef.current = take
+      capturingRef.current = false
+      pendingStopRef.current = false
+      cancelRef.current = false
+      micMsRef.current = 0
+      window.clearTimeout(timerRef.current)
+      window.clearTimeout(micIdleRef.current)
+      // A previous take's recorder still flushing belongs to that take; drop ours.
+      recRef.current = null
+      try {
+        const mic = await acquireMic()
+        if (take !== takeRef.current) return
+        void mic.start().then(() => {
+          if (take === takeRef.current) micMsRef.current = Math.round(performance.now() - t0)
+        })
+        capturingRef.current = true
+        if (settingsRef.current?.keepAudio) {
+          try {
+            const rec = new MediaRecorder(mic.stream, { mimeType: preferredAudioMime() })
+            // No timeslice: one complete, self-contained file at stop.
+            rec.start()
+            recRef.current = rec
+          } catch {
+            /* the PCM path is what matters; the stored copy is best effort */
+          }
+        }
+        setElapsed(0)
+        setPhase({ kind: 'recording', fellBack: mic.fellBack })
+        if (pendingStopRef.current) void stop(take)
+      } catch {
+        releaseMic()
+        if (take !== takeRef.current) return
+        setPhase({
+          kind: 'error',
+          message: 'Microphone unavailable',
+          note: 'Grant microphone access, then try again'
+        })
+        finishAfter(take, ERROR_MS)
+      }
+    },
+    [acquireMic, finishAfter, releaseMic, stop]
+  )
 
   useEffect(() => {
-    const offStart = on('dictation:start', () => {
-      startedAtRef.current = Date.now()
-      void start()
+    const offStart = on('dictation:start', ({ take }) => void start(take))
+    const offStop = on('dictation:stop', ({ take }) => void stop(take))
+    const offSettings = on('settings:changed', ({ settings }) => {
+      settingsRef.current = {
+        deviceId: settings.dictation.deviceId?.trim() ?? '',
+        keepAudio: settings.dictation.keepAudio
+      }
     })
-    const offStop = on('dictation:stop', () => stop())
+    // Subscribed: main can now send anything it queued while this window loaded.
+    void invoke('dictation:ready').catch(() => {})
+    void loadSettings()
     return () => {
       offStart()
       offStop()
+      offSettings()
     }
-  }, [start, stop])
+  }, [start, stop, loadSettings])
 
-  /**
-   * Push-to-talk. The global hotkey can only report key-DOWN, so the release is
-   * observed here: this window takes focus when it appears, and the first key-up
-   * of the trigger combo ends the recording.
-   *
-   * Tapping the hotkey instead of holding it latches recording on, so a quick
-   * press still works like a toggle — you don't have to keep a chord held down
-   * for a long dictation.
-   */
+  /** Esc cancels: an active take is dropped, a finished one is dismissed. */
   useKeymap((e) => {
     if (e.key !== 'Escape') return
     e.preventDefault()
-    if (recRef.current) {
-      chunksRef.current = [] // discard: Esc cancels rather than transcribes
-      stop()
+    const take = takeRef.current
+    cancelRef.current = true
+    if (capturingRef.current) {
+      void stop(take)
     } else {
-      finish()
+      // Starting (the take then stops and drops itself) or showing a result.
+      pendingStopRef.current = true
+      finish(take, 'dismissed')
     }
   })
 
@@ -278,8 +286,9 @@ export default function DictationHud() {
     () => () => {
       window.clearTimeout(timerRef.current)
       cancelAnimationFrame(rafRef.current)
+      releaseMic()
     },
-    []
+    [releaseMic]
   )
 
   // ── elapsed clock ─────────────────────────────────────────────────────────
@@ -302,7 +311,7 @@ export default function DictationHud() {
     const freq = new Uint8Array(METER_BINS)
     const levels = levelsRef.current
     const tick = () => {
-      const analyser = analyserRef.current
+      const analyser = micRef.current?.analyser
       if (analyser) {
         analyser.getByteFrequencyData(freq)
         for (let i = 0; i < BAR_COUNT; i++) {
