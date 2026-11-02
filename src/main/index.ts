@@ -3,9 +3,9 @@ import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, autostartIsStale, setAutostart } from './autostart'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { existsSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { openDb, closeDb, maintainDb } from './store/db'
-import { applyRetention } from './store/items'
+import { applyRetention, dictationAudioPaths } from './store/items'
 import { CaptureService } from './capture'
 import { PasteService } from './paste'
 import { registerIpc } from './ipc'
@@ -23,6 +23,7 @@ import {
   openNotesWindow,
   openAgentsWindow,
   showDictationHud,
+  createDictationHud,
   stopDictation,
   hideDictationHud
 } from './windows'
@@ -57,15 +58,10 @@ import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { bindPortalShortcuts, stopPortalShortcuts } from './globalShortcuts'
 import { seedApiKeys } from './modelport/keys'
 import { initCorrections } from './corrections'
+import { warmAsr, stopAsrWorker, sweepAudio } from './transcribe'
 import { MACOS, LINUX, WIN32 } from './platform'
 import { runDoctor } from './doctor'
 import { capabilities } from './capabilities'
-
-// Blocking evdev reads live on libuv worker threads, and the default pool is four.
-// Push-to-talk opens one descriptor per real keyboard, and a machine with several
-// would park the pool and stall every other fs operation in the app. Must be set
-// before the first async fs call creates the pool.
-process.env.UV_THREADPOOL_SIZE ||= '16'
 
 const gpuFallbackFlag = (): string => join(app.getPath('userData'), 'force-software-gpu')
 
@@ -312,16 +308,26 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
    * because the transcript arrives long after the key that chose the mode was
    * released — three keys record identically and differ only in the destination.
    */
-  let dictateMode: DictateMode = 'paste'
+  /**
+   * Every take gets an id at key-down, carried by each HUD event and the transcript.
+   * A late "done" from the previous take (its 1.2 s transcript display) used to
+   * hide the HUD and release the mic in the middle of the next one.
+   */
+  let currentTake = 0
+  const takes = new Map<number, { mode: DictateMode; startedAt: number; stoppedAt?: number }>()
 
   const beginDictation = (mode: DictateMode = 'paste'): void => {
     if (dictating) return
     dictating = true
-    dictateMode = mode
     dictateStartedAt = Date.now()
-    console.log('[dictate] start')
+    const take = ++currentTake
+    takes.set(take, { mode, startedAt: dictateStartedAt })
+    for (const k of takes.keys()) if (k < take - 8) takes.delete(k)
+    console.log(`[dictate] start take=${take}${mode === 'paste' ? '' : ` (${mode})`}`)
+    // Load the speech model now, so a cold start overlaps the speaking.
+    warmAsr()
     noteDictationTarget()
-    showDictationHud()
+    showDictationHud(take)
   }
 
   const endDictation = (): void => {
@@ -329,8 +335,10 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     dictating = false
     clearHoldTimer()
     lastStopAt = Date.now()
-    console.log(`[dictate] stop after ${lastStopAt - dictateStartedAt}ms`)
-    stopDictation()
+    const t = takes.get(currentTake)
+    if (t) t.stoppedAt = lastStopAt
+    console.log(`[dictate] stop take=${currentTake} after ${lastStopAt - dictateStartedAt}ms`)
+    stopDictation(currentTake)
   }
 
   /**
@@ -348,6 +356,31 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
   let portalOwned = new Set<DictationFlag>()
   const evdevProven = new Set<DictationFlag>()
+  /**
+   * evdevProven survives restarts, keyed by the chords it was proven for. In memory
+   * only, every boot put the GNOME dictation bindings back until a press re-proved
+   * them — and a held key in that window is the key-repeat storm all over again.
+   */
+  const provenFile = (): string => join(app.getPath('userData'), 'evdev-proven.json')
+  const chordKey = (s: AppSettings): string =>
+    [s.dictateChord, s.dictateEnhanceChord ?? '', s.dictateAgentChord ?? ''].join('|')
+  const loadEvdevProven = (): void => {
+    try {
+      const saved = JSON.parse(readFileSync(provenFile(), 'utf8')) as { chords: string; flags: DictationFlag[] }
+      if (saved.chords !== chordKey(getSettings())) return
+      for (const f of saved.flags) evdevProven.add(f)
+      applyGnomeDictation()
+    } catch {
+      /* first run, or unreadable: prove again */
+    }
+  }
+  const saveEvdevProven = (): void => {
+    try {
+      writeFileSync(provenFile(), JSON.stringify({ chords: chordKey(getSettings()), flags: [...evdevProven] }))
+    } catch (err) {
+      console.error('[ptt] could not persist evdev state:', err)
+    }
+  }
   /** False until setupHotkeys has run once; it applies the current state itself. */
   let gnomeBindingsReady = false
   const applyGnomeDictation = (): void => {
@@ -361,6 +394,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     onPress: (mode: DictateMode) => {
       if (LINUX && !evdevProven.has(MODE_FLAG[mode])) {
         evdevProven.add(MODE_FLAG[mode])
+        saveEvdevProven()
         applyGnomeDictation()
       }
       beginDictation(mode)
@@ -415,6 +449,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       applyGnomeDictation()
     }
   }
+  const PORTAL_ANSWER_MS = 15_000
   const bindPortalDictation = async (): Promise<void> => {
     if (!LINUX) return
     const mine = ++portalBinds
@@ -422,7 +457,20 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // Drop the GNOME bindings BEFORE binding: two grabs on one chord compete.
     portalOwned = new Set(wanted.map((w) => MODE_FLAG[w.id]))
     applyGnomeDictation()
-    const granted = await bindPortalShortcuts(wanted, portalHandlers)
+    // GNOME asks the user before granting; an unanswered dialog must not leave the
+    // dictation keys with no trigger at all. Until it is answered the GNOME bindings
+    // come back, and a late answer still applies below.
+    const answer = bindPortalShortcuts(wanted, portalHandlers)
+    const timedOut = await Promise.race([
+      answer.then(() => false),
+      new Promise<boolean>((r) => setTimeout(() => r(true), PORTAL_ANSWER_MS))
+    ])
+    if (timedOut && mine === portalBinds) {
+      console.log('[shortcuts] portal grant still unanswered; GNOME bindings restored meanwhile')
+      portalOwned = new Set()
+      applyGnomeDictation()
+    }
+    const granted = await answer
     if (mine !== portalBinds) return
     portalOwned = new Set(
       [...(granted ?? [])].filter((id) => id in MODE_FLAG).map((id) => MODE_FLAG[id as DictateMode])
@@ -782,10 +830,13 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     registerIpc(paste, capture, {
       getText: () => pendingRewriteText,
       // Which key started this recording, read when its transcript comes back.
-      dictateMode: () => dictateMode,
-      onDictationDone: () => {
+      takeInfo: (take) => takes.get(take),
+      onDictationDone: (take, reason) => {
+        if (reason) console.log(`[dictate] take=${take} ${reason}`)
+        // Only the current take may end the flow; an older one finishing late must
+        // not hide the HUD of the take being recorded now.
+        if (take !== currentTake) return
         dictating = false
-        dictateMode = 'paste'
         hideDictationHud()
       }
     })
@@ -798,6 +849,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // — GNOME keybindings and Electron's globalShortcut both only ever fire on
     // key-down — so this is the only way to get honest push-to-talk on either.
     pttActive = startPushToTalk(pttHandlers)
+    // Only trust last boot's proof when evdev is actually reading this boot.
+    if (pttActive && LINUX) loadEvdevProven()
     // Read the desktop's repeat timing before the first hotkey can arrive: it is what
     // turns key-down-only triggers into a usable hold signal.
     repeat = await keyRepeatTiming()
@@ -821,6 +874,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     })
 
     createPaletteWindow()
+    // Hidden and ready before the first dictation key, so nothing is lost to a load.
+    createDictationHud()
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
     startEmbeddings()
@@ -832,6 +887,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     const runRetention = (): void => {
       const s = getSettings()
       applyRetention(s.retentionDays, s.maxItems)
+      // Off the startup path: the first run clears a few thousand old files.
+      setTimeout(() => sweepAudio(dictationAudioPaths()), 30_000)
     }
     runRetention()
     setInterval(runRetention, 24 * 60 * 60 * 1000)
@@ -846,9 +903,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // the enhance and agent chords could be set in Settings and never registered: the
     // slugs existed with an empty binding, so the keys did nothing and there was no
     // error anywhere to explain why.
-    const chordsOf = (s: AppSettings): string =>
-      [s.dictateChord, s.dictateEnhanceChord ?? '', s.dictateAgentChord ?? ''].join('|')
-    let lastChords = chordsOf(getSettings())
+    let lastChords = chordKey(getSettings())
     let lastMcp = getSettings().mcpServer
     onSettingsChanged((s) => {
       broadcast('settings:changed', { settings: s })
@@ -878,14 +933,15 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       // that never fired — and the old one kept working, which makes it look like
       // the edit was ignored rather than half-applied. macOS is excluded because
       // dictation there is the Fn key via the helper and ignores the setting.
-      if (!MACOS && chordsOf(s) !== lastChords) {
-        lastChords = chordsOf(s)
+      if (!MACOS && chordKey(s) !== lastChords) {
+        lastChords = chordKey(s)
         pttActive = startPushToTalk(pttHandlers)
         // New chords have to prove themselves to evdev again.
         evdevProven.clear()
+        saveEvdevProven()
         void bindPortalDictation()
         void setupHotkeys(actions)
-        console.log(`[dictate] chords changed to ${chordsOf(s).replace(/\|/g, ' | ')}`)
+        console.log(`[dictate] chords changed to ${chordKey(s).replace(/\|/g, ' | ')}`)
       }
     })
 
@@ -973,6 +1029,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     destroyTray()
     teardownHotkeys()
     stopPushToTalk()
+    stopAsrWorker()
     stopPortalShortcuts()
     flushSettings() // don't lose a debounced write on exit
     closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL

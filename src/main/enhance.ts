@@ -97,13 +97,24 @@ function systemFor(preset: EnhancePreset, custom: string | undefined): string {
   return [body, ...CLOSING].join('\n')
 }
 
+/** Longest the AI pass may take before the raw local transcript is pasted instead. */
+const ENHANCE_TIMEOUT_MS = 4000
+
 export async function enhanceTranscript(text: string): Promise<string> {
   const trimmed = text.trim()
   if (!trimmed || trimmed.length > MAX_CHARS) return text
   const d = getSettings().dictation
   const preset: EnhancePreset = d.enhancePreset ?? 'standard'
   const system = systemFor(preset, d.enhanceCustomPrompt)
-  const out = await complete('transforms', { prompt: trimmed, system })
+  // Bounded: a slow or dead provider must not hold the paste. The caller pastes the
+  // local transcript when this throws.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const out = await Promise.race([
+    complete('transforms', { prompt: trimmed, system }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`AI cleanup timed out after ${ENHANCE_TIMEOUT_MS}ms`)), ENHANCE_TIMEOUT_MS)
+    })
+  ]).finally(() => clearTimeout(timer))
   const cleaned = out.trim()
   // A model that returns nothing, or answers the text instead of cleaning it, must not
   // replace the user's words. Length is a crude but effective guard against both.

@@ -160,6 +160,13 @@ export function purgeItems(ids: number[]): number {
       Array<{ content: string }>
   ).map((r) => r.content)
 
+  // Dictation recordings belong to exactly one clip (derived_via 'dictation:<path>').
+  const audio = (
+    db
+      .prepare(`SELECT derived_via v FROM items WHERE id IN (${list}) AND derived_via LIKE 'dictation:%'`)
+      .all() as Array<{ v: string }>
+  ).map((r) => r.v.slice('dictation:'.length))
+
   if (hasVec()) db.prepare(`DELETE FROM items_vec WHERE item_id IN (${list})`).run()
   const res = db.prepare(`DELETE FROM items WHERE id IN (${list})`).run()
 
@@ -179,7 +186,19 @@ export function purgeItems(ids: number[]): number {
       }
     }
   }
+  for (const file of audio) rmSync(file, { force: true })
   return res.changes
+}
+
+/** Every dictation recording a clip still points at, for the audio sweep. */
+export function dictationAudioPaths(): Set<string> {
+  return new Set(
+    (
+      getDb()
+        .prepare("SELECT derived_via v FROM items WHERE derived_via LIKE 'dictation:%'")
+        .all() as Array<{ v: string }>
+    ).map((r) => r.v.slice('dictation:'.length))
+  )
 }
 
 /** Explicit user delete: overwrite the bytes, not just unlink the row. */

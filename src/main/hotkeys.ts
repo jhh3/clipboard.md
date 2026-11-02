@@ -333,7 +333,34 @@ async function gsettings(args: string[]): Promise<string> {
   return stdout.trim()
 }
 
-export async function ensureGnomeKeybindings(): Promise<boolean> {
+/**
+ * Rewrite our GNOME keybindings. Calls are serialized and coalesced: one rewrite is
+ * ~30 gsettings spawns, and startup used to fire several at once (setup, the portal
+ * grant, evdev proving a chord), interleaving their writes so a stale run could
+ * land last and put a dictation binding back. Now at most one runs, and any number
+ * of requests made meanwhile collapse into a single follow-up with the latest state.
+ */
+let gnomeRun: Promise<boolean> | null = null
+let gnomeAgain = false
+export function ensureGnomeKeybindings(): Promise<boolean> {
+  if (gnomeRun) {
+    gnomeAgain = true
+    return gnomeRun
+  }
+  gnomeRun = (async () => {
+    let ok = await writeGnomeKeybindings()
+    while (gnomeAgain) {
+      gnomeAgain = false
+      ok = await writeGnomeKeybindings()
+    }
+    return ok
+  })().finally(() => {
+    gnomeRun = null
+  })
+  return gnomeRun
+}
+
+async function writeGnomeKeybindings(): Promise<boolean> {
   try {
     const current = await gsettings(['get', ...LIST_KEY.split(' ')])
     const list: string[] = current === '@as []' ? [] : JSON.parse(current.replace(/'/g, '"'))
