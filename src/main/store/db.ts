@@ -338,7 +338,9 @@ export function hasVec(): boolean {
 export function closeDb(): void {
   if (!db) return
   try {
-    db.pragma('wal_checkpoint(TRUNCATE)')
+    // PASSIVE: never waits on another connection (the MCP bridge writes here from
+    // outside), so quit cannot block on a lock. close() checkpoints what is left.
+    db.pragma('wal_checkpoint(PASSIVE)')
     db.pragma('optimize') // SQLite recommends this immediately before closing
   } catch (err) {
     console.error('[db] checkpoint/optimize on close failed:', err)

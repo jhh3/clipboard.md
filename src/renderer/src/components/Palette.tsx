@@ -236,7 +236,7 @@ export default function Palette() {
     // Smart collections live in settings — re-pull the (counted) list whenever
     // settings change anywhere, so edits in the Settings window land live here.
     const offSettings = on('settings:changed', () => loadCollections())
-    const offShown = on('palette:shown', (p) => {
+    const resetView = (): void => {
       setMode({ name: 'normal' })
       setQuery('')
       setSel(-1)
@@ -247,6 +247,14 @@ export default function Palette() {
       setAskThread([])
       setAttachment(null)
       setShowHelp(false)
+    }
+    // Reset while hidden, so the next show's first frame is already clean.
+    const offHidden = on('palette:hidden', () => {
+      resetView()
+      setRewrite(null)
+    })
+    const offShown = on('palette:shown', (p) => {
+      resetView()
       if (p.mode === 'rewrite' && p.rewriteText) {
         // Rewrite mini-flow: materialize the selection as a clip so transforms
         // (which need an itemId) can run against it.
@@ -270,6 +278,7 @@ export default function Palette() {
       offItems()
       offToast()
       offShown()
+      offHidden()
       offSettings()
     }
   }, [addToast, loadCollections])

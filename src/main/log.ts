@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { appendFileSync, createWriteStream, mkdirSync, readdirSync, rmSync, statSync, type WriteStream } from 'fs'
+import { closeSync, mkdirSync, openSync, readdirSync, rmSync, statSync, write, writeSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -48,8 +48,89 @@ export function redact(input: string): string {
   return out
 }
 
-let stream: WriteStream | null = null
 let logDir = ''
+
+/**
+ * Lines are batched and written off the main thread: each console call appends to
+ * `pending`, and one async write per event-loop turn flushes the batch. This used to
+ * be an appendFileSync (open, write, close) per line on the main thread, which a
+ * key-repeat storm turned into tens of thousands of synchronous writes an hour.
+ *
+ * What is lost on a hard kill is at most the last turn's lines; every orderly exit
+ * (quit, a fatal error, app.exit) flushes synchronously via flushLogSync.
+ */
+let pending = ''
+let flushScheduled = false
+let writing = false
+let fd: number | null = null
+let fdDay = ''
+
+/** Local date, matching the Makefile's `date +%F` and the day the user lives in. */
+function localDay(d = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+export function logFileFor(day: string): string {
+  return join(logDir, `main-${day}.log`)
+}
+
+/** The fd for today's file, rolling over at midnight even in a multi-day run. */
+function currentFd(): number | null {
+  const day = localDay()
+  if (fd !== null && day === fdDay) return fd
+  try {
+    if (fd !== null) closeSync(fd)
+  } catch {
+    /* already closed */
+  }
+  fd = null
+  try {
+    fd = openSync(logFileFor(day), 'a')
+    fdDay = day
+    rotate()
+  } catch {
+    /* logging must never throw */
+  }
+  return fd
+}
+
+function scheduleFlush(): void {
+  if (flushScheduled) return
+  flushScheduled = true
+  setImmediate(flush)
+}
+
+function flush(): void {
+  flushScheduled = false
+  if (writing || !pending) return
+  const f = currentFd()
+  if (f === null) {
+    pending = ''
+    return
+  }
+  const data = pending
+  pending = ''
+  writing = true
+  write(f, data, () => {
+    writing = false
+    if (pending) scheduleFlush()
+  })
+}
+
+/** Write everything still buffered, synchronously. For exits. */
+export function flushLogSync(): void {
+  if (!pending) return
+  const f = currentFd()
+  const data = pending
+  pending = ''
+  if (f === null) return
+  try {
+    writeSync(f, data)
+  } catch {
+    /* never let logging throw */
+  }
+}
 
 function rotate(): void {
   try {
@@ -86,9 +167,9 @@ export function initLogging(): string {
     warn: console.warn.bind(console),
     error: console.error.bind(console)
   }
-  const day = new Date().toISOString().slice(0, 10)
-  const file = join(logDir, `main-${day}.log`)
-  stream = createWriteStream(file, { flags: 'a' })
+  const file = logFileFor(localDay())
+  // Whatever path the process takes out (app.exit included), the tail gets written.
+  process.on('exit', flushLogSync)
 
   const wrap =
     (level: string, original: (...a: unknown[]) => void) =>
@@ -100,11 +181,8 @@ export function initLogging(): string {
             typeof a === 'string' ? a : a instanceof Error ? (a.stack ?? a.message) : safeJson(a)
           )
           .join(' ')
-        // appendFileSync, not stream.write. A WriteStream buffers, and this log's
-        // whole job is to survive the moments worth debugging — a crash, a kill, a
-        // hang — which are exactly when a buffer is lost. Volume here is a few lines
-        // a minute, so the synchronous write costs nothing.
-        appendFileSync(file, `${new Date().toISOString()} ${level} ${redact(line)}\n`)
+        pending += `${new Date().toISOString()} ${level} ${redact(line)}\n`
+        scheduleFlush()
       } catch {
         /* never let logging throw */
       }
@@ -151,8 +229,7 @@ function safeJson(value: unknown): string {
 }
 
 export function closeLogging(): void {
-  stream?.end()
-  stream = null
+  flushLogSync()
 }
 
 /**

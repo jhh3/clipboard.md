@@ -545,6 +545,8 @@ export interface IpcInvokeMap {
 export interface IpcEventMap {
   'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' }
   'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
+  /** Sent right after hide, so the next show doesn't paint the previous query first. */
+  'palette:hidden': Record<string, never>
   'scratchpad:shown': { itemId?: number }
   /** A note was created, edited or deleted — lists elsewhere should re-read. */
   'notes:changed': { id: number }

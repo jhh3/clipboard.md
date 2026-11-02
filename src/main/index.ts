@@ -3,7 +3,8 @@ import { readPrimarySelection } from './capture/clipboardIO'
 import { isAutostartEnabled, autostartIsStale, setAutostart } from './autostart'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { spawn } from 'child_process'
 import { openDb, closeDb, maintainDb } from './store/db'
 import { applyRetention, dictationAudioPaths } from './store/items'
 import { CaptureService } from './capture'
@@ -14,6 +15,7 @@ import type { DictateMode } from './ipc'
 import type { AppSettings } from '@shared/types'
 import {
   createPaletteWindow,
+  getPalette,
   togglePalette,
   showPalette,
   hidePalette,
@@ -40,7 +42,7 @@ import {
   type HotkeyActions
 } from './hotkeys'
 import { getSettings, flushSettings, onSettingsChanged } from './settings'
-import { startEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
+import { startEnrichment, stopEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
 import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
 import { complete, resetProviderCache } from './modelport'
@@ -52,7 +54,8 @@ import { sweep } from './agentLifecycle'
 import { ensurePlugin, ensureMcpServer, removeIntegration } from './agentPlugin'
 import { macSelectedText, isTrusted, helperAvailable } from './mac/helper'
 import { hardenApp, applyPermissionPolicy } from './security'
-import { initLogging, closeLogging } from './log'
+import { initLogging, closeLogging, flushLogSync } from './log'
+import { closeX } from './xconn'
 import { startDbusService } from './dbusService'
 import { startPushToTalk, stopPushToTalk, isPushToTalkActive } from './ptt'
 import { bindPortalShortcuts, stopPortalShortcuts } from './globalShortcuts'
@@ -165,13 +168,51 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandled rejection:', reason)
 })
 
+/** Intervals started at boot, cleared at quit. */
+const housekeeping: ReturnType<typeof setInterval>[] = []
+
+/**
+ * Quit must finish in seconds and never hang. Two layers, because they cover
+ * different hangs: a JS timer catches anything still running on the event loop, and
+ * a detached `sleep; kill -9` catches a hang after the loop has stopped (Node joining
+ * a libuv thread stuck in a blocking read, which is how a stop once took 90s).
+ */
+const QUIT_WATCHDOG_MS = 5000
+function armQuitWatchdog(): void {
+  setTimeout(() => {
+    console.error(`[quit] still running after ${QUIT_WATCHDOG_MS}ms; forcing exit`)
+    flushLogSync()
+    app.exit(0)
+  }, QUIT_WATCHDOG_MS).unref()
+  if (process.platform === 'win32') return
+  try {
+    spawn('sh', ['-c', `sleep ${QUIT_WATCHDOG_MS / 1000 + 2}; kill -9 ${process.pid} 2>/dev/null`], {
+      detached: true,
+      stdio: 'ignore'
+    }).unref()
+  } catch {
+    /* the JS timer above still stands */
+  }
+}
+
 // A renderer crashing must not take capture down with it — recreate the window.
 app.on('render-process-gone', (_e, contents, details) => {
   if (details.reason === 'clean-exit') return
-  console.error(`[main] renderer gone (${details.reason}); it will be recreated on next use`)
+  console.error(
+    `[main] renderer gone (reason=${details.reason} exitCode=${details.exitCode}) ` +
+      `url=${contents.getURL().replace(/^.*\//, '')}; it will be recreated on next use`
+  )
   const win = BrowserWindow.fromWebContents(contents)
+  const wasPalette = !!win && win === getPalette()
   if (win && !win.isDestroyed()) win.destroy()
+  // The palette is the hotkey's target: rebuild it hidden now, so the next summon is
+  // instant instead of a cold load. Not in a tight loop if it keeps crashing.
+  if (wasPalette && Date.now() - lastPaletteRebuild > 10_000) {
+    lastPaletteRebuild = Date.now()
+    setImmediate(() => createPaletteWindow())
+  }
 })
+let lastPaletteRebuild = 0
 
 // Watchdog: if the GPU process crash-loops at runtime, persist the fallback flag
 // and relaunch in software mode — intelligent degradation instead of a blanket off.
@@ -740,7 +781,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     screenshot: () => {
       void (async () => {
         const shot = await takeScreenshot()
-        if ('path' in shot) capture.ingestImageFile(shot.path)
+        if ('path' in shot) await capture.ingestImageFile(shot.path)
         // The hotkey has no window to report into, so an unavailable capture would
         // otherwise be a keypress that does nothing at all — the exact shape of
         // failure this port is about.
@@ -783,6 +824,17 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     // Maccy avoids. Windows that genuinely need activation call app.focus() instead.
     if (MACOS) app.dock?.hide()
     openDb(join(app.getPath('userData'), 'data'))
+    // An empty clips.db left beside the data dir by an early build. Only ever an
+    // empty file: anything with bytes in it is left alone.
+    try {
+      const stale = join(app.getPath('userData'), 'clips.db')
+      if (statSync(stale).size === 0) {
+        rmSync(stale)
+        console.log('[app] removed empty leftover clips.db')
+      }
+    } catch {
+      /* not there */
+    }
 
     capture = new CaptureService({
       onItem: (id, created) => {
@@ -891,11 +943,11 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
       setTimeout(() => sweepAudio(dictationAudioPaths()), 30_000)
     }
     runRetention()
-    setInterval(runRetention, 24 * 60 * 60 * 1000)
+    housekeeping.push(setInterval(runRetention, 24 * 60 * 60 * 1000))
 
     // Keep the WAL from growing without bound in a long-lived process, and reclaim
     // space after retention deletes. Both are cheap and off the interactive path.
-    setInterval(maintainDb, 30 * 60 * 1000)
+    housekeeping.push(setInterval(maintainDb, 30 * 60 * 1000))
 
     // Settings used to require a restart to take effect anywhere: push changes to
     // every window, and let the services that cached values re-read them.
@@ -1026,13 +1078,23 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
   }
 
   app.on('will-quit', () => {
+    const t0 = Date.now()
+    armQuitWatchdog()
+    // Everything that can wake up, spawn or hold a thread goes first, so nothing
+    // fires into a closing database or keeps the process alive.
+    capture?.stop()
+    stopEnrichment()
+    stopEmbeddings()
+    for (const t of housekeeping) clearInterval(t)
+    closeX()
     destroyTray()
     teardownHotkeys()
     stopPushToTalk()
     stopAsrWorker()
     stopPortalShortcuts()
     flushSettings() // don't lose a debounced write on exit
-    closeDb() // checkpoint + optimize + close, so nothing is stranded in the WAL
+    closeDb()
+    console.log(`[quit] shutdown ${Date.now() - t0}ms`)
     closeLogging()
   })
 

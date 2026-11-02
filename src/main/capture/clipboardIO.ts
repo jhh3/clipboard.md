@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process'
 import { clipboard, nativeImage } from 'electron'
 import { LINUX, WIN32, currentPlatform, type Platform } from '../platform'
+import { hasOwnerEvents, ownerChangeCount, waitForOwnerChange } from '../xconn'
 
 /**
  * Off-main-thread clipboard reads (Linux).
@@ -205,7 +206,11 @@ export function writeClipboardHtml(html: string, text: string): Promise<void> {
   return writeClipboardText(text)
 }
 
+/** ownerChangeCount() just before the latest xclip owner was spawned. */
+let ownerSinceWrite = 0
+
 function spawnOwner(args: string[], data: Buffer): Promise<void> {
+  ownerSinceWrite = ownerChangeCount()
   return new Promise((resolve) => {
     // `xclip -i` stays resident as the selection owner; detach it so it outlives
     // this call and never blocks us (or dies with us mid-transfer).
@@ -230,6 +235,10 @@ function spawnOwner(args: string[], data: Buffer): Promise<void> {
  */
 export async function waitForClipboard(expected: string, timeoutMs = 800): Promise<boolean> {
   if (LINUX) {
+    // The owner-change event is the exact moment xclip took the selection, and it
+    // costs nothing. Reading the clipboard back every 25ms (an xclip spawn and a full
+    // selection transfer each time) is only the fallback for a session without XFixes.
+    if (hasOwnerEvents()) return waitForOwnerChange(ownerSinceWrite, timeoutMs)
     const deadline = Date.now() + timeoutMs
     const head = expected.slice(0, 64)
     while (Date.now() < deadline) {
@@ -293,11 +302,14 @@ export async function verifyClipboardText(
  * still separates the two cases that matter — our image is there, versus the old
  * clipboard content (text, nothing, or a different picture) still is.
  *
- * A no-op returning true anywhere but Windows. On Linux the write goes to a detached
- * xclip owner and reading it back would be asking ourselves for a selection we own —
- * the self-request that can take mutter's bridge down with it.
+ * On Linux reading it back would be asking ourselves for a selection we own — the
+ * self-request that can take mutter's bridge down with it — so it waits for the
+ * selection-owner event instead. macOS: a no-op returning true.
  */
 export async function waitForClipboardImage(png: Buffer): Promise<boolean> {
+  // Linux: the same owner-change proof the text path uses. Without it an image paste
+  // injected Ctrl+V while xclip was still reading its stdin.
+  if (LINUX) return hasOwnerEvents() ? waitForOwnerChange(ownerSinceWrite, 1500) : true
   if (!WIN32) return true
   const expected = nativeImage.createFromBuffer(png).getSize()
   // Nothing to compare against; the caller has bigger problems than verification.

@@ -311,7 +311,7 @@ export function registerIpc(
     // blaming the user for a dismissal that never happened.
     if ('unavailable' in shot) return { ok: false, error: shot.unavailable }
     if ('cancelled' in shot) return { ok: false, error: 'Capture cancelled' }
-    const result = capture.ingestImageFile(shot.path)
+    const result = await capture.ingestImageFile(shot.path)
     if (!result) return { ok: false, error: 'Could not read captured image' }
     return { ok: true, id: result.id }
   })

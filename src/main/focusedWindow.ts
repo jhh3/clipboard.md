@@ -1,5 +1,5 @@
-import { execFile } from 'child_process'
 import { LINUX } from './platform'
+import { activeWmClass } from './xconn'
 
 /**
  * Which application is about to receive our injected keystroke.
@@ -21,57 +21,17 @@ import { LINUX } from './platform'
  * only ever ADDS Shift — never as grounds to withhold a paste.
  */
 
-const XPROP_TIMEOUT_MS = 400
-
-function xprop(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('xprop', args, { timeout: XPROP_TIMEOUT_MS }, (err, stdout) => {
-      if (err) reject(err)
-      else resolve(stdout)
-    })
-  })
-}
-
 /**
- * WM_CLASS of the focused window, with one short retry.
+ * WM_CLASS of the focused window, lowercased, or null when no X11 window has focus.
  *
- * We ask immediately after hiding our own window, which is exactly when focus is in
- * flight and _NET_ACTIVE_WINDOW can read 0x0. xprop itself costs ~8ms, so a single
- * retry is far cheaper than the failure it prevents.
+ * One round trip on the shared X connection (xconn.ts); this used to be two `xprop`
+ * spawns plus a 60ms retry for the 0x0 that _NET_ACTIVE_WINDOW reads while focus is
+ * in flight. The paste path now waits for focus to land before asking (see
+ * paste.ts), so the retry has nothing left to cover.
  */
 export async function focusedWmClass(): Promise<string | null> {
-  // xprop exists only under X11/Xwayland. Off Linux this spawned two processes that
-  // could never succeed and slept 60ms between them, on the paste path, for a value
-  // that was always going to be null.
   if (!LINUX) return null
-  const first = await readWmClass()
-  if (first) return first
-  await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))
-  return readWmClass()
-}
-
-const RETRY_DELAY_MS = 60
-
-async function readWmClass(): Promise<string | null> {
-  try {
-    const active = await xprop(['-root', '_NET_ACTIVE_WINDOW'])
-    const id = active.match(/0x[0-9a-f]+/i)?.[0]
-    // 0x0 means "no X11 window is active" — mutter reports it while focus is moving,
-    // including the moment just after we hide our own window. It matched the regex,
-    // so we passed it to xprop, which rejects it, and the caller fell back to a plain
-    // Ctrl+V: in a terminal that pastes nothing at all.
-    if (!id || /^0x0+$/i.test(id)) return null
-    // WM_CLASS(STRING) = "instance", "Class" — the second is the one apps are known by,
-    // but single-valued replies happen, so fall back to the first.
-    const cls = await xprop(['-id', id, 'WM_CLASS'])
-    const pair = cls.match(/"([^"]*)"\s*,\s*"([^"]*)"/)
-    if (pair) return (pair[2] || pair[1]).toLowerCase()
-    const single = cls.match(/"([^"]*)"/)
-    return single ? single[1].toLowerCase() : null
-  } catch {
-    // No xprop, no X server, or no focused X11 window. Callers fall back to Ctrl+V.
-    return null
-  }
+  return (await activeWmClass())?.toLowerCase() ?? null
 }
 
 /**
@@ -115,8 +75,6 @@ let dictationTarget: string | null = null
 
 export function noteDictationTarget(): void {
   dictationTarget = null
-  // xprop exists only under X11/Xwayland. On macOS this spawned a process that could
-  // never succeed, once per dictation, purely to throw it away.
   if (!LINUX) return
   void focusedWmClass().then((c) => {
     dictationTarget = c
