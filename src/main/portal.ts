@@ -32,20 +32,49 @@ const STRAY_MODIFIERS: number[] = [
 let bus: dbus.MessageBus | null = null
 let sessionHandle: string | null = null
 let connecting: Promise<boolean> | null = null
+/** Cached proxy: getProxyObject introspects over D-Bus every call (~10-30ms). */
+let rdIface: dbus.ClientInterface | null = null
 
 /**
- * How long to let mutter drain the keystrokes we just queued before closing the
- * session. The Notify calls have already returned by then; this is only insurance
- * against tearing down the transport underneath in-flight input.
+ * How long an idle session is kept before we close it.
+ *
+ * Per-paste sessions cost a CreateSession/SelectDevices/Start round of portal
+ * requests on every paste. A long-lived one makes back-to-back pastes instant, but
+ * an open RemoteDesktop session lights GNOME's "input is being controlled" indicator,
+ * and GNOME drops idle sessions on its own anyway. A few minutes of reuse covers a
+ * burst of pastes; after that the next paste rebuilds it, in parallel with the focus
+ * wait (see preparePortal), so the rebuild is mostly hidden.
  */
-const SESSION_CLOSE_DELAY_MS = 250
+const IDLE_CLOSE_MS = 5 * 60_000
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Portal request caps. A silent restore (we hold a restore_token) answers in tens of
+ * milliseconds; one that hangs must not hold a paste hostage for two minutes. The
+ * first-ever Start shows a permission dialog and gets the long timeout.
+ */
+const FAST_TIMEOUT_MS = 3000
+const DIALOG_TIMEOUT_MS = 120_000
 
 function token(): string {
   return 'clipmd' + Math.floor(Math.random() * 1e9).toString(36)
 }
 
 async function getBus(): Promise<dbus.MessageBus> {
-  if (!bus) bus = dbus.sessionBus()
+  if (!bus) {
+    const b = dbus.sessionBus()
+    // A dropped bus must not poison every later paste: forget it and the proxy so
+    // the next call reconnects.
+    b.on('error', (err: Error) => {
+      console.error('[portal] session bus error:', err.message)
+      if (bus === b) {
+        bus = null
+        rdIface = null
+        sessionHandle = null
+      }
+    })
+    bus = b
+  }
   return bus
 }
 
@@ -112,18 +141,30 @@ export async function portalCall(
   return responsePromise
 }
 
+async function remoteDesktop(): Promise<dbus.ClientInterface> {
+  if (rdIface) return rdIface
+  const b = await getBus()
+  const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
+  rdIface = obj.getInterface('org.freedesktop.portal.RemoteDesktop')
+  return rdIface
+}
+
 async function ensureSession(): Promise<boolean> {
   if (sessionHandle) return true
   if (connecting) return connecting
   connecting = (async () => {
+    const t0 = Date.now()
     try {
-      const b = await getBus()
-      const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
-      const rd = obj.getInterface('org.freedesktop.portal.RemoteDesktop')
+      const rd = await remoteDesktop()
+      const fast = { timeoutMs: FAST_TIMEOUT_MS }
 
-      const created = await portalCall(rd, 'CreateSession', [], {
-        session_handle_token: new dbus.Variant('s', token())
-      })
+      const created = await portalCall(
+        rd,
+        'CreateSession',
+        [],
+        { session_handle_token: new dbus.Variant('s', token()) },
+        fast
+      )
       const session = created.session_handle?.value as string
       if (!session) throw new Error('no session handle')
 
@@ -133,17 +174,22 @@ async function ensureSession(): Promise<boolean> {
       }
       const savedToken = getSettings().pastePortalToken
       if (savedToken) selectOpts.restore_token = new dbus.Variant('s', savedToken)
-      await portalCall(rd, 'SelectDevices', [session], selectOpts)
+      await portalCall(rd, 'SelectDevices', [session], selectOpts, fast)
 
       // Start pops the permission dialog on first run (or restores silently).
-      const started = await portalCall(rd, 'Start', [session, ''], {})
+      const started = await portalCall(rd, 'Start', [session, ''], {}, {
+        timeoutMs: savedToken ? FAST_TIMEOUT_MS : DIALOG_TIMEOUT_MS
+      })
       const newToken = started.restore_token?.value as string | undefined
       if (newToken) updateSettings({ pastePortalToken: newToken })
 
       sessionHandle = session
+      console.log(`[timing] portal-session ${Date.now() - t0}ms`)
       return true
     } catch (err) {
       console.error('[portal] session setup failed:', err)
+      // A dead bus or proxy is the likeliest reason; rebuild both next time.
+      rdIface = null
       return false
     } finally {
       connecting = null
@@ -152,8 +198,13 @@ async function ensureSession(): Promise<boolean> {
   return connecting
 }
 
-async function key(rd: dbus.ClientInterface, session: string, code: number, down: boolean): Promise<void> {
-  await rd.NotifyKeyboardKeycode(session, {}, code, down ? 1 : 0)
+/**
+ * Start (or reuse) the session without injecting anything. The paste path calls this
+ * the moment a paste begins, so the portal handshake overlaps the clipboard write and
+ * the focus hand-back instead of following them.
+ */
+export function preparePortal(): Promise<boolean> {
+  return ensureSession()
 }
 
 type Attempt =
@@ -168,51 +219,45 @@ type Attempt =
 
 async function attemptPaste(shift: boolean): Promise<Attempt> {
   if (!(await ensureSession())) return 'no-session'
-  const b = await getBus()
-  const obj = await b.getProxyObject(PORTAL_BUS, PORTAL_PATH)
-  const rd = obj.getInterface('org.freedesktop.portal.RemoteDesktop')
+  const rd = await remoteDesktop()
   const s = sessionHandle!
-  // Which keystrokes actually reached the compositor decides whether a retry is
-  // safe, so it has to be counted rather than inferred from the error.
-  let sent = 0
-  try {
-    // Clear every modifier the compositor may still believe is held, before
-    // synthesising our own chord. The dictate trigger is ITSELF a modifier combo —
-    // Ctrl+Alt+Shift+D on a macro pad — and a single missed key-up (an evdev grab
-    // swallowing it, keyd's virtual device desyncing) leaves the compositor reading
-    // our injection as Ctrl+Alt+Shift+V. That is not paste, so the transcript lands
-    // nowhere while every step in the log still says it worked.
-    //
-    // Deliberately NOT counted in `sent`: releasing a key that is already up is a
-    // no-op, so it is always safe to repeat on a retry.
-    for (const code of STRAY_MODIFIERS) await key(rd, s, code, false)
-    await key(rd, s, KEY_LEFTCTRL, true)
-    sent++
-    if (shift) await key(rd, s, KEY_LEFTSHIFT, true)
-    await key(rd, s, KEY_V, true)
-    sent++
-    await key(rd, s, KEY_V, false)
-    sent++
-    if (shift) await key(rd, s, KEY_LEFTSHIFT, false)
-    await key(rd, s, KEY_LEFTCTRL, false)
-    sent++
-    return 'ok'
-  } catch (err) {
-    console.error('[portal] paste injection failed:', err)
-    // Session may have died (compositor restart, revoked permission) — rebuild next time.
-    sessionHandle = null
-    if (sent > 0) {
-      // Ctrl went down and never came back up. On a session that still works that
-      // leaves the modifier latched, and the user's next keystroke is a shortcut.
-      try {
-        await key(rd, s, KEY_LEFTCTRL, false)
-      } catch {
-        /* the session is gone; the compositor drops its keys with it */
-      }
-      return 'partial'
-    }
-    return 'stale'
+  const key = (code: number, down: boolean): Promise<unknown> =>
+    rd.NotifyKeyboardKeycode(s, {}, code, down ? 1 : 0)
+  // Every keystroke is sent without waiting for the previous one's reply: one D-Bus
+  // connection delivers in order, so the compositor sees exactly this sequence, and
+  // the whole chord costs one round trip instead of twenty.
+  //
+  // First clear every modifier the compositor may still believe is held. The dictate
+  // trigger is ITSELF a modifier combo (Ctrl+Alt+Shift+D on a macro pad), and a single
+  // missed key-up leaves the compositor reading our injection as Ctrl+Alt+Shift+V —
+  // not paste — while every step in the log says it worked. Releasing a key that is
+  // already up is a no-op, so these are always safe to repeat on a retry.
+  const releases = STRAY_MODIFIERS.map((code) => key(code, false))
+  // Which chord keys actually reached the compositor decides whether a retry is
+  // safe, so they are counted rather than inferred from the error.
+  const chord = [
+    key(KEY_LEFTCTRL, true),
+    ...(shift ? [key(KEY_LEFTSHIFT, true)] : []),
+    key(KEY_V, true),
+    key(KEY_V, false),
+    ...(shift ? [key(KEY_LEFTSHIFT, false)] : []),
+    key(KEY_LEFTCTRL, false)
+  ]
+  const [rel, sent] = await Promise.all([Promise.allSettled(releases), Promise.allSettled(chord)])
+  const failed = [...rel, ...sent].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+  if (!failed) return 'ok'
+  console.error('[portal] paste injection failed:', failed.reason)
+  // Session may have died (compositor restart, revoked permission) — rebuild next time.
+  sessionHandle = null
+  if (sent.some((r) => r.status === 'fulfilled')) {
+    // Ctrl may have gone down and never come back up. On a session that still works
+    // that leaves the modifier latched, and the user's next keystroke is a shortcut.
+    await key(KEY_LEFTCTRL, false).catch(() => {
+      /* the session is gone; the compositor drops its keys with it */
+    })
+    return 'partial'
   }
+  return 'stale'
 }
 
 /** Close a session we are done with, best effort — it may already be gone. */
@@ -227,43 +272,38 @@ async function closeSession(handle: string): Promise<void> {
 }
 
 /**
- * Give up the session as soon as the paste is done.
+ * Keep the session for the next paste, and close it after IDLE_CLOSE_MS of quiet.
  *
  * An open RemoteDesktop session keeps GNOME's red "your input is being controlled"
- * indicator lit in the top bar for as long as it lives — and ours lived forever,
- * because nothing ever closed it. It read as a stuck microphone light. Holding the
- * right to synthesise keystrokes indefinitely is also just more authority than a
- * paste needs; we want it for the ~10ms we are using it.
- *
- * Non-blocking: the paste has already been delivered, so the caller must not wait
- * on teardown. The handle is dropped immediately so the next paste builds a fresh
- * session rather than racing this close.
+ * indicator lit, so it must not live forever; but rebuilding it per paste put three
+ * portal round trips on every paste. Non-blocking either way.
  */
+function scheduleIdleClose(): void {
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = setTimeout(releaseSession, IDLE_CLOSE_MS)
+  idleTimer.unref?.()
+}
+
 function releaseSession(): void {
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = null
   const handle = sessionHandle
   sessionHandle = null
-  if (!handle) return
-  setTimeout(() => void closeSession(handle), SESSION_CLOSE_DELAY_MS).unref()
+  if (handle) void closeSession(handle)
 }
 
 /**
  * Inject Ctrl+V into the focused window. Returns false on any failure.
  *
- * GNOME drops an idle RemoteDesktop session, so pastes alternated between working
- * and `DBusError: Invalid session` (measured: eight consecutive dictations, every
- * other one lost). Clearing the handle on failure meant the NEXT paste rebuilt the
- * session and succeeded — the discovery was paid for with the user's paste, which
- * degraded silently to "it's on your clipboard".
- *
- * Now the session is per-paste: built, used, closed. That removes the stale-handle
- * window entirely rather than papering over it. The retry stays as a safety net for
- * a session that dies between Start and the first keystroke — bounded to one extra
- * attempt, and only when nothing was injected, so it can't ever paste twice.
+ * GNOME drops an idle RemoteDesktop session, so a reused handle can be stale
+ * (`DBusError: Invalid session`). The retry covers exactly that: bounded to one extra
+ * attempt on a fresh session, and only when nothing was injected, so it can't ever
+ * paste twice.
  */
 export async function portalPaste(shift = false): Promise<boolean> {
   const first = await attemptPaste(shift)
   if (first === 'ok') {
-    releaseSession()
+    scheduleIdleClose()
     return true
   }
   if (first !== 'stale') {
@@ -272,19 +312,15 @@ export async function portalPaste(shift = false): Promise<boolean> {
   }
   console.log('[portal] session was stale; retrying on a fresh one')
   const ok = (await attemptPaste(shift)) === 'ok'
-  releaseSession()
+  if (ok) scheduleIdleClose()
+  else releaseSession()
   return ok
 }
 
-/**
- * Warm up (triggers the one-time permission dialog at a moment of our choosing, and
- * banks the restore_token so later sessions are silent). The session itself is then
- * released — warming up must not leave the red indicator lit until the first paste.
- */
-export async function portalWarmup(): Promise<boolean> {
-  const ok = await ensureSession()
+/** Close the session and forget the proxies (quit). */
+export function stopPortal(): void {
   releaseSession()
-  return ok
+  rdIface = null
 }
 
 /**

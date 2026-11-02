@@ -1,4 +1,4 @@
-import { nativeImage, Notification } from 'electron'
+import { BrowserWindow, nativeImage, Notification } from 'electron'
 import { readFileSync } from 'fs'
 import {
   writeClipboardText,
@@ -14,17 +14,15 @@ import { getItem } from './store/items'
 import { getSettings } from './settings'
 import { focusedWmClass, getDictationTarget, isTerminalClass } from './focusedWindow'
 import { macFrontmost, macPaste } from './mac/helper'
-import { restoreForeground, targetExe } from './win/foreground'
-import { sendPaste } from './win/inject'
-import { MACOS, LINUX, WIN32 } from './platform'
+import { activeWindow, armActiveWindowChange, xReady } from './xconn'
+import { MACOS, LINUX } from './platform'
 
 /**
  * Destination-aware paste: we know what the paste target will be before we touch the
  * clipboard, so the payload can be adapted to it.
  *
  * On macOS the palette is a non-activating panel, so the frontmost app AT PASTE TIME
- * is the target. On Windows there is no such panel — we take focus — so the target is
- * the window remembered before we showed ourselves (win/foreground.ts).
+ * is the target. (Linux shapes the keystroke instead: Ctrl+Shift+V for terminals.)
  *
  * Two rules, both boring on purpose:
  *  - terminals get plain text (rich-text paste into a terminal is never wanted)
@@ -116,26 +114,51 @@ export function shapeForDestination(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
- * Tell the user the paste did not happen.
- *
- * The window is already hidden by the time we know, so a renderer toast would never
- * be seen — this is the only channel left. On Windows it only works because
- * index.ts sets an AppUserModelID at startup: without one, `new Notification()` is
- * itself a silent no-op, which would make the message that exists specifically to
- * explain a silent failure fail silently.
- */
-function notifyFallback(body: string): void {
-  new Notification({ title: 'Copied', body, silent: true }).show()
-}
-
-/**
- * How long to wait after hiding our window before injecting the paste keystroke.
- * Focus has to land back on the target window before the keystroke arrives, or it
- * goes nowhere. Linux waits on mutter refocusing the previous surface, and 150ms was
- * too tight on a loaded system. macOS hands focus back faster, and the helper adds its
- * own 30ms drain after posting.
+ * How long to wait after hiding our window before injecting the paste keystroke, where
+ * there is no focus event to wait on instead. Focus has to land back on the target
+ * window before the keystroke arrives, or it goes nowhere. macOS hands focus back
+ * fast, and the helper adds its own 30ms drain after posting. On Linux this is only
+ * the fallback for a session without an X connection; see waitForFocusBack.
  */
 const FOCUS_SETTLE_MS = MACOS ? 120 : 300
+
+/** Upper bound on waiting for _NET_ACTIVE_WINDOW to move off our hidden window. */
+const FOCUS_EVENT_TIMEOUT_MS = 250
+/**
+ * After focus leaves us, _NET_ACTIVE_WINDOW can read 0 for a moment before naming the
+ * target (or stays 0 for good when the target is a native Wayland window). This is how
+ * long we give it to name one.
+ */
+const FOCUS_ZERO_GRACE_MS = 60
+
+/**
+ * Wait until focus has really gone back to the target after we hide.
+ *
+ * This replaced a fixed 300ms sleep. Two cases:
+ *  - We never had focus (dictation: the HUD is focusable:false and shown inactive), so
+ *    the target already has it and there is nothing to wait for.
+ *  - The palette had focus: wait for mutter to change _NET_ACTIVE_WINDOW, which it does
+ *    in the same step that moves keyboard focus. Typically 20-60ms.
+ */
+async function waitForFocusBack(hadFocus: boolean, hide: () => void): Promise<void> {
+  if (!hadFocus) {
+    hide()
+    return
+  }
+  if (!xReady()) {
+    hide()
+    await sleep(FOCUS_SETTLE_MS)
+    return
+  }
+  const arm = armActiveWindowChange()
+  try {
+    hide()
+    if (!(await arm.wait(FOCUS_EVENT_TIMEOUT_MS))) return
+    if ((await activeWindow()) === 0) await arm.wait(FOCUS_ZERO_GRACE_MS)
+  } finally {
+    arm.cancel()
+  }
+}
 
 /**
  * Paste tiers (see docs/DESIGN.md §2):
@@ -164,27 +187,17 @@ export class PasteService {
     // setting BEFORE the helper call: with the toggle off (or the helper broken),
     // the hottest path in the app must not pay a helper round-trip.
     const smart = getSettings().smartPaste !== false
-    // Windows reads the REMEMBERED window, not the current one: by now the current
-    // one is us. macOS asks the helper, exactly as before.
-    const destId =
-      forPaste && smart
-        ? MACOS
-          ? ((await macFrontmost())?.bundleId ?? null)
-          : WIN32
-            ? targetExe()
-            : null
-        : null
-    const shaped = shapeForDestination(item, plain, destinationRole(destId, MACOS ? 'darwin' : 'win32'), smart)
+    // macOS asks the helper; Linux shapes the keystroke instead (see deliver).
+    const destId = forPaste && smart && MACOS ? ((await macFrontmost())?.bundleId ?? null) : null
+    const shaped = shapeForDestination(item, plain, destinationRole(destId, 'darwin'), smart)
     const text = shaped.text ?? item.content
     markOwnedByUs()
     if (item.kind === 'image') {
       this.capture.markSelfWrite()
       const png = readFileSync(item.content)
       await writeClipboardImage(png)
-      // The last unverified branch of the three. writeImage is as silently
-      // droppable on Windows as writeText (same ScopedClipboardWriter, same five
-      // OpenClipboard tries then give up), and pasteItem treats `true` here as "the
-      // clipboard holds it" and injects Ctrl+V — pasting the previous clip.
+      // pasteItem treats `true` here as "the clipboard holds it" and injects Ctrl+V;
+      // injecting before the write lands pastes the previous clip.
       if (!(await waitForClipboardImage(png))) {
         console.error('[paste] clipboard did not take the image write in time')
         return false
@@ -195,14 +208,6 @@ export class PasteService {
       // was both unpastable and unverified.
       this.capture.markSelfWrite(item.content)
       await writeClipboardHtml(item.html, item.content)
-      // The richest clips were the only unverified ones. On Windows a write can be
-      // dropped silently (see verifyClipboardText), so this branch could hand back
-      // success having put nothing on the clipboard — and then inject Ctrl+V, which
-      // pastes the previous clip. macOS keeps its existing unverified path.
-      if (WIN32 && !(await waitForClipboard(item.content))) {
-        console.error('[paste] clipboard did not take the HTML write in time')
-        return false
-      }
     } else {
       this.capture.markSelfWrite(text)
       await writeClipboardText(text)
@@ -245,6 +250,8 @@ export class PasteService {
   }
 
   async pasteItem(itemId: number, plain: boolean): Promise<PasteOutcome> {
+    const t0 = Date.now()
+    const portal = this.preparePortal()
     const item = getItem(itemId)
     console.log(
       `[paste] item ${itemId} kind=${item?.kind ?? 'missing'} chars=${item?.content.length ?? 0}` +
@@ -257,23 +264,35 @@ export class PasteService {
       console.error(`[paste] item ${itemId} not pasted: ${reason}`)
       return { method: 'copied', message: reason }
     }
-    return this.deliver()
+    return this.deliver(t0, portal)
   }
 
   async pasteRaw(output: string, outputKind: 'text' | 'image'): Promise<PasteOutcome> {
+    const t0 = Date.now()
+    const portal = this.preparePortal()
     // Injecting Ctrl+V when the clipboard write did not land would paste the PREVIOUS
     // clipboard entry into whatever the user is typing in — worse than not pasting.
     if (!(await this.setClipboardRaw(output, outputKind))) {
       return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
     }
-    return this.deliver()
+    return this.deliver(t0, portal)
+  }
+
+  /**
+   * Start the portal session the moment a paste begins, so its handshake overlaps the
+   * clipboard write and the focus hand-back rather than following them. Lazily
+   * imported: portal.ts pulls in dbus-next, which macOS never needs.
+   */
+  private preparePortal(): Promise<boolean> | null {
+    if (!LINUX || getSettings().pasteInjection !== 'portal') return null
+    return import('./portal').then((m) => m.preparePortal())
   }
 
   async copyItem(itemId: number): Promise<void> {
     await this.setClipboard(itemId, false)
   }
 
-  private async deliver(): Promise<PasteOutcome> {
+  private async deliver(t0: number, portalReady: Promise<boolean> | null): Promise<PasteOutcome> {
     if (MACOS) {
       // Hide first: macOS returns key focus to the previously active app, and the
       // ⌘V has to arrive *there*, not at our palette.
@@ -299,52 +318,34 @@ export class PasteService {
       }
     }
 
-    // Windows, above the pasteInjection check on purpose.
-    //
-    // `pasteInjection` is a Linux setting: its values name the XDG RemoteDesktop
-    // portal, and the stored default is 'portal'. Falling through to that check on
-    // Windows meant hiding the window, sleeping 300ms and then calling into D-Bus —
-    // a dead path that cost a third of a second and ended in nothing, every time.
-    // Interpreting the stored value per-platform is deliberate; RENAMING it would be
-    // a settings migration across every existing Linux install, which is exactly the
-    // regression shape this port must not create.
-    if (WIN32) {
-      // Hide first, then put focus back where it was, and only inject once the
-      // foreground window really IS the one we remembered. Windows has no
-      // non-activating panel and no compositor handing focus back, so this is the
-      // hard part — see win/foreground.ts. A bounded poll replaces the fixed sleep
-      // the other platforms use, because a sleep cannot tell "focus took 40ms" from
-      // "focus never came back", and on Windows the second happens routinely
-      // (the foreground lock).
-      this.hideWindow()
-      if (!(await restoreForeground())) {
-        console.error('[paste] focus did not return to the previous window; not injecting')
-        return { method: 'copied', message: 'Copied — press Ctrl+V to paste' }
-      }
-      const { injected, reason } = sendPaste(targetExe())
-      if (injected) return { method: 'injected' }
-      console.error(`[paste] not injected: ${reason}`)
-      notifyFallback(reason ?? 'Press Ctrl+V to paste')
-      return { method: 'copied', message: reason ?? 'Copied — press Ctrl+V to paste' }
-    }
-
     // Linux tier 1: hide (mutter refocuses the previous surface), then inject
     // Ctrl+V via the RemoteDesktop portal. First use pops one permission dialog.
-    if (getSettings().pasteInjection === 'portal') {
-      this.hideWindow()
-      await sleep(FOCUS_SETTLE_MS)
-      // Asked only AFTER hiding and settling: before that the focused window is still
-      // ours, and we would be shaping the keystroke for the palette instead of for
-      // whatever the user is actually typing into.
-      // Live detection first; the app recorded at dictation start is the fallback.
-      // Focus can still be in flight here, and guessing wrong costs the whole paste —
-      // a plain Ctrl+V in a terminal does nothing at all.
+    if (portalReady) {
+      const tClip = Date.now()
+      const hadFocus = BrowserWindow.getFocusedWindow() !== null
+      // Focus hand-back and portal readiness are independent; wait for both at once.
+      let tFocus = 0
+      let tPortal = 0
+      await Promise.all([
+        waitForFocusBack(hadFocus, this.hideWindow).then(() => (tFocus = Date.now())),
+        portalReady.then(() => (tPortal = Date.now()))
+      ])
+      // Asked only AFTER focus is back: before that the focused window is still ours,
+      // and we would be shaping the keystroke for the palette instead of for whatever
+      // the user is actually typing into. The app recorded at dictation start is the
+      // fallback (a native Wayland window has no X11 class to read). Guessing wrong
+      // costs the whole paste — a plain Ctrl+V in a terminal does nothing at all.
       const dest = (await focusedWmClass()) ?? getDictationTarget()
       const shift = isTerminalClass(dest)
-      // Lazily imported: portal.ts opens a D-Bus session bus at module load, and a
-      // top-level import pulled that whole Linux-only stack into every Windows boot.
       const { portalPaste } = await import('./portal')
-      if (await portalPaste(shift)) {
+      const tKeys = Date.now()
+      const ok = await portalPaste(shift)
+      const end = Date.now()
+      console.log(
+        `[timing] paste ${end - t0}ms (clipboard=${tClip - t0} focus=${tFocus - tClip}` +
+          `${hadFocus ? '' : '/none'} portal=${tPortal - tClip} keys=${end - tKeys})`
+      )
+      if (ok) {
         console.log(`[paste] injected via portal (${shift ? 'Ctrl+Shift+V' : 'Ctrl+V'}${dest ? ` → ${dest}` : ''})`)
         return { method: 'injected' }
       }
