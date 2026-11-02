@@ -873,7 +873,7 @@ export default function Settings() {
               </Row>
               <Row
                 label="Keep dictation audio"
-                sub="Keep recordings so transcripts can be retried."
+                sub="Keep recordings for 2 days so transcripts can be retried."
               >
                 <Toggle
                   checked={s.dictation.keepAudio}

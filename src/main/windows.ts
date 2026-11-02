@@ -338,7 +338,7 @@ export function createDictationHud(): BrowserWindow {
     height: HUD_H,
     show: false,
     frame: false,
-    transparent: canBeTransparent(),
+    transparent: true,
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
