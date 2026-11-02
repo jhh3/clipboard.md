@@ -1,4 +1,4 @@
-import { closeSync, openSync, read as fsRead, readFileSync } from 'fs'
+import { accessSync, constants as fsConstants, readFileSync, watch, type FSWatcher } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { helperPath } from './mac/helper'
 import { getSettings } from './settings'
@@ -59,7 +59,34 @@ export interface PttHandlers {
   onRelease: (mode: PttMode) => void
 }
 
-let fds: number[] = []
+/**
+ * One `cat` child per open keyboard, streaming raw input_events to a pipe.
+ *
+ * Why a process and not fs.read on an fd: an evdev read blocks until a key is
+ * pressed, and fs.read runs on libuv's threadpool, so every device parked a pool
+ * thread forever. Quitting then hung (Node waits for the pool — a stop sat 90 s
+ * before SIGKILL), every re-arm leaked another blocked thread per device, and a
+ * closed fd number could be reused while its read was still pending, leaving two
+ * pumps on one descriptor. A pipe is polled by the event loop, so nothing blocks,
+ * and killing the child interrupts its read.
+ */
+interface DeviceReader {
+  path: string
+  child: ChildProcess
+}
+
+let readers: DeviceReader[] = []
+
+/** Kept while Linux PTT is armed so a hotplug rescan can start readers itself. */
+let armedHandlers: PttHandlers | null = null
+let inputWatcher: FSWatcher | null = null
+let rescanTimer: NodeJS.Timeout | null = null
+let retryTimer: NodeJS.Timeout | null = null
+/** Device count last reported, so hotplug only logs when it actually changes. */
+let reportedCount = 0
+
+const RESCAN_DEBOUNCE_MS = 500
+const RETRY_UNREADABLE_MS = 1000
 
 /**
  * Every event node the kernel exposes with a `kbd` handler.
@@ -81,7 +108,7 @@ interface KbdDevice {
  *
  * Words are 64-bit hex, printed most-significant first, so the LAST word holds
  * keycodes 0-63. Without this we cannot tell a keyboard from a power button, and
- * opening the power button costs a blocking read on one of libuv's four threads.
+ * the power button would get a reader process that never sees a keystroke.
  */
 function keyBitmap(block: string): Set<number> {
   const out = new Set<number>()
@@ -164,57 +191,22 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
 
   // Count devices we can actually READ, not ones we attempted to open.
   //
-  // createReadStream is lazy: a device we lack permission for fails asynchronously
-  // via 'error', long after this loop. Counting pushed streams therefore reported
-  // "hold-to-talk active on N devices" even when every single open was about to fail
-  // with EACCES — the app then disabled the hotkey toggle in favour of a PTT that
-  // could never fire, and dictation was dead with a reassuring log line. Track the
-  // failures and say so.
-  // Only devices that can actually produce this chord.
-  //
-  // We used to open every node with a kbd handler — nine here, including Power
-  // Button, Video Bus and two Thelio Io boards that never emit a letter. Each open
-  // device holds a BLOCKING read on a libuv worker thread, and libuv ships four of
-  // them, so the silent devices parked the entire pool and the real keyboards were
-  // never scheduled. Push-to-talk was dead with fds open, no error and nothing
-  // logged, and every isolated probe "worked" only because it opened fewer than four
-  // devices. Filtering to devices that advertise the chord's own keycode keeps this
-  // to the two or three real keyboards, and the pool bump below covers the rest.
-  const devices = keyboardDevices().filter((d) => watched.some((w) => d.keys.has(w.chord.key)))
+  // The reader child fails asynchronously, long after this loop. Counting spawned
+  // readers alone would report "hold-to-talk armed on N devices" even when every
+  // open was about to fail with EACCES — the app then disables the hotkey toggle in
+  // favour of a PTT that can never fire, and dictation is dead with a reassuring log
+  // line. So check readability up front, synchronously, and say so when it fails.
   let failed = 0
-  for (const { path } of devices) {
-    try {
-      const fd = openSync(path, 'r')
-      fds.push(fd)
-      const buf = Buffer.allocUnsafe(EVENT_SIZE * 64)
-      const pump = (): void => {
-        if (!fds.includes(fd)) return // torn down by stopPushToTalk
-        fsRead(fd, buf, 0, buf.length, null, (err, bytes) => {
-          if (err) {
-            // Drop the descriptor rather than abandoning it mid-list: leaving it in
-            // `fds` keeps isPushToTalkActive() reporting a device that is gone (an
-            // unplugged keyboard), which suppresses the key-repeat fallback and takes
-            // dictation down with no way back.
-            console.error(`[ptt] ${path} read failed: ${(err as NodeJS.ErrnoException).code}`)
-            fds = fds.filter((f) => f !== fd)
-            try {
-              closeSync(fd)
-            } catch {
-              /* already gone */
-            }
-            return
-          }
-          if (bytes > 0) onChunk(buf.subarray(0, bytes), handlers)
-          pump()
-        })
-      }
-      pump()
-    } catch (err) {
+  for (const { path } of chordDevices()) {
+    const err = unreadable(path)
+    if (err) {
       failed++
-      console.error(`[ptt] cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? String(err)}`)
+      console.error(`[ptt] cannot read ${path}: ${err}`)
+      continue
     }
+    spawnReader(path, handlers)
   }
-  if (fds.length === 0) {
+  if (readers.length === 0) {
     console.log('[ptt] no readable keyboard device; hold-to-talk unavailable')
     if (failed > 0) {
       console.error(
@@ -224,10 +216,139 @@ export function startPushToTalk(handlers: PttHandlers): boolean {
     }
     return false
   }
+  // Only once armed: the caller has already fallen back to the toggle when we
+  // return false, and readers appearing behind its back would double-trigger.
+  armedHandlers = handlers
+  reportedCount = readers.length
+  watchInputDir()
   console.log(
-    `[ptt] hold-to-talk armed on ${fds.length} device(s); chords ${watched.map((w) => `${w.mode}=${formatChord(parseChordOrDefault(w.mode === 'paste' ? s.dictateChord : w.mode === 'enhance' ? s.dictateEnhanceChord : s.dictateAgentChord))}`).join(' ')}`
+    `[ptt] hold-to-talk armed on ${readers.length} device(s); chords ${watched.map((w) => `${w.mode}=${formatChord(parseChordOrDefault(w.mode === 'paste' ? s.dictateChord : w.mode === 'enhance' ? s.dictateEnhanceChord : s.dictateAgentChord))}`).join(' ')}`
   )
   return true
+}
+
+/**
+ * Only devices that can actually produce a watched chord.
+ *
+ * We used to open every node with a kbd handler — nine here, including Power
+ * Button, Video Bus and two Thelio Io boards that never emit a letter. Back when
+ * each device held a blocking read on libuv's four-thread pool, the silent ones
+ * parked the whole pool and the real keyboards were never scheduled. Readers no
+ * longer block the pool, but there is still no reason to stream a device that can
+ * never send the chord, so this keeps it to the two or three real keyboards.
+ */
+function chordDevices(): KbdDevice[] {
+  return keyboardDevices().filter((d) => watched.some((w) => d.keys.has(w.chord.key)))
+}
+
+/** The errno code if we cannot read `path`, else null. */
+function unreadable(path: string): string | null {
+  try {
+    accessSync(path, fsConstants.R_OK)
+    return null
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code ?? String(err)
+  }
+}
+
+function spawnReader(path: string, handlers: PttHandlers): void {
+  const child = spawn('cat', [path], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const reader: DeviceReader = { path, child }
+  readers.push(reader)
+
+  // A pipe chunk need not end on a record boundary, so carry the partial tail
+  // into the next chunk and only ever parse whole 24-byte events.
+  let rest: Buffer = Buffer.alloc(0)
+  child.stdout.on('data', (chunk: Buffer) => {
+    const buf = rest.length > 0 ? Buffer.concat([rest, chunk]) : chunk
+    const whole = buf.length - (buf.length % EVENT_SIZE)
+    if (whole > 0) onChunk(buf.subarray(0, whole), handlers)
+    rest = Buffer.from(buf.subarray(whole))
+  })
+  // cat only writes its own errors here ("Permission denied", "No such device"),
+  // never key data, so it is safe to keep for the exit log.
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (s: string) => {
+    if (stderr.length < 512) stderr += s
+  })
+
+  // Drop the reader as soon as it dies rather than leaving it listed: a stale
+  // entry keeps isPushToTalkActive() reporting a device that is gone (an unplugged
+  // keyboard), which suppresses the key-repeat fallback and takes dictation down
+  // with no way back. 'error' and 'exit' can both fire; the first one wins.
+  const gone = (code: string | number | null): void => {
+    if (!readers.includes(reader)) return // torn down by stopPushToTalk, or already handled
+    readers = readers.filter((r) => r !== reader)
+    const why = stderr.trim()
+    console.error(`[ptt] ${path} reader exited (${code})${why ? `: ${why}` : ''}`)
+  }
+  child.on('error', (err: NodeJS.ErrnoException) => gone(err.code ?? String(err)))
+  child.on('exit', (code, signal) => gone(code ?? signal))
+}
+
+/**
+ * Re-scan on hotplug. Without this an unplugged keyboard's reader exits with
+ * ENODEV and, when the keyboard comes back as a new eventN node, nothing ever
+ * opens it again — push-to-talk stays dead until the app restarts.
+ */
+function watchInputDir(): void {
+  try {
+    // persistent: false so the watcher alone never keeps the process alive at quit.
+    inputWatcher = watch('/dev/input', { persistent: false }, (_event, filename) => {
+      if (!filename || !/^event\d+$/.test(String(filename))) return
+      if (rescanTimer) clearTimeout(rescanTimer)
+      // A plug or unplug arrives as a burst of nodes; settle once.
+      rescanTimer = setTimeout(() => {
+        rescanTimer = null
+        rescanDevices()
+      }, RESCAN_DEBOUNCE_MS)
+    })
+    inputWatcher.on('error', (err) => {
+      console.error(`[ptt] /dev/input watch failed: ${(err as NodeJS.ErrnoException).code ?? String(err)}`)
+      inputWatcher?.close()
+      inputWatcher = null
+    })
+  } catch (err) {
+    console.error(`[ptt] cannot watch /dev/input: ${(err as NodeJS.ErrnoException).code ?? String(err)}`)
+  }
+}
+
+/** Start readers for any chord-capable device not already being read. Readers for
+ *  vanished devices remove themselves when their child exits. */
+function rescanDevices(): void {
+  const handlers = armedHandlers
+  if (!handlers) return
+  const pending: string[] = []
+  for (const { path } of chordDevices()) {
+    if (readers.some((r) => r.path === path)) continue
+    // udev applies the group/ACL a moment after the node appears, so a fresh
+    // keyboard is often unreadable on first sight. Give it one more chance.
+    if (unreadable(path)) pending.push(path)
+    else spawnReader(path, handlers)
+  }
+  if (retryTimer) clearTimeout(retryTimer)
+  retryTimer = null
+  if (pending.length > 0) {
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      if (armedHandlers !== handlers) return
+      for (const path of pending) {
+        if (readers.some((r) => r.path === path)) continue
+        const err = unreadable(path)
+        if (err) console.error(`[ptt] cannot read ${path}: ${err}`)
+        else spawnReader(path, handlers)
+      }
+      reportDeviceCount()
+    }, RETRY_UNREADABLE_MS)
+  }
+  reportDeviceCount()
+}
+
+function reportDeviceCount(): void {
+  if (readers.length === reportedCount) return
+  reportedCount = readers.length
+  console.log(`[ptt] input devices changed; now reading ${readers.length} device(s)`)
 }
 
 function onChunk(chunk: Buffer, handlers: PttHandlers): void {
@@ -347,11 +468,20 @@ function startMacPushToTalk(handlers: PttHandlers): boolean {
 let macChild: ChildProcess | null = null
 
 export function stopPushToTalk(): void {
-  const open = fds
-  fds = []
-  for (const fd of open) {
+  armedHandlers = null
+  inputWatcher?.close()
+  inputWatcher = null
+  if (rescanTimer) clearTimeout(rescanTimer)
+  if (retryTimer) clearTimeout(retryTimer)
+  rescanTimer = retryTimer = null
+  // Empty the list before killing so the exit handlers see a teardown, not a
+  // failure, and stay quiet. SIGKILL interrupts the blocked read immediately.
+  const open = readers
+  readers = []
+  reportedCount = 0
+  for (const { child } of open) {
     try {
-      closeSync(fd)
+      child.kill('SIGKILL')
     } catch {
       /* already gone */
     }
@@ -364,5 +494,5 @@ export function stopPushToTalk(): void {
 }
 
 export function isPushToTalkActive(): boolean {
-  return fds.length > 0 || macChild !== null
+  return readers.length > 0 || macChild !== null
 }
