@@ -210,12 +210,23 @@ export function registerIpc(
     broadcast('notes:changed', { id })
     return id
   })
-  handle('search', async (_e, q: SearchQuery) => {
-    if (q.mode === 'hybrid' && q.q.trim()) {
-      const qe = await embedQuery(q.q)
-      return searchHybrid(q, qe)
-    }
-    return searchKeyword(q)
+  handle('search', (_e, q: SearchQuery) => {
+    const started = performance.now()
+    const res = searchKeyword(q)
+    console.log(`[search] keyword ${res.items.length} results in ${(performance.now() - started).toFixed(1)}ms`)
+    return res
+  })
+  handle('search:semantic', async (_e, q: SearchQuery) => {
+    if (!q.q.trim()) return searchKeyword(q)
+    const started = performance.now()
+    const qe = await embedQuery(q.q)
+    const embedded = performance.now()
+    const res = searchHybrid(q, qe)
+    console.log(
+      `[search] ${res.mode} ${res.items.length} results in ${(performance.now() - started).toFixed(1)}ms ` +
+        `(embed ${(embedded - started).toFixed(1)}ms)`
+    )
+    return res
   })
 
   handle('item:get', (_e, id: number) => getItem(id))

@@ -15,6 +15,7 @@ import {
   enqueueEnrichment,
   dequeueEnrichment,
   enrichQueueStats,
+  reviveEnrichmentQueue,
   applyRetention,
   purgeItems
 } from './items'
@@ -157,6 +158,32 @@ describe('store', () => {
     expect(
       enrichQueueStats().queued + enrichQueueStats().failed
     ).toBe(0)
+  })
+
+  it('revives given-up enrichment rows and scrubs stored error text', () => {
+    const { id: dead } = textClip('gave up after three tries')
+    enqueueEnrichment(dead)
+    for (let i = 0; i < 3; i++) dequeueEnrichment(dead, 'Failed to authenticate')
+    const { id: poisoned } = textClip('a link whose summary is an auth error')
+    updateEnrichment(poisoned, { autoTitle: 'Real title', description: 'Failed to authenticate: OAuth session expired' })
+    const before = enrichQueueStats()
+    expect(before.failed).toBeGreaterThan(0)
+    expect(reviveEnrichmentQueue()).toBeGreaterThanOrEqual(2)
+    expect(enrichQueueStats().failed).toBe(0)
+    const scrubbed = getItem(poisoned)!
+    expect(scrubbed.description).toBeUndefined()
+    expect(scrubbed.autoTitle).toBe('Real title')
+    dequeueEnrichment(dead)
+    dequeueEnrichment(poisoned)
+  })
+
+  it('matches a one-letter query as a word, not a prefix of everything', () => {
+    const { id } = textClip('plan b for the offsite')
+    textClip('banana bread recipe')
+    const ids = searchKeyword({ q: 'b' }).items.map((i) => i.id)
+    expect(ids).toEqual([id])
+    // Two letters is a prefix search again (served by the prefix index).
+    expect(searchKeyword({ q: 'ba' }).items.some((i) => i.preview.startsWith('banana'))).toBe(true)
   })
 
   it('applies retention without touching pinned items', () => {

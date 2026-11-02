@@ -194,6 +194,43 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_agent_messages_session ON agent_messages(session_key, created_at);
   CREATE INDEX idx_agent_messages_unread ON agent_messages(read_at) WHERE read_at IS NULL;
+  `,
+  // Search speed. The palette list sorts by (pinned, last_copied_at) on every open,
+  // which no index matched. FTS5 gains 2- and 3-character prefix indexes so short
+  // prefix queries ("ab*") read a ready list instead of scanning every term.
+  `
+  CREATE INDEX IF NOT EXISTS idx_items_pinned_recent ON items(pinned DESC, last_copied_at DESC);
+
+  DROP TRIGGER IF EXISTS items_ai;
+  DROP TRIGGER IF EXISTS items_ad;
+  DROP TRIGGER IF EXISTS items_au;
+  DROP TABLE IF EXISTS items_fts;
+
+  CREATE VIRTUAL TABLE items_fts USING fts5(
+    content, title, auto_title, tags, ocr_text, description,
+    content='items', content_rowid='id', tokenize='unicode61', prefix='2 3'
+  );
+
+  CREATE TRIGGER items_ai AFTER INSERT ON items BEGIN
+    INSERT INTO items_fts(rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES (new.id, CASE WHEN new.secret = 1 THEN '' ELSE new.content END,
+            new.title, new.auto_title, new.tags, new.ocr_text, new.description);
+  END;
+  CREATE TRIGGER items_ad AFTER DELETE ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES ('delete', old.id, CASE WHEN old.secret = 1 THEN '' ELSE old.content END,
+            old.title, old.auto_title, old.tags, old.ocr_text, old.description);
+  END;
+  CREATE TRIGGER items_au AFTER UPDATE OF content, title, auto_title, tags, ocr_text, description, secret ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES ('delete', old.id, CASE WHEN old.secret = 1 THEN '' ELSE old.content END,
+            old.title, old.auto_title, old.tags, old.ocr_text, old.description);
+    INSERT INTO items_fts(rowid, content, title, auto_title, tags, ocr_text, description)
+    VALUES (new.id, CASE WHEN new.secret = 1 THEN '' ELSE new.content END,
+            new.title, new.auto_title, new.tags, new.ocr_text, new.description);
+  END;
+
+  INSERT INTO items_fts(items_fts) VALUES('rebuild');
   `
 ]
 

@@ -33,15 +33,21 @@ interface ItemRow {
 }
 
 /**
- * List rows omit the heavy fields. `content` is unbounded and `thumb` is a base64
- * data URL, so returning full items for a 400-row result meant tens of MB
- * structure-cloned across IPC on every keystroke. The renderer fetches full content
- * and full-res images lazily for the single selected item.
+ * The columns a list row needs, selected in SQL so the heavy ones never leave SQLite.
+ * `content` is unbounded, so returning full rows for a 400-row result meant tens of
+ * MB cloned across IPC per keystroke; the renderer fetches the selected item's body.
+ * Images keep their path, OCR text and description (the preview shows them without
+ * a fetch); colors keep their value for the swatch.
  */
-function rowToListItem(r: ItemRow): ClipItem {
-  const item = rowToItem(r)
-  return { ...item, content: item.kind === 'image' ? item.content : '', html: undefined }
-}
+const LIST_COLUMNS = `items.id, items.kind,
+  CASE WHEN items.kind IN ('image', 'color') THEN items.content ELSE '' END AS content,
+  NULL AS html, items.preview, items.thumb, items.width, items.height, items.source_app,
+  items.created_at, items.last_copied_at, items.copy_count, items.pinned, items.auto_title,
+  items.tags, items.content_class,
+  CASE WHEN items.kind = 'image' THEN items.ocr_text END AS ocr_text,
+  CASE WHEN items.kind = 'image' THEN items.description END AS description,
+  items.language, items.derived_from, items.derived_via, items.secret, items.char_count,
+  items.enriched_at, items.embedded_at`
 
 function rowToItem(r: ItemRow): ClipItem {
   return {
@@ -278,27 +284,27 @@ export function searchKeyword(q: SearchQuery): SearchResult {
   if (!q.q.trim()) {
     const rows = db
       .prepare(
-        `SELECT * FROM items WHERE 1=1 ${where}
+        `SELECT ${LIST_COLUMNS} FROM items WHERE 1=1 ${where}
          ORDER BY pinned DESC, last_copied_at DESC LIMIT @limit OFFSET @offset`
       )
       .all({ ...params, limit, offset }) as ItemRow[]
     const total = (
       db.prepare(`SELECT COUNT(*) c FROM items WHERE 1=1 ${where}`).get(params) as { c: number }
     ).c
-    return { items: rows.map(rowToListItem), total, mode: 'keyword' }
+    return { items: rows.map(rowToItem), total, mode: 'keyword' }
   }
 
   const match = ftsQuery(q.q)
   const rows = db
     .prepare(
-      `SELECT items.* FROM items_fts
+      `SELECT ${LIST_COLUMNS} FROM items_fts
        JOIN items ON items.id = items_fts.rowid
        WHERE items_fts MATCH @match ${where}
        ORDER BY items.pinned DESC, bm25(items_fts, 5.0, 10.0, 3.0, 4.0, 2.0)
        LIMIT @limit OFFSET @offset`
     )
     .all({ ...params, match, limit, offset }) as ItemRow[]
-  return { items: rows.map(rowToListItem), total: rows.length, mode: 'keyword' }
+  return { items: rows.map(rowToItem), total: rows.length, mode: 'keyword' }
 }
 
 /**
@@ -347,13 +353,13 @@ export function searchHybrid(q: SearchQuery, queryEmbedding: Float32Array | null
   // bindings in one statement (the filter clauses use named params).
   const idList = ranked.map(([id]) => Number(id)).join(',')
   const rows = db
-    .prepare(`SELECT * FROM items WHERE id IN (${idList}) AND secret = 0 ${where}`)
+    .prepare(`SELECT ${LIST_COLUMNS} FROM items WHERE id IN (${idList}) AND secret = 0 ${where}`)
     .all(params) as ItemRow[]
   const byId = new Map(rows.map((r) => [r.id, r]))
   const items = ranked
     .map(([id]) => byId.get(id))
     .filter((r): r is ItemRow => !!r)
-    .map(rowToListItem)
+    .map(rowToItem)
   return { items, total: items.length, mode: 'hybrid' }
 }
 
@@ -383,6 +389,32 @@ export function dequeueEnrichment(itemId: number, error?: string): void {
   } else {
     db.prepare('DELETE FROM enrich_queue WHERE item_id = ?').run(itemId)
   }
+}
+
+/**
+ * Give enrichment another go at rows that used up their attempts, and drop error
+ * text that older builds stored as a title or summary (an expired login's reply was
+ * parsed as model output). Run once at startup. Returns how many rows were queued.
+ */
+export function reviveEnrichmentQueue(): number {
+  const db = getDb()
+  return db.transaction(() => {
+    const ERROR_TEXT = `(auto_title LIKE 'Failed to authenticate%' OR description LIKE 'Failed to authenticate%'
+      OR auto_title LIKE 'Not logged in%' OR description LIKE 'Not logged in%')`
+    const scrubbed = db.prepare(`SELECT id FROM items WHERE ${ERROR_TEXT}`).all() as Array<{ id: number }>
+    db.prepare(
+      `UPDATE items SET
+        auto_title = CASE WHEN auto_title LIKE 'Failed to authenticate%' OR auto_title LIKE 'Not logged in%' THEN NULL ELSE auto_title END,
+        description = CASE WHEN description LIKE 'Failed to authenticate%' OR description LIKE 'Not logged in%' THEN NULL ELSE description END,
+        enriched_at = NULL
+       WHERE ${ERROR_TEXT}`
+    ).run()
+    const now = Date.now()
+    const enqueue = db.prepare('INSERT OR IGNORE INTO enrich_queue (item_id, queued_at) VALUES (?, ?)')
+    for (const { id } of scrubbed) enqueue.run(id, now)
+    const revived = db.prepare('UPDATE enrich_queue SET attempts = 0, last_error = NULL WHERE attempts >= 3').run().changes
+    return revived + scrubbed.length
+  })()
 }
 
 export function enrichQueueStats(): { queued: number; failed: number } {

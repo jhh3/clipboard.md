@@ -6,8 +6,12 @@ import { hasVec } from '../store/db'
 
 /**
  * Embedding manager: drives the utilityProcess worker, drains un-embedded items in
- * the background, and answers query-embedding requests for hybrid search (with a
- * short timeout so search never blocks on a cold model).
+ * the background, and answers query embeddings for hybrid search.
+ *
+ * The worker stays loaded (~140 MB). Unloading after 5 min idle made the first
+ * search after every break keyword-only, 171 times in one week; reloading costs more
+ * than the memory is worth. Query embeddings jump the worker's queue ahead of
+ * background batches.
  */
 
 let worker: UtilityProcess | null = null
@@ -17,11 +21,7 @@ let drainTimer: ReturnType<typeof setInterval> | null = null
 let ready = false
 let restarts = 0
 const MAX_RESTARTS = 4
-/** Idle unload: the worker holds ~140MB of model weights; a background clipboard
- *  manager has no business keeping that resident between bursts of work. */
-let lastUse = 0
 let intentionalStop = false
-const IDLE_UNLOAD_MS = 5 * 60_000
 
 function cacheDir(): string {
   return join(app.getPath('userData'), 'models')
@@ -30,26 +30,33 @@ function cacheDir(): string {
 export function startEmbeddings(): void {
   if (!hasVec() || !getSettings().embeddings.enabled) return
   if (worker) return
-  worker = utilityProcess.fork(join(__dirname, 'embedWorker.mjs'), [], {
+  const w = utilityProcess.fork(join(__dirname, 'embedWorker.mjs'), [], {
     serviceName: 'clipmd-embeddings'
   })
-  worker.on('message', (msg: { type: string; id?: number; vector?: number[]; error?: string }) => {
-    if (msg.type === 'pong') ready = true
+  worker = w
+  w.on('message', (msg: { type: string; id?: number; vector?: number[]; error?: string; ms?: number }) => {
+    if (msg.type === 'warm') {
+      ready = true
+      console.log(`[embed] model loaded in ${msg.ms}ms`)
+    }
     if ((msg.type === 'vector' || msg.type === 'embed-error') && msg.id !== undefined) {
       const p = pending.get(msg.id)
-      if (p) {
-        clearTimeout(p.timer)
-        pending.delete(msg.id)
-        if (msg.type === 'vector' && msg.vector) p.resolve(new Float32Array(msg.vector))
-        else {
-          if (msg.error) console.error('[embed] worker error:', msg.error)
-          p.resolve(null)
-        }
+      if (!p) return
+      clearTimeout(p.timer)
+      pending.delete(msg.id)
+      if (msg.type === 'vector' && msg.vector) {
+        ready = true
+        // Healthy again: an occasional crash should not add up to a permanent disable.
+        restarts = 0
+        p.resolve(new Float32Array(msg.vector))
+      } else {
+        if (msg.error) console.error('[embed] worker error:', msg.error)
+        p.resolve(null)
       }
     }
   })
-  worker.on('exit', () => {
-    worker = null
+  w.on('exit', () => {
+    if (worker === w) worker = null
     ready = false
     for (const [, p] of pending) {
       clearTimeout(p.timer)
@@ -58,24 +65,21 @@ export function startEmbeddings(): void {
     pending.clear()
     if (intentionalStop) {
       intentionalStop = false
-      return // idle unload, not a crash
+      return
     }
-    // An onnxruntime OOM used to disable embeddings silently for the rest of the
-    // session. Respawn with backoff, but give up rather than crash-loop forever.
+    // Respawn with backoff, but give up rather than crash-loop forever. The counter
+    // resets on the next successful embedding.
     if (restarts < MAX_RESTARTS) {
       const delay = 5000 * 2 ** restarts
       restarts++
       console.error(`[embed] worker exited; restarting in ${delay}ms (attempt ${restarts})`)
       setTimeout(() => startEmbeddings(), delay)
     } else {
-      console.error('[embed] worker exited too many times; semantic search disabled')
+      console.error('[embed] worker exited too many times; semantic search off until restart')
     }
   })
-  worker.postMessage({ type: 'ping' })
-  // Start the idle clock now. Left at 0, the very first drain — 5s in, with nothing
-  // to embed — satisfied `now - lastUse > IDLE_UNLOAD_MS` immediately and killed the
-  // worker five seconds after launch.
-  lastUse = Date.now()
+  // Load the model now, so the first search is already warm.
+  w.postMessage({ type: 'warm', cacheDir: cacheDir() })
   if (!drainTimer) drainTimer = setInterval(() => void drainEmbeddings(), 20_000)
   setTimeout(() => void drainEmbeddings(), 5_000)
 }
@@ -83,18 +87,20 @@ export function startEmbeddings(): void {
 export function stopEmbeddings(): void {
   if (drainTimer) clearInterval(drainTimer)
   drainTimer = null
+  if (worker) intentionalStop = true
   worker?.kill()
   worker = null
 }
 
-export function embed(text: string, timeoutMs = 20_000): Promise<Float32Array | null> {
-  if (!worker) {
-    // Woken by a query after an idle unload: spin the worker back up. This call
-    // returns null (search degrades to keyword) and the next one will be warm.
-    startEmbeddings()
-    return Promise.resolve(null)
-  }
-  lastUse = Date.now()
+/** Make sure the worker is up and the model loaded (palette open, after a crash). */
+export function warmEmbeddings(): void {
+  if (!worker) startEmbeddings()
+}
+
+function embed(text: string, timeoutMs: number, priority: boolean): Promise<Float32Array | null> {
+  if (!worker) startEmbeddings()
+  const w = worker
+  if (!w) return Promise.resolve(null)
   const id = ++seq
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -102,34 +108,22 @@ export function embed(text: string, timeoutMs = 20_000): Promise<Float32Array | 
       resolve(null)
     }, timeoutMs)
     pending.set(id, { resolve, timer })
-    worker!.postMessage({ type: 'embed', id, text, cacheDir: cacheDir() })
+    w.postMessage({ type: 'embed', id, text, cacheDir: cacheDir(), priority })
   })
 }
 
-/** Query embedding for search: short timeout so a cold model degrades to keyword mode. */
+/** Query embedding for search. Waits out a cold start (~0.5 s) rather than giving up. */
 export function embedQuery(text: string): Promise<Float32Array | null> {
-  return embed(text, ready ? 1_500 : 300)
+  return embed(text, ready ? 2_000 : 5_000, true)
 }
 
 let draining = false
 async function drainEmbeddings(): Promise<void> {
-  if (draining) return
+  if (draining || !worker) return
   if (!hasVec() || !getSettings().embeddings.enabled) return
   draining = true
   try {
     const batch = itemsNeedingEmbedding(16)
-
-    // Work arrived after an idle unload. The drain timer keeps ticking once the
-    // worker is gone, but this used to return early on `!worker` and never restart
-    // it — so nothing captured after the first unload was ever embedded, and
-    // semantic search silently covered only the items that happened to exist while
-    // the worker was alive. Spin it back up; this batch is embedded on the next tick.
-    if (batch.length > 0 && !worker) {
-      startEmbeddings()
-      return
-    }
-    if (!worker) return
-
     for (const item of batch) {
       const text = [item.autoTitle, item.kind === 'image' ? item.ocrText : item.content, item.tags.join(' ')]
         .filter(Boolean)
@@ -139,26 +133,16 @@ async function drainEmbeddings(): Promise<void> {
         markEmbeddingSkipped(item.id) // otherwise this item blocks the queue forever
         continue
       }
-      const vec = await embed(text)
-      if (vec) {
-        try {
-          storeEmbedding(item.id, vec)
-        } catch (err) {
-          console.error('[embed] store failed:', err)
-          break
-        }
-        ready = true
-      } else break // worker cold or erroring; retry next tick
+      const vec = await embed(text, 20_000, false)
+      if (!vec) break // worker cold or erroring; retry next tick
+      try {
+        storeEmbedding(item.id, vec)
+      } catch (err) {
+        console.error('[embed] store failed:', err)
+        break
+      }
     }
-    if (batch.length > 0) lastUse = Date.now()
   } finally {
     draining = false
-  }
-
-  // Nothing left to embed and nobody has searched in a while: release the model.
-  if (worker && pending.size === 0 && Date.now() - lastUse > IDLE_UNLOAD_MS) {
-    console.log('[embed] idle; unloading model to reclaim memory')
-    intentionalStop = true
-    worker.kill()
   }
 }
