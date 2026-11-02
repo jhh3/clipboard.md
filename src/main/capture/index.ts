@@ -1,19 +1,20 @@
-import { app, nativeImage } from 'electron'
+import { app } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
+import sharp from 'sharp'
 import { readClipboard, readHtml, weOwnClipboard } from './clipboardIO'
 import { helperPath } from '../mac/helper'
-import { parseWatchLine, watcherCommand, watcherScript } from '../win/sequenceWatcher'
 import { getSourceApp, type SourceApp } from './sourceApp'
 import { createHash } from 'crypto'
-import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
+import { readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { ClipKind } from '@shared/types'
 import { upsertClip, enqueueEnrichment } from '../store/items'
 import { runFilters } from './filters'
 import { getSettings } from '../settings'
 import { considerSnapshot } from '../corrections'
-import { MACOS, LINUX, WIN32 } from '../platform'
-import { downgradeCapability } from '../capabilities'
+import { MACOS, LINUX } from '../platform'
+import { onClipboardOwnerChange, onXLost, xconn, hasOwnerEvents } from '../xconn'
 
 export interface CaptureEvents {
   onItem: (id: number, created: boolean) => void
@@ -36,31 +37,31 @@ function imagesDir(): string {
 }
 
 /**
- * Polling capture loop over Electron's clipboard API.
+ * Clipboard capture, event-driven where the platform allows it.
  *
  * On Linux we run under Xwayland: mutter mirrors the Wayland CLIPBOARD selection into
- * X11 regardless of focus (verified on GNOME 50.1), so a background poll sees every copy
- * from both Wayland-native and X11 apps. On macOS the same poll works against
- * NSPasteboard. Change detection is via content hash of the cheapest available flavor;
- * an XFixes-event upgrade can replace the timer without touching anything above it.
+ * X11 regardless of focus (verified on GNOME 50.1), so XFixes owner-change events see
+ * every copy from both Wayland-native and X11 apps. macOS uses the helper's
+ * pasteboard watcher. Polling is the fallback on both. Change detection is by
+ * content hash.
  */
 export class CaptureService {
   private timer: ReturnType<typeof setInterval> | null = null
   /** macOS pasteboard watcher child process, when event-driven capture is running. */
   private watcher: ChildProcess | null = null
+  /** Unsubscribes from the shared X connection's owner events (Linux). */
+  private xOff: (() => void) | null = null
   private reading = false
+  /**
+   * A change arrived while a read was in flight. That read may already have fetched
+   * the OLD content, so dropping the event (as this used to) lost a quick second copy;
+   * the read re-runs once it finishes instead.
+   */
+  private dirty = false
+  /** When the change event behind the current read arrived, for the timing line. */
+  private eventAt = 0
   private paused = false
   private lastHash = ''
-  /**
-   * Whether the clipboard content this tick is marked "do not record" by Windows'
-   * concealed-content formats. Set by the sidecar immediately before the tick it
-   * describes; see runFilters' `concealedWin`.
-   *
-   * Defaults to false and is CLEARED after every tick, because a stale true would
-   * silently drop the next ordinary clip, and a stale false is the one thing we must
-   * never carry into a password.
-   */
-  private concealedWin = false
   /** Hash the service itself just wrote (paste/copy actions) — skip one echo. */
   private selfHash = ''
   private selfHashExpires = 0
@@ -72,25 +73,20 @@ export class CaptureService {
 
   start(): void {
     this.paused = false
-    if (this.timer || this.watcher) return
+    if (this.timer || this.watcher || this.xOff) return
     // Prime lastHash so whatever is on the clipboard at launch isn't re-captured.
     void this.tick(true)
     if (LINUX) {
       // Every failure path below must fall back to polling: silently capturing
       // nothing for a whole session is the worst possible outcome for this app.
-      this.startXFixesPush().then((ok) => {
+      void this.startXFixesPush().then((ok) => {
         if (ok) console.log('[capture] event-driven (XFixes); polling disabled')
         else this.startPolling('XFixes unavailable')
       })
     } else if (MACOS) {
-      this.startPasteboardWatcher().then((ok) => {
+      void this.startPasteboardWatcher().then((ok) => {
         if (ok) console.log('[capture] event-driven (pasteboard watcher); polling disabled')
         else this.startPolling('pasteboard watcher unavailable')
-      })
-    } else if (WIN32) {
-      this.startWindowsWatcher().then((ok) => {
-        if (ok) console.log('[capture] event-driven (clipboard sequence watcher); polling disabled')
-        else this.startPolling('clipboard sequence watcher unavailable')
       })
     } else {
       this.startPolling('platform has no clipboard events')
@@ -158,158 +154,57 @@ export class CaptureService {
     })
   }
 
-  /**
-   * Event-driven capture on Windows.
-   *
-   * Same shape as the macOS pasteboard watcher, and for the same reason: polling
-   * from here means reading the whole clipboard every tick to discover nothing
-   * changed. The sidecar reads GetClipboardSequenceNumber, which — crucially — does
-   * NOT require OpenClipboard. A background tool that opens the clipboard on a timer
-   * is how another app ends up reporting "We couldn't free up space on the
-   * Clipboard"; we must never be the cause of that.
-   *
-   * The exit → polling fallback is mandatory, not defensive tidiness: `Add-Type` is
-   * blocked outright under Constrained Language Mode, AppLocker and several EDR
-   * products, which are common on exactly the managed machines where a clipboard
-   * manager silently capturing nothing for a whole session would go unnoticed.
-   */
-  private startWindowsWatcher(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const script = watcherScript(process.resourcesPath ?? '', __dirname)
-      if (!script) {
-        console.error('[capture] clipwatch.ps1 not found; falling back to polling')
-        return resolve(false)
-      }
-      let settled = false
-      const done = (ok: boolean): void => {
-        if (settled) return
-        settled = true
-        resolve(ok)
-      }
-      try {
-        const { cmd, args } = watcherCommand(script)
-        const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-        this.watcher = child
-        child.stdout.setEncoding('utf8')
-        // stderr is where Add-Type reports being blocked. Silence there would make an
-        // AppLocker machine indistinguishable from a working one.
-        child.stderr?.setEncoding('utf8')
-        child.stderr?.on('data', (chunk: string) => {
-          const text = chunk.trim()
-          if (text) console.error(`[capture] clipwatch: ${text}`)
-        })
-        // The first line is the baseline sequence number at startup, not a change.
-        let primed = false
-        let buffered = ''
-        child.stdout.on('data', (chunk: string) => {
-          done(true)
-          buffered += chunk
-          const lines = buffered.split('\n')
-          buffered = lines.pop() ?? ''
-          for (const line of lines) {
-            const ev = parseWatchLine(line)
-            if (!ev) continue
-            if (!primed) {
-              primed = true
-              continue
-            }
-            // Held for the duration of this tick only. It describes THIS clipboard
-            // content, and by the next event the user may have copied something else.
-            this.concealedWin = ev.concealed
-            void this.tick()
-          }
-        })
-        child.on('error', () => done(false))
-        child.on('exit', (code) => {
-          this.watcher = null
-          if (!this.paused) {
-            console.error(`[capture] clipboard watcher exited (${code}); falling back to polling`)
-            this.startPolling('watcher exited')
-          }
-          done(false)
-        })
-        // If it never produces its baseline line, treat it as unusable.
-        setTimeout(() => done(false), 3000)
-      } catch {
-        done(false)
-      }
-    })
-  }
-
   private startPolling(reason: string): void {
     if (this.timer) return
-    if (WIN32) {
-      // Polling on Windows means no sidecar, and no sidecar means no concealed-format
-      // detection AT ALL. `this.concealedWin` is assigned in exactly one place — the
-      // sidecar's stdout handler — so every polling tick passes false, and the other
-      // concealed check cannot cover for it either: CONCEALED_FORMATS lists
-      // NSPasteboard and KDE names, and clipboard.availableFormats() cannot see
-      // Windows' registered formats in the first place. The registry went on
-      // reporting this as supported while the app recorded every password copied out
-      // of a password manager. That is exactly the silent-failure shape this port
-      // exists to remove, so it is said out loud instead — in Settings, in --doctor,
-      // and in the log line downgradeCapability writes.
-      downgradeCapability('concealedFormatHints', {
-        state: 'unsupported',
-        reason:
-          'The clipboard sidecar is not running, so password managers’ “do not record” markers cannot be read this session — copies from them WILL be stored. Its own error is in the log above; Constrained Language Mode, AppLocker and some EDR products block the Add-Type it needs. Restart the app once the block is lifted.'
-      })
-    }
     console.log(`[capture] polling every ${getSettings().pollIntervalMs}ms (${reason})`)
     this.timer = setInterval(() => void this.tick(), getSettings().pollIntervalMs)
   }
 
   /**
-   * Event-driven capture: XFixes SetSelectionOwner notifications. Resolves false if
-   * the X connection can't be established or the extension isn't usable, so the
-   * caller can start polling instead.
+   * Event-driven capture: XFixes SetSelectionOwner notifications on the shared X
+   * connection (xconn.ts). Resolves false when X or XFixes is unusable, so the caller
+   * can poll instead.
+   *
+   * This used to open its own X connection on every start(), and stop() closed none
+   * of them, so each unlock and resume leaked one. Subscribing to the shared
+   * connection makes stop/start a listener swap.
    */
-  private startXFixesPush(): Promise<boolean> {
-    return new Promise((resolve) => {
-      let settled = false
-      const done = (ok: boolean, why?: string): void => {
-        if (settled) return
-        settled = true
-        if (!ok) console.error(`[capture] XFixes unavailable: ${why}`)
-        resolve(ok)
-      }
-      // If the X handshake never calls back at all, don't hang capture forever.
-      setTimeout(() => done(false, 'timed out connecting to X'), 3000)
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const x11 = require('x11') as { createClient: (cb: (err: Error | null, d: any) => void) => void }
-        x11.createClient((err: Error | null, display: any) => {
-          if (err) return done(false, err.message)
-          const X = display.client
-          X.require('fixes', (ferr: Error | null, Fixes: any) => {
-            if (ferr) return done(false, `fixes extension: ${ferr.message}`)
-            const root = display.screen[0].root
-            X.InternAtom(false, 'CLIPBOARD', (aerr: Error | null, clipAtom: number) => {
-              if (aerr) return done(false, `InternAtom: ${aerr.message}`)
-              Fixes.SelectSelectionInput(root, clipAtom, 1 /* SetSelectionOwner */)
-              X.on('event', (ev: { name?: string }) => {
-                if (ev.name === 'SelectionNotify') {
-                  // Owner changed; give the new owner a beat to serve targets.
-                  setTimeout(() => void this.tick(), 60)
-                }
-              })
-              done(true)
-            })
-          })
-          X.on('error', (e: Error) => console.error('[capture] x11 event error:', e.message))
-        })
-      } catch (err) {
-        done(false, String(err))
-      }
+  private async startXFixesPush(): Promise<boolean> {
+    if (!(await xconn()) || !hasOwnerEvents()) return false
+    if (this.paused || this.xOff) return !!this.xOff
+    const offOwner = onClipboardOwnerChange(() => {
+      // Owner changed; give the new owner a beat to serve targets.
+      const at = Date.now()
+      setTimeout(() => void this.tick(false, at), 60)
     })
+    const offLost = onXLost(() => {
+      this.xOff?.()
+      this.xOff = null
+      if (this.paused) return
+      // Xwayland restarted under us. Reconnect if it is back, poll if not.
+      setTimeout(() => {
+        if (this.paused || this.xOff || this.timer) return
+        void this.startXFixesPush().then((ok) => {
+          if (ok) console.log('[capture] X connection re-established')
+          else this.startPolling('X connection lost')
+        })
+      }, 2000)
+    })
+    this.xOff = () => {
+      offOwner()
+      offLost()
+    }
+    return true
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     // Set before killing: the exit handler checks it to tell a deliberate stop
-    // (lock/suspend) from a crash it should fall back to polling for.
+    // (lock/suspend/quit) from a crash it should fall back to polling for.
     this.paused = true
+    this.xOff?.()
+    this.xOff = null
     if (this.watcher) {
       this.watcher.kill()
       this.watcher = null
@@ -342,30 +237,19 @@ export class CaptureService {
    * UI thread on Linux (see clipboardIO) — a blocked read there stalls the WM
    * frame/ping handshake and GNOME declares the app unresponsive mid-interaction.
    */
-  private async tick(prime = false): Promise<void> {
-    if (this.reading) return // a read is already in flight; its result supersedes
+  private async tick(prime = false, eventAt = Date.now()): Promise<void> {
+    if (this.reading) {
+      this.dirty = true
+      return
+    }
     // Never request a selection we own — that is asking ourselves for data, and a
     // self-request that stalls takes the compositor's bridge down with it.
     if (weOwnClipboard()) return
     if (this.paused) return // session locked or suspended
     this.reading = true
+    this.eventAt = eventAt
     try {
       if (!getSettings().captureEnabled) return
-
-      // Windows resolves the source app BEFORE the read, not after.
-      //
-      // The sidecar's poll interval already puts up to 250ms between the copy and
-      // this tick, and reading the clipboard adds more; asking afterwards names
-      // whichever app the user has tabbed TO. A wrong answer here is worse than
-      // none, because "sourceApp: 1password.exe" is what the ignore list acts on —
-      // and the mirror of that, naming the wrong app, means the copy from the
-      // password manager is stored.
-      //
-      // linux and darwin keep the existing ordering deliberately. The same race
-      // exists there and is narrower (both have event-driven detection with no
-      // 250ms floor); changing it is a behaviour change to a shipping platform and
-      // belongs in its own commit.
-      const early = WIN32 ? await getSourceApp() : undefined
 
       const snap = await readClipboard()
       const hash = snap.image
@@ -385,16 +269,17 @@ export class CaptureService {
       if (prime) return
 
       // Resolve the source app before storing so the ignore-list can actually act.
-      const sourceApp = early ?? (await getSourceApp())
-      if (snap.image) this.captureImageBuffer(snap.image, snap.formats, sourceApp)
+      const sourceApp = await getSourceApp()
+      if (snap.image) await this.captureImageBuffer(snap.image, snap.formats, sourceApp)
       else await this.captureText(snap.text, snap.formats, sourceApp)
     } catch (err) {
       console.error('[capture] tick failed:', err)
     } finally {
       this.reading = false
-      // One tick, one verdict. Not clearing this is how a single concealed copy
-      // would go on suppressing every clip after it.
-      this.concealedWin = false
+      if (this.dirty) {
+        this.dirty = false
+        void this.tick()
+      }
     }
   }
 
@@ -405,7 +290,6 @@ export class CaptureService {
       formats,
       sourceApp: sourceApp?.name,
       sourceAppId: sourceApp?.id,
-      concealedWin: this.concealedWin,
       ignoreApps: settings.ignoreApps
     })
     if (verdict === 'skip') return
@@ -429,43 +313,75 @@ export class CaptureService {
     // A foreign copy may be the user re-copying a transcript they just corrected —
     // let the learn-from-corrections pass have a look. Cheap no-op unless enabled.
     considerSnapshot(text, sourceApp?.name ?? null)
+    console.log(`[timing] capture ${Date.now() - this.eventAt}ms (text)`)
     this.events.onItem(id, created)
   }
 
-  private captureImageBuffer(png: Buffer, formats: string[], sourceApp?: SourceApp): void {
+  private async captureImageBuffer(bytes: Buffer, formats: string[], sourceApp?: SourceApp): Promise<void> {
     const { verdict } = runFilters({
       formats,
       sourceApp: sourceApp?.name,
       sourceAppId: sourceApp?.id,
-      concealedWin: this.concealedWin,
       ignoreApps: getSettings().ignoreApps
     })
     if (verdict === 'skip') return
-    const img = nativeImage.createFromBuffer(png)
-    if (img.isEmpty()) return
-    const result = ingestNativeImage(img, sourceApp?.name)
+    const result = await ingestImageBytes(bytes, sourceApp?.name)
     if (!result) return
+    console.log(`[timing] capture ${Date.now() - this.eventAt}ms (image)`)
     this.events.onItem(result.id, result.created)
   }
 
   /** Ingest an image file (e.g. a portal screenshot) as a first-class clip. */
-  ingestImageFile(path: string): { id: number; created: boolean } | null {
-    const img = nativeImage.createFromPath(path)
-    if (img.isEmpty()) return null
-    const result = ingestNativeImage(img)
-    if (result) this.events.onItem(result.id, result.created)
-    return result
+  async ingestImageFile(path: string): Promise<{ id: number; created: boolean } | null> {
+    try {
+      const result = await ingestImageBytes(await readFile(path))
+      if (result) this.events.onItem(result.id, result.created)
+      return result
+    } catch (err) {
+      console.error('[capture] could not ingest image file:', err)
+      return null
+    }
   }
 }
 
-function ingestNativeImage(img: Electron.NativeImage, sourceApp?: string): { id: number; created: boolean } | null {
-  const png = img.toPNG()
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const THUMB_WIDTH = 320
+
+/**
+ * Store an image clip without touching the main thread for pixel work.
+ *
+ * PNG bytes are kept exactly as the clipboard served them: decoding and re-encoding a
+ * 4K screenshot on the main thread cost 100-400ms per copy and bought nothing. Other
+ * formats are converted to PNG once. Dimensions and the thumbnail come from sharp,
+ * which runs on the libuv pool.
+ */
+async function ingestImageBytes(
+  bytes: Buffer,
+  sourceApp?: string
+): Promise<{ id: number; created: boolean } | null> {
+  const isPng = bytes.length > 8 && bytes.subarray(0, 8).equals(PNG_SIGNATURE)
+  let png: Buffer
+  let width: number
+  let height: number
+  let thumb: string
+  try {
+    png = isPng ? bytes : await sharp(bytes).png().toBuffer()
+    const meta = await sharp(png).metadata()
+    width = meta.width ?? 0
+    height = meta.height ?? 0
+    if (!width || !height) return null
+    const small = await sharp(png)
+      .resize({ width: Math.min(THUMB_WIDTH, width), withoutEnlargement: true })
+      .png()
+      .toBuffer()
+    thumb = `data:image/png;base64,${small.toString('base64')}`
+  } catch (err) {
+    console.error('[capture] image decode failed:', err)
+    return null
+  }
   const sha = createHash('sha256').update(png).digest('hex')
   const file = join(imagesDir(), `${sha}.png`)
-  if (!existsSync(file)) writeFileSync(file, png)
-
-  const { width, height } = img.getSize()
-  const thumb = img.resize({ width: Math.min(320, width) }).toDataURL()
+  if (!existsSync(file)) await writeFile(file, png)
 
   const result = upsertClip({
     kind: 'image',

@@ -740,7 +740,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     screenshot: () => {
       void (async () => {
         const shot = await takeScreenshot()
-        if ('path' in shot) capture.ingestImageFile(shot.path)
+        if ('path' in shot) await capture.ingestImageFile(shot.path)
         // The hotkey has no window to report into, so an unavailable capture would
         // otherwise be a keypress that does nothing at all — the exact shape of
         // failure this port is about.
