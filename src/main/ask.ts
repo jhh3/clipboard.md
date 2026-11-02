@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { complete } from './modelport'
+import { complete, streamComplete } from './modelport'
 import { getItem } from './store/items'
 
 /**
@@ -44,9 +44,15 @@ export function startAsk(text: string, itemId: number | undefined, emit: Emit): 
           prompt = `${prompt}\n\n<clip>\n${item.content.slice(0, MAX_CLIP_CHARS)}\n</clip>`
         }
       }
-      const answer = await complete('transforms', { system: ASK_SYSTEM, prompt, maxTokens: 4000 })
+      const answer = await streamComplete(
+        'transforms',
+        { system: ASK_SYSTEM, prompt, maxTokens: 4000 },
+        (text) => {
+          if (!ctl.signal.aborted) emit('ask:delta', { id, text })
+        },
+        ctl.signal
+      )
       if (ctl.signal.aborted) return
-      emit('ask:delta', { id, text: answer })
       emit('ask:done', { id, text: answer })
     } catch (err) {
       if (ctl.signal.aborted) return

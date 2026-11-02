@@ -747,9 +747,6 @@ export default function Settings() {
                   }
                 />
               </Row>
-              <p className="set-section-sub">
-                AI calls go straight to Fireworks when it has a key, then OpenAI.
-              </p>
               <div className="set-block">
                 <div className="set-label">Models</div>
                 <div className="set-sub">Fast models by default.</div>

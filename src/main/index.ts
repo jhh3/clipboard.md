@@ -174,7 +174,6 @@ function armQuitWatchdog(): void {
     flushLogSync()
     app.exit(0)
   }, QUIT_WATCHDOG_MS).unref()
-  if (process.platform === 'win32') return
   try {
     spawn('sh', ['-c', `sleep ${QUIT_WATCHDOG_MS / 1000 + 2}; kill -9 ${process.pid} 2>/dev/null`], {
       detached: true,
