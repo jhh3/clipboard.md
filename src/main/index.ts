@@ -42,10 +42,10 @@ import {
   type HotkeyActions
 } from './hotkeys'
 import { getSettings, flushSettings, onSettingsChanged } from './settings'
-import { startEnrichment, stopEnrichment, drain as drainEnrichment, assignSession } from './enrichment'
+import { startEnrichment, stopEnrichment, drain as drainEnrichment } from './enrichment'
 import { startEmbeddings, stopEmbeddings } from './embeddings'
 import { setAiTransform } from './transforms'
-import { complete, resetProviderCache } from './modelport'
+import { complete, resetProviderCache, checkModels } from './modelport'
 import { takeScreenshot } from './screenshot'
 import { createTray, buildTrayMenu, destroyTray } from './tray'
 import { unreadCount, prewarmAgents } from './agents'
@@ -837,8 +837,7 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     }
 
     capture = new CaptureService({
-      onItem: (id, created) => {
-        if (created) assignSession(id, Date.now())
+      onItem: () => {
         sendToPalette('items:changed', { reason: 'captured' })
         void drainEnrichment()
       }
@@ -931,6 +930,8 @@ if (BRIDGE_MODE && !process.env.CLIPMD_SESSION_KEY) {
     capture.start()
     startEnrichment(() => sendToPalette('items:changed', { reason: 'enriched' }))
     startEmbeddings()
+    // One ping per configured model: a retired id or dead key shows in the tray at launch.
+    void checkModels()
     void bindPortalDictation()
     await setupHotkeys(actions)
     gnomeBindingsReady = true

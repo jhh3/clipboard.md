@@ -227,12 +227,10 @@ export interface TransformResult {
  */
 export type EnhancePreset = 'standard' | 'positive' | 'custom'
 
-export type ProviderLane = 'subscription' | 'api'
-export type ProviderId = 'claude-agent' | 'codex' | 'openai' | 'gemini' | 'fireworks'
+export type ProviderId = 'openai' | 'fireworks'
 
 export interface ProviderStatus {
   id: ProviderId
-  lane: ProviderLane
   available: boolean
   detail: string
 }
@@ -272,13 +270,9 @@ export interface AppSettings {
   secretAutoClear: boolean
   retentionDays: number
   maxItems: number
+  /** AI tagging. Always the direct API, Fireworks first then OpenAI. */
   enrichment: {
     enabled: boolean
-    lane: ProviderLane
-    provider: ProviderId
-  }
-  transforms: {
-    provider: ProviderId
   }
   embeddings: { enabled: boolean }
   transcription: { provider: 'openai' | 'local' }
@@ -458,7 +452,10 @@ export interface IpcInvokeMap {
   /** Resolve a [[wikilink]] by title, creating the note when it doesn't exist yet. */
   'notes:open-by-title': (title: string) => number
   'notes:daily': () => number
+  /** Keyword search: instant. The palette renders this first. */
   'search': (q: SearchQuery) => SearchResult
+  /** Hybrid keyword + semantic search; slower (query embedding). Merged in after 'search'. */
+  'search:semantic': (q: SearchQuery) => SearchResult
   'item:get': (id: number) => ClipItem | null
   'item:pin': (id: number, pinned: boolean) => void
   'item:delete': (id: number) => void
@@ -543,7 +540,7 @@ export interface IpcInvokeMap {
 
 /** IPC events: main -> renderer (send). */
 export interface IpcEventMap {
-  'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' }
+  'items:changed': { reason: 'captured' | 'enriched' | 'deleted' | 'transformed' | 'shown' }
   'palette:shown': { collection?: string; mode?: 'normal' | 'rewrite'; rewriteText?: string }
   /** Sent right after hide, so the next show doesn't paint the previous query first. */
   'palette:hidden': Record<string, never>
@@ -582,12 +579,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   secretAutoClear: false,
   retentionDays: 365,
   maxItems: 50000,
-  enrichment: { enabled: true, lane: 'subscription', provider: 'claude-agent' },
-  // OpenAI for interactive transforms: a direct API call is snappier than the Agent
-  // SDK for a one-shot. It falls back to the subscription lane when no API key is
-  // configured (see complete()), so a subscription-only user isn't left with dead
-  // transforms.
-  transforms: { provider: 'openai' },
+  enrichment: { enabled: true },
   embeddings: { enabled: true },
   // Local Parakeet by default: fully offline, no audio ever leaves the machine, free.
   // First dictation downloads the ~490MB model once; switch to OpenAI in Settings to
@@ -597,8 +589,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sessionsEnabled: true,
   // Off by default on every OS — opt in under Settings → Agents. See the field doc.
   mcpServer: false,
-  // Fast-by-default: haiku on the Claude lane, Luna on OpenAI, flash-lite on Gemini.
-  models: { 'claude-agent': 'haiku', openai: 'gpt-5.6-luna', gemini: 'gemini-flash-lite-latest' },
+  // Empty: modelport/openaiCompat.ts holds the defaults; an entry here overrides one.
+  models: {},
   dictation: { autoPaste: true, keepAudio: true },
   voiceSamples: [],
   agents: [
