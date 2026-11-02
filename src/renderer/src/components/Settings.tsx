@@ -4,7 +4,6 @@ import type {
   AppSettings,
   DictationSuggestion,
   ProviderId,
-  ProviderLane,
   ProviderStatus,
   SavedAction
 } from '@shared/types'
@@ -19,20 +18,14 @@ import Toasts from './Toasts'
 import { PlusIcon, SparkIcon, TrashIcon } from './icons'
 
 const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
-  { id: 'claude-agent', label: 'Claude (agent)' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'openai', label: 'OpenAI' },
-  { id: 'gemini', label: 'Gemini' },
-  { id: 'fireworks', label: 'Fireworks (DeepSeek)' }
+  { id: 'fireworks', label: 'Fireworks (DeepSeek)' },
+  { id: 'openai', label: 'OpenAI' }
 ]
 
 /** Placeholder = the default model used when no override is set. */
 const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
-  'claude-agent': 'haiku',
-  codex: '(codex default)',
-  openai: 'gpt-5.6-luna',
-  gemini: 'gemini-flash-lite-latest',
-  fireworks: 'accounts/fireworks/models/deepseek-v4-flash-0731'
+  openai: 'gpt-6-luna',
+  fireworks: 'accounts/fireworks/models/deepseek-v4p1-flash'
 }
 
 /**
@@ -41,15 +34,8 @@ const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
  * and a stale list must never block a new model id.
  */
 const MODEL_CHOICES: Record<ProviderId, string[]> = {
-  'claude-agent': ['haiku', 'sonnet', 'opus'],
-  codex: [],
-  // gpt-4.1-mini first: measured 1020ms against gpt-5.6-luna's 2070ms on the
-  // dictation cleanup task, with the same output. The gpt-5 nano/mini reasoning
-  // models are both slower AND returned empty — their reasoning tokens consume the
-  // completion budget — so they are deliberately absent.
-  openai: ['gpt-4.1-mini', 'gpt-5.6-luna', 'gpt-5.6', 'gpt-5.1', 'gpt-5', 'gpt-4.1-nano'],
-  gemini: ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-pro-latest'],
-  fireworks: ['accounts/fireworks/models/deepseek-v4-flash-0731']
+  openai: ['gpt-6-luna', 'gpt-5.4-nano'],
+  fireworks: ['accounts/fireworks/models/deepseek-v4p1-flash']
 }
 
 const CUSTOM = '__custom__'
@@ -470,28 +456,6 @@ function ChordField({ value, onCommit }: { value: string; onCommit: (v: string) 
       </div>
       {note && <span className="set-sub chord-warn">{note}</span>}
     </div>
-  )
-}
-
-function ProviderSelect({
-  value,
-  onChange
-}: {
-  value: ProviderId
-  onChange: (p: ProviderId) => void
-}) {
-  return (
-    <select
-      className="set-input"
-      value={value}
-      onChange={(e) => onChange(e.target.value as ProviderId)}
-    >
-      {PROVIDERS.map((p) => (
-        <option key={p.id} value={p.id}>
-          {p.label}
-        </option>
-      ))}
-    </select>
   )
 }
 
@@ -1407,93 +1371,8 @@ export default function Settings() {
                 />
               </Row>
               <p className="set-section-sub">
-                Subscription lane uses your Claude / Codex plans via their local agents. API lane
-                calls OpenAI or Gemini directly with OPENAI_API_KEY / GEMINI_API_KEY from your
-                environment.
+                AI calls go straight to Fireworks when it has a key, then OpenAI.
               </p>
-              <Row
-                label="Enrichment lane"
-                sub="Subscription = the claude/codex CLIs already signed in on this machine. API = direct calls with your own keys."
-              >
-                <select
-                  className="set-input"
-                  value={s.enrichment.lane}
-                  onChange={(e) => {
-                    const lane = e.target.value as ProviderLane
-                    // Keep the provider inside the chosen lane — a subscription
-                    // lane pointed at OpenAI silently does nothing.
-                    const first = lane === 'subscription' ? 'claude-agent' : 'openai'
-                    const stillValid =
-                      lane === 'subscription'
-                        ? ['claude-agent', 'codex'].includes(s.enrichment.provider)
-                        : ['openai', 'gemini'].includes(s.enrichment.provider)
-                    patch({
-                      enrichment: {
-                        ...s.enrichment,
-                        lane,
-                        provider: stillValid ? s.enrichment.provider : (first as ProviderId)
-                      }
-                    })
-                  }}
-                >
-                  <option value="subscription">Subscription (claude / codex CLI)</option>
-                  <option value="api">API key (OpenAI / Gemini)</option>
-                </select>
-              </Row>
-              <Row label="Enrichment provider" sub="Only providers in the chosen lane are offered.">
-                {(() => {
-                  const laneIds =
-                    s.enrichment.lane === 'subscription'
-                      ? ['claude-agent', 'codex']
-                      : ['openai', 'gemini']
-                  // A stored value OUTSIDE the lane (saved by the old unrestricted
-                  // UI) must stay visible — hiding it made the select claim a
-                  // working provider while enrichment silently ran on the broken
-                  // one and produced nothing.
-                  const stray = !laneIds.includes(s.enrichment.provider)
-                  return (
-                    <div className="set-stack">
-                      <select
-                        className="set-input"
-                        value={s.enrichment.provider}
-                        onChange={(e) =>
-                          patch({
-                            enrichment: { ...s.enrichment, provider: e.target.value as ProviderId }
-                          })
-                        }
-                      >
-                        {PROVIDERS.filter((p) => laneIds.includes(p.id)).map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.label}
-                          </option>
-                        ))}
-                        {stray && (
-                          <option value={s.enrichment.provider}>
-                            {PROVIDERS.find((p) => p.id === s.enrichment.provider)?.label ??
-                              s.enrichment.provider}{' '}
-                            — not in this lane
-                          </option>
-                        )}
-                      </select>
-                      {stray && (
-                        <div className="set-note warn">
-                          This provider isn&apos;t in the chosen lane, so enrichment produces
-                          nothing — pick one of the offered providers (or switch the lane).
-                        </div>
-                      )}
-                    </div>
-                  )
-                })()}
-              </Row>
-              <Row
-                label="Transforms provider"
-                sub="Runs AI actions, free prompts, and rewrites. Lane follows the provider (no separate lane setting yet)."
-              >
-                <ProviderSelect
-                  value={s.transforms.provider}
-                  onChange={(p) => patch({ transforms: { provider: p } })}
-                />
-              </Row>
               <div className="set-block">
                 <div className="set-label">Models</div>
                 <div className="set-sub">
@@ -1571,12 +1450,11 @@ export default function Settings() {
                     <div className="set-sub">No provider status reported.</div>
                   )}
                   {providers.map((p) => (
-                    <div key={`${p.id}:${p.lane}`} className="provider-row">
+                    <div key={p.id} className="provider-row">
                       <span className={'dot' + (p.available ? ' ok' : '')} />
                       <span className="provider-name">
                         {PROVIDERS.find((x) => x.id === p.id)?.label ?? p.id}
                       </span>
-                      <span className="provider-lane">{p.lane}</span>
                       <span className="provider-detail" title={p.detail}>
                         {p.detail}
                       </span>

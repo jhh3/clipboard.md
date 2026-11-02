@@ -27,6 +27,10 @@ export default defineConfig({
           // every platform's main bundle import a binary only one of them has.
           'koffi',
           '@huggingface/transformers',
+          // OCR worker: a native addon, and a model package that locates its files
+          // relative to itself (bundled, it would look beside out/main instead).
+          'onnxruntime-node',
+          /^@gutenye\/ocr-models/,
           '@anthropic-ai/claude-agent-sdk',
           '@openai/codex-sdk'
         ],
@@ -34,6 +38,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
           embedWorker: resolve(__dirname, 'src/main/embeddings/worker.ts'),
           asrWorker: resolve(__dirname, 'src/main/asr/worker.ts'),
+          ocrWorker: resolve(__dirname, 'src/main/ocr/worker.ts'),
           mcp: resolve(__dirname, 'src/mcp/server.ts'),
           // Per-session two-way channel, spawned by agents.ts as an MCP server.
           bridge: resolve(__dirname, 'src/mcp/bridge.ts')

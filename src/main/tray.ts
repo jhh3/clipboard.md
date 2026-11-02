@@ -13,6 +13,8 @@ import { execFileSync } from 'child_process'
 import { nativeTheme } from 'electron'
 import { MACOS, WIN32 } from './platform'
 import { windowsTrayFrames } from './trayIcon'
+import { enrichmentOutage, onEnrichmentStatus } from './enrichment'
+import { providerProblems, onProviderProblems } from './modelport'
 
 
 /**
@@ -140,7 +142,11 @@ export function buildTrayMenu(): void {
   // WezTerm, or any app we didn't paste into via our own field): reopen the last
   // transcript here, fix the word, and the scratchpad-edit path learns the rule.
   const canCorrect = settings.dictation.learnCorrections === true
+  // A dead key or model used to fail silently for weeks; say so where it is seen.
+  const outage = enrichmentOutage()
+  const aiProblem = outage ? `AI tagging paused: ${outage}` : providerProblems()[0]
   const menu = Menu.buildFromTemplate([
+    ...(aiProblem ? [{ label: aiProblem, enabled: false }, { type: 'separator' as const }] : []),
     { label: 'Open clipboard palette', ...acc('Cmd+Shift+V'), click: () => showPalette() },
     ...(canCorrect
       ? [
@@ -188,6 +194,7 @@ export function buildTrayMenu(): void {
     [
       'clipboard.md',
       settings.captureEnabled ? null : 'capture paused',
+      aiProblem ?? null,
       unread > 0 ? `${unread} unread from agents` : null
     ]
       .filter(Boolean)
@@ -207,6 +214,8 @@ export function createTray(): void {
     if (icon.isEmpty()) throw new Error('tray icon failed to decode')
     tray = new Tray(icon)
     buildTrayMenu()
+    onEnrichmentStatus(buildTrayMenu)
+    onProviderProblems(buildTrayMenu)
     // Log the success too. The previous version logged only failures, so when the
     // icon silently never appeared there was nothing to distinguish "created fine"
     // from "never got there" — which is exactly what happened.

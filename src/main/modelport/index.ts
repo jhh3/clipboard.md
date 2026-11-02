@@ -1,192 +1,122 @@
 import { z } from 'zod'
-import type { ProviderId, ProviderLane, ProviderStatus } from '@shared/types'
-import { getSettings } from '../settings'
-import { openaiCompatComplete, openaiCompatAvailable } from './openaiCompat'
+import type { ProviderId, ProviderStatus } from '@shared/types'
 import { apiKeyFor } from './keys'
-import { claudeAgentComplete, claudeAgentAvailable } from './claudeAgent'
-import { codexComplete, codexAvailable } from './codex'
+import {
+  ProviderError,
+  describeProviderError,
+  modelFor,
+  openaiCompatAvailable,
+  openaiCompatComplete,
+  openaiCompatStream,
+  pingModel,
+  supportsVision
+} from './openaiCompat'
+
+export { ProviderError, describeProviderError } from './openaiCompat'
 
 /**
- * ModelPort: the single seam between the app and any AI backend.
- * The app core is agnostic to subscription vs API vs model — per-feature routing
- * lives in settings, and every backend implements the same call shape.
+ * ModelPort: the single seam between the app and an AI backend. Every call is a
+ * direct API request — Fireworks first when it has a key (fastest), then OpenAI.
+ * Failures are thrown as ProviderError so callers can tell "the provider is down"
+ * from "this input is bad", and every call logs provider, model and ms.
  */
 
 export interface PortRequest {
   system?: string
   prompt: string
-  /** Absolute path to an image to include (vision). */
+  /** Absolute path to an image to include (vision; OpenAI only). */
   imagePath?: string
-  /** When set, the backend must return JSON parseable against this schema. */
+  /** When set, the backend must return a JSON object. */
   json?: boolean
   maxTokens?: number
+  /** Per-call timeout. Default 8s, or 30s with an image. */
+  timeoutMs?: number
 }
 
 export type Feature = 'enrichment' | 'transforms'
 
-type Backend = (req: PortRequest) => Promise<string>
+const ORDER: ProviderId[] = ['fireworks', 'openai']
 
-const BACKENDS: Record<ProviderId, Backend> = {
-  'claude-agent': claudeAgentComplete,
-  codex: codexComplete,
-  openai: (req) => openaiCompatComplete('openai', req),
-  gemini: (req) => openaiCompatComplete('gemini', req),
-  fireworks: (req) => openaiCompatComplete('fireworks', req)
+/** Providers to try, in order: an explicit override first, then those with a key. */
+function providerOrder(req: PortRequest, override?: ProviderId): ProviderId[] {
+  const order = override && ORDER.includes(override) ? [override, ...ORDER.filter((p) => p !== override)] : ORDER
+  return order.filter((p) => apiKeyFor(p) && (!req.imagePath || supportsVision(p)))
 }
 
-const SUBSCRIPTION_LANE: ProviderId[] = ['claude-agent', 'codex']
-const API_LANE: ProviderId[] = ['openai', 'gemini', 'fireworks']
-
-/**
- * Providers that cannot accept an image. Routing a vision request to one is not a
- * degraded answer, it is a wrong one: the image is dropped and the model confidently
- * describes nothing.
- */
-const TEXT_ONLY: ProviderId[] = ['fireworks']
-
-/**
- * Fireworks/DeepSeek v4 Flash is the preferred engine for transforms when a key
- * exists — the transform lane is short prompts on demand (rewrites, the dictation
- * cleanup pass), exactly where cheap and fast beats capable, and this model is both.
- *
- * Only for transforms, and only without an image. Enrichment stays where the user put
- * it, because it classifies clips and OCRs screenshots.
- */
-function preferredTransformProvider(req: PortRequest): ProviderId | null {
-  if (req.imagePath) return null
-  return apiKeyFor('fireworks') ? 'fireworks' : null
+function timeoutFor(req: PortRequest): number {
+  return req.timeoutMs ?? (req.imagePath ? 30_000 : 8_000)
 }
 
-function laneOf(p: ProviderId): ProviderLane {
-  return SUBSCRIPTION_LANE.includes(p) ? 'subscription' : 'api'
+/** Every failure, in order, for a single error that says what was tried. */
+function noProvider(feature: Feature, req: PortRequest, errors: ProviderError[]): ProviderError {
+  if (errors.length === 0) {
+    const what = req.imagePath ? 'an OpenAI key (image input)' : 'a Fireworks or OpenAI key'
+    return new ProviderError('openai', 'no-key', `${feature}: no provider configured — add ${what} in Settings`)
+  }
+  // Surface the last error: it carries the kind the caller acts on.
+  const last = errors[errors.length - 1]
+  return new ProviderError(last.provider, last.kind, errors.map((e) => e.message).join('; '), last.status)
 }
 
-/** The first provider we would try in a lane, when the configured one is unusable. */
-const LANE_DEFAULT: Record<ProviderLane, ProviderId> = {
-  subscription: 'claude-agent',
-  api: 'openai'
-}
-
-/** A provider we actually have a backend for. Stored settings are not typed at runtime. */
-function isProviderId(v: unknown): v is ProviderId {
-  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(BACKENDS, v)
-}
-
-/**
- * Fallback stays inside the lane the user chose. Silently crossing from the
- * subscription lane to third-party APIs would ship clipboard content to a provider
- * they deliberately didn't pick — a privacy decision, not an availability one.
- */
-function fallbacksFor(primary: ProviderId): ProviderId[] {
-  const lane = laneOf(primary) === 'subscription' ? SUBSCRIPTION_LANE : API_LANE
-  return lane.filter((p) => p !== primary)
-}
-
-/**
- * The provider to start from, and the lane the fallback chain must stay inside.
- *
- * An id we have no backend for must NOT be treated as an api-lane provider. laneOf()
- * answers "is it in SUBSCRIPTION_LANE", so anything unrecognised — a typo, or an id
- * retired by a rename — silently answered "api". A real install carried
- * `{ lane: 'subscription', provider: 'claude-cli' }` from before claude-agent was
- * renamed, and every enrichment call was routed to the api lane and failed there,
- * logging `No api-lane provider succeeded` every 15s against a subscription setting.
- *
- * That failure was loud but harmless only because no API keys were present. With one
- * configured it would have quietly sent clipboard content to a third party — exactly
- * the crossing fallbacksFor() promises never to make. So an unknown id recovers inside
- * the lane the user chose, and says so.
- */
-function route(feature: Feature): { primary: ProviderId; lane: ProviderLane } {
-  const s = getSettings()
-  const configured = feature === 'enrichment' ? s.enrichment.provider : s.transforms.provider
-  if (isProviderId(configured)) return { primary: configured, lane: laneOf(configured) }
-  // transforms has no stored lane; its providers are api-lane by nature.
-  const lane: ProviderLane =
-    feature === 'enrichment' && s.enrichment.lane === 'subscription' ? 'subscription' : 'api'
-  const primary = LANE_DEFAULT[lane]
-  console.error(
-    `[modelport] ${feature}: unknown provider ${JSON.stringify(configured)}; ` +
-      `falling back to ${primary} inside the ${lane} lane. Fix it in Settings → AI Providers.`
-  )
-  return { primary, lane }
-}
-
-export async function complete(
+async function attempt<T>(
   feature: Feature,
   req: PortRequest,
-  providerOverride?: ProviderId
-): Promise<string> {
-  const routed = route(feature)
-  const fast = feature === 'transforms' && !providerOverride ? preferredTransformProvider(req) : null
-  if (fast) console.log(`[modelport] transforms: using ${fast} (fast lane)`)
-  const primary = providerOverride ?? fast ?? routed.primary
-  const lane = providerOverride ? laneOf(providerOverride) : routed.lane
-  const order = [primary, ...fallbacksFor(primary)]
-  // Graceful last resort, ONE direction only. An api-lane feature (transforms
-  // default to OpenAI) with no API key configured falls back to the user's OWN
-  // subscription login rather than dying — a subscription-only user shouldn't have
-  // dead transforms. The reverse is deliberately never done: a subscription setting
-  // must not spill clipboard content to a third-party API the user didn't pick
-  // (the fallbacksFor privacy rule). So we only ever ADD the subscription lane.
-  if (lane === 'api') order.push(...SUBSCRIPTION_LANE.filter((p) => !order.includes(p)))
-  let lastErr: unknown = null
-  let crossed = false
-  let attempted = false
-  for (const provider of order) {
-    try {
-      if (req.imagePath && TEXT_ONLY.includes(provider)) continue
-      const avail = await isAvailable(provider)
-      if (!avail) continue
-      attempted = true
-      if (laneOf(provider) !== lane && !crossed) {
-        crossed = true
-        console.log(`[modelport] ${feature}: no ${lane}-lane provider available; using ${provider}`)
-      }
-      return await BACKENDS[provider](req)
-    } catch (err) {
-      lastErr = err
-      console.error(`[modelport] ${provider} failed for ${feature}:`, err)
-    }
-  }
-  // Nothing was even tried, which means DETECTION said no — not a provider.
-  //
-  // Detection is a heuristic over credential files, keychains and environment
-  // variables, and it will be wrong sooner or later. It already was: macOS keeps the
-  // Claude login in the Keychain rather than ~/.claude/.credentials.json, so every
-  // macOS subscription user was told "no Claude login" while the CLI we spawn reads
-  // the Keychain itself and would have worked. A gap like that should cost a status
-  // dot, not the whole feature.
-  //
-  // So try the configured provider anyway and let the real call be the judge: it
-  // either works, or it fails with an error that says what is actually wrong instead
-  // of our guess about it.
-  if (!attempted && !(req.imagePath && TEXT_ONLY.includes(primary))) {
-    try {
-      console.log(`[modelport] ${feature}: nothing detected as available; trying ${primary} anyway`)
-      return await BACKENDS[primary](req)
-    } catch (err) {
-      lastErr = err
-      console.error(`[modelport] ${primary} failed for ${feature}:`, err)
-    }
-  }
-  throw new Error(
-    `No provider succeeded for ${feature} (${String(lastErr ?? 'none available')}). ` +
-      'Check Settings → AI Providers.'
-  )
-}
-
-/** JSON-schema completion with zod validation and one repair retry. */
-export async function completeJson<T>(
-  feature: Feature,
-  req: PortRequest,
-  schema: z.ZodType<T>
+  override: ProviderId | undefined,
+  run: (provider: ProviderId, timeoutMs: number) => Promise<T>,
+  /** Stop falling back once output has reached the caller (a stream mid-flight). */
+  committed: () => boolean = () => false
 ): Promise<T> {
+  const errors: ProviderError[] = []
+  for (const provider of providerOrder(req, override)) {
+    const started = Date.now()
+    try {
+      const out = await run(provider, timeoutFor(req))
+      setProblem(provider, undefined)
+      console.log(`[modelport] ${feature} ${provider}/${modelFor(provider)} ${Date.now() - started}ms ok`)
+      return out
+    } catch (err) {
+      const ms = Date.now() - started
+      if (!(err instanceof ProviderError)) throw err
+      console.error(`[modelport] ${feature} ${provider}/${modelFor(provider)} ${ms}ms failed: ${err.kind}: ${err.message.slice(0, 200)}`)
+      noteFailure(err)
+      errors.push(err)
+      if (committed()) break
+    }
+  }
+  throw noProvider(feature, req, errors)
+}
+
+export async function complete(feature: Feature, req: PortRequest, providerOverride?: ProviderId): Promise<string> {
+  return attempt(feature, req, providerOverride, (p, t) => openaiCompatComplete(p, req, t))
+}
+
+/**
+ * Streaming completion for one-shot answers. onDelta receives each text chunk; the
+ * promise resolves with the full text. Falls back to the next provider only if the
+ * first one failed before producing any text.
+ */
+export async function streamComplete(
+  feature: Feature,
+  req: PortRequest,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  let started = false
+  const forward = (t: string): void => {
+    started = true
+    onDelta(t)
+  }
+  // Streams run longer than a single round trip; the timeout covers the whole answer.
+  const streamReq = { ...req, timeoutMs: req.timeoutMs ?? 60_000 }
+  return attempt(feature, streamReq, undefined, (p, t) => openaiCompatStream(p, streamReq, forward, t, signal), () => started)
+}
+
+/** JSON completion with zod validation and one repair retry. */
+export async function completeJson<T>(feature: Feature, req: PortRequest, schema: z.ZodType<T>): Promise<T> {
   const jsonReq = { ...req, json: true }
   const raw = await complete(feature, jsonReq)
   const parsed = tryParse(raw, schema)
   if (parsed.ok) return parsed.value
-  // One repair attempt: feed the error back.
   const repaired = await complete(feature, {
     ...jsonReq,
     prompt: `${req.prompt}\n\nYour previous output failed validation: ${parsed.error}\nPrevious output:\n${raw.slice(0, 2000)}\nReturn ONLY corrected JSON.`
@@ -196,75 +126,79 @@ export async function completeJson<T>(
   throw new Error(`invalid JSON from provider after retry: ${second.error}`)
 }
 
-function tryParse<T>(
-  raw: string,
-  schema: z.ZodType<T>
-): { ok: true; value: T } | { ok: false; error: string } {
+export function tryParse<T>(raw: string, schema: z.ZodType<T>): { ok: true; value: T } | { ok: false; error: string } {
   // Providers occasionally wrap JSON in fences or prose; extract the outermost object.
   const stripped = raw.replace(/^```(?:json)?\s*|\s*```$/g, '').trim()
   const start = stripped.indexOf('{')
   const end = stripped.lastIndexOf('}')
   const candidate = start >= 0 && end > start ? stripped.slice(start, end + 1) : stripped
   try {
-    const value = schema.parse(JSON.parse(candidate))
-    return { ok: true, value }
+    return { ok: true, value: schema.parse(JSON.parse(candidate)) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message.slice(0, 300) : String(err) }
   }
 }
 
-const availCache = new Map<ProviderId, { at: number; ok: boolean; detail: string }>()
+/** Last outage seen per provider, cleared by a success or a settings change. */
+const problems = new Map<ProviderId, string>()
+const problemListeners = new Set<() => void>()
 
-/**
- * Forget cached availability. Called when settings change: a key pasted into Settings
- * must take effect now, not up to five minutes later, or the field looks broken.
- */
-export function resetProviderCache(): void {
-  availCache.clear()
+function setProblem(provider: ProviderId, problem: string | undefined): void {
+  if (problems.get(provider) === problem) return
+  if (problem) problems.set(provider, problem)
+  else problems.delete(provider)
+  for (const fn of problemListeners) fn()
 }
 
-export async function isAvailable(provider: ProviderId): Promise<boolean> {
-  const cached = availCache.get(provider)
-  if (cached && Date.now() - cached.at < 5 * 60_000) return cached.ok
-  let ok = false
-  let detail = ''
-  try {
-    switch (provider) {
-      case 'openai':
-        ;({ ok, detail } = openaiCompatAvailable('openai'))
-        break
-      case 'gemini':
-        ;({ ok, detail } = openaiCompatAvailable('gemini'))
-        break
-      case 'fireworks':
-        ;({ ok, detail } = openaiCompatAvailable('fireworks'))
-        break
-      case 'claude-agent':
-        ;({ ok, detail } = await claudeAgentAvailable())
-        break
-      case 'codex':
-        ;({ ok, detail } = await codexAvailable())
-        break
-    }
-  } catch (err) {
-    detail = String(err)
-  }
-  availCache.set(provider, { at: Date.now(), ok, detail })
-  return ok
+function noteFailure(err: ProviderError): void {
+  if (err.isOutage && err.kind !== 'no-key') setProblem(err.provider, describeProviderError(err))
+}
+
+/** Current provider problems ("Fireworks model not found …"), for the tray. */
+export function providerProblems(): string[] {
+  return [...problems.values()]
+}
+
+export function onProviderProblems(fn: () => void): () => void {
+  problemListeners.add(fn)
+  return () => problemListeners.delete(fn)
+}
+
+/** Forget cached problems. Called when settings change: a new key must take effect now. */
+export function resetProviderCache(): void {
+  if (problems.size === 0) return
+  problems.clear()
+  for (const fn of problemListeners) fn()
 }
 
 export async function providersStatus(): Promise<ProviderStatus[]> {
-  const ids: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini', 'fireworks']
-  return Promise.all(
-    ids.map(async (id) => {
-      const ok = await isAvailable(id)
-      const cached = availCache.get(id)
-      return {
-        id,
-        lane: id === 'claude-agent' || id === 'codex' ? ('subscription' as const) : ('api' as const),
-        available: ok,
-        detail: cached?.detail ?? ''
+  return ORDER.map((id) => {
+    const { ok, detail } = openaiCompatAvailable(id)
+    const problem = problems.get(id)
+    return { id, available: ok && !problem, detail: problem ?? detail }
+  })
+}
+
+/**
+ * Startup check: ping each configured model once. A retired model id (the Fireworks
+ * 404) or a dead key used to stay invisible for weeks behind the fallback.
+ */
+export async function checkModels(): Promise<string[]> {
+  const failures: string[] = []
+  await Promise.all(
+    ORDER.filter((p) => apiKeyFor(p)).map(async (p) => {
+      const started = Date.now()
+      try {
+        await pingModel(p)
+        setProblem(p, undefined)
+        console.log(`[modelport] check ${p}/${modelFor(p)} ${Date.now() - started}ms ok`)
+      } catch (err) {
+        const msg = err instanceof ProviderError ? describeProviderError(err) : String(err)
+        if (err instanceof ProviderError) noteFailure(err)
+        failures.push(msg)
+        console.error(`[modelport] check ${p}/${modelFor(p)} failed: ${msg}`)
       }
     })
   )
+  return failures
 }

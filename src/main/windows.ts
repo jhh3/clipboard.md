@@ -4,6 +4,7 @@ import { getSettings, updateSettings } from './settings'
 import { MACOS, LINUX, WIN32 } from './platform'
 import { existsSync } from 'fs'
 import { rememberForeground } from './win/foreground'
+import { warmEmbeddings } from './embeddings'
 
 /**
  * Under native Wayland the compositor owns window placement: setBounds x/y is a
@@ -44,6 +45,8 @@ function activeDisplay(): Electron.Display {
 
 let palette: BrowserWindow | null = null
 let lastPaletteShow = 0
+/** An items:changed was held back while the palette was hidden. */
+let paletteStale = false
 
 /**
  * Whether a frameless window may ask for transparency.
@@ -186,12 +189,18 @@ export function showPalette(collection?: string): void {
     win.focus()
     win.moveTop()
     win.webContents.send('palette:shown', { collection })
+    // Changes that arrived while hidden were held back; one refresh now covers them.
+    if (paletteStale) {
+      paletteStale = false
+      win.webContents.send('items:changed', { reason: 'shown' })
+    }
     // Summon to first frame painted after the show.
     win.webContents
       .executeJavaScript('new Promise((r) => requestAnimationFrame(() => r(0)))')
       .then(() => console.log(`[timing] palette ${Date.now() - t0}ms${cold ? ' (cold)' : ''}`))
       .catch(() => {})
   }
+  warmEmbeddings()
   // Cold start: the renderer may still be loading, and showing an empty window
   // that then blurs is how the hotkey ends up looking like it did nothing.
   if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal)
@@ -213,7 +222,15 @@ export function togglePalette(): void {
 }
 
 export function sendToPalette(channel: string, payload: unknown): void {
-  getPalette()?.webContents.send(channel, payload)
+  const win = getPalette()
+  if (!win) return
+  // A hidden palette re-running its 400-row query on every capture and enrichment
+  // tick is wasted work; it refreshes once when shown instead.
+  if (channel === 'items:changed' && !win.isVisible()) {
+    paletteStale = true
+    return
+  }
+  win.webContents.send(channel, payload)
 }
 
 /** Broadcast to every open window (settings changes must reach all surfaces). */

@@ -18,4 +18,10 @@ describe('ftsQuery', () => {
     // Unquoted, these would be column filters / boolean operators.
     expect(ftsQuery('NOT title:x')).toBe('"NOT" "title:x"*')
   })
+
+  it('drops the prefix star on a one-character last token', () => {
+    expect(ftsQuery('a')).toBe('"a"')
+    expect(ftsQuery('plan b')).toBe('"plan" "b"')
+    expect(ftsQuery('ab')).toBe('"ab"*')
+  })
 })

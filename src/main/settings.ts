@@ -99,35 +99,49 @@ export function getSettings(): AppSettings {
 }
 
 /**
- * Repair provider ids that no longer exist.
- *
- * `claude-cli` was renamed to `claude-agent`, and installs that had selected it kept
- * the dead id — which nothing validated, so every completion was routed to whichever
- * lane the unknown id happened to fall into (the api one) and failed there forever.
- * modelport recovers from this at call time too; fixing it here stops the settings
- * file from carrying a value the UI cannot render as a selected option.
+ * Only direct-API providers remain (Fireworks, OpenAI). Settings files from earlier
+ * builds carry the Claude agent / Codex / Gemini lanes, per-feature provider choices
+ * and model ids that have since been retired (the pinned Fireworks id returned 404 and
+ * every call silently fell back). Strip all of it so the built-in defaults apply.
  */
+const VALID: ProviderId[] = ['fireworks', 'openai']
+const RETIRED_MODELS = new Set([
+  'accounts/fireworks/models/deepseek-v4-flash-0731',
+  'gpt-5.6-luna',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano'
+])
+
 function migrateProviderIds(s: AppSettings): void {
-  const RENAMED: Record<string, ProviderId> = { 'claude-cli': 'claude-agent', claude: 'claude-agent' }
-  const VALID: ProviderId[] = ['claude-agent', 'codex', 'openai', 'gemini']
   let changed = false
-  const fix = (id: ProviderId, fallback: ProviderId): ProviderId => {
-    if (VALID.includes(id)) return id
-    const next = RENAMED[id as string] ?? fallback
-    console.log(`[settings] provider ${JSON.stringify(id)} is retired; using ${next}`)
-    changed = true
-    return next
+  const models: AppSettings['models'] = {}
+  for (const [id, model] of Object.entries(s.models ?? {})) {
+    if (VALID.includes(id as ProviderId) && model && !RETIRED_MODELS.has(model)) models[id as ProviderId] = model
+    else changed = true
   }
-  s.enrichment.provider = fix(
-    s.enrichment.provider,
-    s.enrichment.lane === 'subscription' ? 'claude-agent' : 'openai'
-  )
-  s.transforms.provider = fix(s.transforms.provider, 'openai')
-  // Write it back, or the file keeps the dead id: we would re-migrate on every launch
-  // and the Settings dropdown would have no matching option to show as selected.
-  // Scheduled rather than written inline — flushSettings serialises `cached`, which is
-  // still being assembled by the load() call we are inside.
-  if (changed) scheduleFlush()
+  s.models = models
+  const legacy = s as unknown as Record<string, unknown>
+  if ('transforms' in legacy) {
+    delete legacy.transforms
+    changed = true
+  }
+  const enrichment = s.enrichment as unknown as Record<string, unknown>
+  if ('lane' in enrichment || 'provider' in enrichment) {
+    s.enrichment = { enabled: s.enrichment.enabled !== false }
+    changed = true
+  }
+  s.savedActions = s.savedActions.map((a) => {
+    if (!a.provider || VALID.includes(a.provider)) return a
+    changed = true
+    const { provider: _drop, ...rest } = a
+    return rest
+  })
+  if (changed) {
+    console.log('[settings] migrated AI provider settings to the direct-API lanes')
+    // Scheduled rather than written inline — flushSettings serialises `cached`, which
+    // is still being assembled by the load() call we are inside.
+    scheduleFlush()
+  }
 }
 
 /**
